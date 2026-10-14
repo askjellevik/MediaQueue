@@ -41,6 +41,91 @@ pub struct Config {
     /// secret itself (it's a salted hash), but never logged regardless.
     pub admin_password_hash: String,
     pub trusted_proxy_cidrs: Vec<Cidr>,
+    pub ntfy: NtfyConfig,
+    pub rate_limits: RateLimitConfig,
+}
+
+/// Where push notifications go. `url: None` turns them off.
+#[derive(Clone, Default)]
+pub struct NtfyConfig {
+    pub url: Option<String>,
+    pub topic: String,
+    /// Optional bearer token for a self-hosted ntfy. Never logged.
+    pub token: Option<String>,
+}
+
+impl std::fmt::Debug for NtfyConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NtfyConfig")
+            .field("url", &self.url)
+            // Anyone who knows a public ntfy.sh topic can read it, so the
+            // topic is treated as a secret too.
+            .field("topic", &"<redacted>")
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+/// Global failure throttle for one kind of login (access code or admin).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ThrottleConfig {
+    pub window_secs: u64,
+    /// More failures than this within the window delays attempts by
+    /// `delay1_ms`...
+    pub tier1: u32,
+    /// ...and more than this by `delay2_ms`.
+    pub tier2: u32,
+}
+
+/// Every number from the spec's rate-limit table, overridable via `RL_*`
+/// env vars. `Default` holds the spec's values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RateLimitConfig {
+    pub api_per_minute: u32,
+    pub search_burst: u32,
+    pub search_per_second: u32,
+    /// Hard cap on tracked keys per limiter; new keys beyond it are limited.
+    pub key_cap: usize,
+    pub fail_max: u32,
+    pub fail_window_secs: u64,
+    /// Lockout length for each successive backoff level.
+    pub lockout_secs: Vec<u64>,
+    pub code_throttle: ThrottleConfig,
+    pub admin_throttle: ThrottleConfig,
+    pub delay1_ms: u64,
+    pub delay2_ms: u64,
+    /// Permits for attempts waiting out a throttle delay, per throttle.
+    pub delay_permits: u32,
+    /// Minimum gap between two throttle on/off ntfy alerts.
+    pub alert_interval_secs: u64,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            api_per_minute: 120,
+            search_burst: 10,
+            search_per_second: 5,
+            key_cap: 10_000,
+            fail_max: 5,
+            fail_window_secs: 15 * 60,
+            lockout_secs: vec![15 * 60, 3600, 24 * 3600],
+            code_throttle: ThrottleConfig {
+                window_secs: 3600,
+                tier1: 60,
+                tier2: 300,
+            },
+            admin_throttle: ThrottleConfig {
+                window_secs: 15 * 60,
+                tier1: 30,
+                tier2: 150,
+            },
+            delay1_ms: 1000,
+            delay2_ms: 3000,
+            delay_permits: 32,
+            alert_interval_secs: 3600,
+        }
+    }
 }
 
 impl std::fmt::Debug for Config {
@@ -57,6 +142,8 @@ impl std::fmt::Debug for Config {
             .field("admin_user", &self.admin_user)
             .field("admin_password_hash", &"<redacted>")
             .field("trusted_proxy_cidrs", &self.trusted_proxy_cidrs)
+            .field("ntfy", &self.ntfy)
+            .field("rate_limits", &self.rate_limits)
             .finish()
     }
 }
@@ -109,6 +196,139 @@ fn int_with_default(
         }),
         None => Ok(default),
     }
+}
+
+/// A rate-limit number: a positive integer, since a zero would either
+/// disable a limit or make it reject everything.
+fn positive<T: std::str::FromStr + PartialOrd + From<u8>>(
+    env: &impl EnvLookup,
+    name: &'static str,
+    default: T,
+) -> Result<T, ConfigError> {
+    let Some(raw) = env.get(name) else {
+        return Ok(default);
+    };
+    match raw.trim().parse::<T>() {
+        Ok(v) if v >= T::from(1) => Ok(v),
+        _ => Err(ConfigError::Invalid {
+            name,
+            reason: "must be a positive integer".into(),
+        }),
+    }
+}
+
+fn throttle_config(
+    env: &impl EnvLookup,
+    names: [&'static str; 3],
+    default: ThrottleConfig,
+) -> Result<ThrottleConfig, ConfigError> {
+    let [window_name, tier1_name, tier2_name] = names;
+    let cfg = ThrottleConfig {
+        window_secs: positive(env, window_name, default.window_secs)?,
+        tier1: positive(env, tier1_name, default.tier1)?,
+        tier2: positive(env, tier2_name, default.tier2)?,
+    };
+    if cfg.tier2 <= cfg.tier1 {
+        return Err(ConfigError::Invalid {
+            name: tier2_name,
+            reason: format!("must be greater than {tier1_name}"),
+        });
+    }
+    Ok(cfg)
+}
+
+fn rate_limit_config(env: &impl EnvLookup) -> Result<RateLimitConfig, ConfigError> {
+    let d = RateLimitConfig::default();
+
+    let lockout_secs = match env.get("RL_LOCKOUT_SECS") {
+        None => d.lockout_secs,
+        Some(raw) => {
+            let parsed: Option<Vec<u64>> = raw
+                .split(',')
+                .map(|s| s.trim().parse::<u64>().ok().filter(|v| *v >= 1))
+                .collect();
+            parsed
+                .filter(|v| !v.is_empty())
+                .ok_or(ConfigError::Invalid {
+                    name: "RL_LOCKOUT_SECS",
+                    reason: "must be a comma-separated list of positive integers".into(),
+                })?
+        }
+    };
+
+    let cfg = RateLimitConfig {
+        api_per_minute: positive(env, "RL_API_PER_MINUTE", d.api_per_minute)?,
+        search_burst: positive(env, "RL_SEARCH_BURST", d.search_burst)?,
+        search_per_second: positive(env, "RL_SEARCH_PER_SECOND", d.search_per_second)?,
+        key_cap: positive(env, "RL_KEY_CAP", d.key_cap as u64)? as usize,
+        fail_max: positive(env, "RL_FAIL_MAX", d.fail_max)?,
+        fail_window_secs: positive(env, "RL_FAIL_WINDOW_SECS", d.fail_window_secs)?,
+        lockout_secs,
+        code_throttle: throttle_config(
+            env,
+            [
+                "RL_CODE_THROTTLE_WINDOW_SECS",
+                "RL_CODE_THROTTLE_TIER1",
+                "RL_CODE_THROTTLE_TIER2",
+            ],
+            d.code_throttle,
+        )?,
+        admin_throttle: throttle_config(
+            env,
+            [
+                "RL_ADMIN_THROTTLE_WINDOW_SECS",
+                "RL_ADMIN_THROTTLE_TIER1",
+                "RL_ADMIN_THROTTLE_TIER2",
+            ],
+            d.admin_throttle,
+        )?,
+        delay1_ms: positive(env, "RL_THROTTLE_DELAY1_MS", d.delay1_ms)?,
+        delay2_ms: positive(env, "RL_THROTTLE_DELAY2_MS", d.delay2_ms)?,
+        delay_permits: positive(env, "RL_DELAY_PERMITS", d.delay_permits)?,
+        alert_interval_secs: positive(env, "RL_ALERT_INTERVAL_SECS", d.alert_interval_secs)?,
+    };
+    Ok(cfg)
+}
+
+fn ntfy_config(env: &impl EnvLookup) -> Result<NtfyConfig, ConfigError> {
+    let url = env
+        .get("NTFY_URL")
+        .map(|v| v.trim().trim_end_matches('/').to_string())
+        .filter(|v| !v.is_empty());
+    let Some(url) = url else {
+        return Ok(NtfyConfig::default());
+    };
+    if !url.starts_with("https://") && !url.starts_with("http://") {
+        return Err(ConfigError::Invalid {
+            name: "NTFY_URL",
+            reason: "must start with http:// or https://".into(),
+        });
+    }
+    let topic = env
+        .get("NTFY_TOPIC")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .ok_or(ConfigError::Missing("NTFY_TOPIC"))?;
+    // The topic becomes a URL path segment; keep it to the characters
+    // ntfy itself allows so it can never alter the request path.
+    if !topic
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(ConfigError::Invalid {
+            name: "NTFY_TOPIC",
+            reason: "may only contain letters, digits, '-' and '_'".into(),
+        });
+    }
+    let token = env
+        .get("NTFY_TOKEN")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    Ok(NtfyConfig {
+        url: Some(url),
+        topic,
+        token,
+    })
 }
 
 impl Config {
@@ -209,6 +429,9 @@ impl Config {
                 reason,
             })?;
 
+        let ntfy = ntfy_config(env)?;
+        let rate_limits = rate_limit_config(env)?;
+
         Ok(Config {
             public_origin,
             bind_addr,
@@ -221,6 +444,8 @@ impl Config {
             admin_user,
             admin_password_hash,
             trusted_proxy_cidrs,
+            ntfy,
+            rate_limits,
         })
     }
 }
@@ -380,10 +605,112 @@ mod tests {
 
     #[test]
     fn debug_does_not_leak_secrets() {
-        let env = base_env();
+        let mut env = base_env();
+        env.insert("NTFY_URL", "https://ntfy.example.com");
+        env.insert("NTFY_TOPIC", "secret-topic-name");
+        env.insert("NTFY_TOKEN", "secret-ntfy-token");
         let cfg = Config::from_lookup(&env).unwrap();
         let debug = format!("{cfg:?}");
         assert!(!debug.contains("test-password"));
         assert!(!debug.contains(long_pepper()));
+        assert!(!debug.contains("secret-topic-name"));
+        assert!(!debug.contains("secret-ntfy-token"));
+    }
+
+    #[test]
+    fn rate_limits_default_to_spec_values() {
+        let cfg = Config::from_lookup(&base_env()).unwrap();
+        let rl = &cfg.rate_limits;
+        assert_eq!(*rl, RateLimitConfig::default());
+        assert_eq!(rl.api_per_minute, 120);
+        assert_eq!((rl.search_burst, rl.search_per_second), (10, 5));
+        assert_eq!(rl.key_cap, 10_000);
+        assert_eq!((rl.fail_max, rl.fail_window_secs), (5, 900));
+        assert_eq!(rl.lockout_secs, vec![900, 3600, 86_400]);
+        assert_eq!((rl.code_throttle.tier1, rl.code_throttle.tier2), (60, 300));
+        assert_eq!(rl.code_throttle.window_secs, 3600);
+        assert_eq!(rl.admin_throttle.tier1, 30);
+        assert_eq!(rl.admin_throttle.window_secs, 900);
+        assert_eq!((rl.delay1_ms, rl.delay2_ms), (1000, 3000));
+        assert_eq!(rl.delay_permits, 32);
+    }
+
+    #[test]
+    fn rate_limits_are_overridable() {
+        let mut env = base_env();
+        env.insert("RL_API_PER_MINUTE", "300");
+        env.insert("RL_LOCKOUT_SECS", "60, 120");
+        env.insert("RL_CODE_THROTTLE_TIER1", "10");
+        env.insert("RL_CODE_THROTTLE_TIER2", "20");
+        let rl = Config::from_lookup(&env).unwrap().rate_limits;
+        assert_eq!(rl.api_per_minute, 300);
+        assert_eq!(rl.lockout_secs, vec![60, 120]);
+        assert_eq!((rl.code_throttle.tier1, rl.code_throttle.tier2), (10, 20));
+    }
+
+    #[test]
+    fn rejects_zero_or_garbage_rate_limits() {
+        for (name, value) in [
+            ("RL_API_PER_MINUTE", "0"),
+            ("RL_SEARCH_BURST", "-1"),
+            ("RL_KEY_CAP", "lots"),
+            ("RL_LOCKOUT_SECS", ""),
+            ("RL_LOCKOUT_SECS", "900,0"),
+        ] {
+            let mut env = base_env();
+            env.insert(name, value);
+            let err = Config::from_lookup(&env).unwrap_err();
+            assert!(
+                matches!(err, ConfigError::Invalid { name: n, .. } if n == name),
+                "{name}={value:?} gave {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_throttle_tiers_out_of_order() {
+        let mut env = base_env();
+        env.insert("RL_ADMIN_THROTTLE_TIER1", "50");
+        env.insert("RL_ADMIN_THROTTLE_TIER2", "50");
+        let err = Config::from_lookup(&env).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::Invalid {
+                name: "RL_ADMIN_THROTTLE_TIER2",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn ntfy_is_off_without_url_and_needs_a_topic_with_one() {
+        let cfg = Config::from_lookup(&base_env()).unwrap();
+        assert!(cfg.ntfy.url.is_none());
+
+        let mut env = base_env();
+        env.insert("NTFY_URL", "https://ntfy.sh/");
+        let err = Config::from_lookup(&env).unwrap_err();
+        assert!(matches!(err, ConfigError::Missing("NTFY_TOPIC")));
+
+        env.insert("NTFY_TOPIC", "my-long-topic_1");
+        let cfg = Config::from_lookup(&env).unwrap();
+        assert_eq!(cfg.ntfy.url.as_deref(), Some("https://ntfy.sh"));
+        assert_eq!(cfg.ntfy.topic, "my-long-topic_1");
+        assert!(cfg.ntfy.token.is_none());
+    }
+
+    #[test]
+    fn rejects_ntfy_topic_that_could_alter_the_path() {
+        let mut env = base_env();
+        env.insert("NTFY_URL", "https://ntfy.sh");
+        env.insert("NTFY_TOPIC", "../admin");
+        let err = Config::from_lookup(&env).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::Invalid {
+                name: "NTFY_TOPIC",
+                ..
+            }
+        ));
     }
 }

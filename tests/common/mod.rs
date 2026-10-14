@@ -186,6 +186,8 @@ fn test_config() -> Config {
             "127.0.0.1/32,::1/128,172.16.0.0/12",
         )
         .expect("valid default trusted proxy cidrs"),
+        ntfy: Default::default(),
+        rate_limits: Default::default(),
     }
 }
 
