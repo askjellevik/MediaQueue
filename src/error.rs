@@ -3,13 +3,13 @@
 
 use axum::{
     Json,
-    extract::{FromRequest, Request},
-    http::{HeaderValue, StatusCode, header},
+    extract::{FromRequest, FromRequestParts, Query, Request},
+    http::{HeaderValue, StatusCode, header, request::Parts},
     response::{IntoResponse, Response},
 };
 use serde::{Serialize, de::DeserializeOwned};
 
-use crate::ratelimit::RetryAfter;
+use crate::{ratelimit::RetryAfter, tmdb::TmdbError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
@@ -30,8 +30,11 @@ pub enum AppError {
     /// A rate limit or lockout was hit; sent as 429 with `Retry-After`.
     #[error("rate limited")]
     RateLimited { retry_after_secs: u64 },
-    #[error("malformed request body")]
+    #[error("malformed request")]
     BadRequest,
+    /// TMDB is unreachable and no usable cached answer exists.
+    #[error("upstream unavailable")]
+    Unavailable,
     #[error("database error")]
     Database(#[from] sqlx::Error),
     #[error("internal error")]
@@ -47,6 +50,7 @@ impl AppError {
             AppError::InvalidCode | AppError::InvalidAdminCredentials => StatusCode::UNAUTHORIZED,
             AppError::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
             AppError::BadRequest => StatusCode::BAD_REQUEST,
+            AppError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             AppError::Database(_) | AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -60,6 +64,7 @@ impl AppError {
             AppError::InvalidAdminCredentials => "invalid_credentials",
             AppError::RateLimited { .. } => "rate_limited",
             AppError::BadRequest => "bad_request",
+            AppError::Unavailable => "upstream_unavailable",
             AppError::Database(_) | AppError::Internal(_) => "internal_error",
         }
     }
@@ -75,7 +80,10 @@ impl AppError {
             AppError::InvalidCode => "that code didn't work",
             AppError::InvalidAdminCredentials => "invalid username or password",
             AppError::RateLimited { .. } => "too many requests, try again later",
-            AppError::BadRequest => "the request body was malformed",
+            AppError::BadRequest => "the request was malformed",
+            AppError::Unavailable => {
+                "the movie database is not reachable right now, try again shortly"
+            }
             AppError::Database(_) | AppError::Internal(_) => "internal error",
         }
     }
@@ -84,6 +92,15 @@ impl AppError {
 impl From<RetryAfter> for AppError {
     fn from(RetryAfter(retry_after_secs): RetryAfter) -> Self {
         AppError::RateLimited { retry_after_secs }
+    }
+}
+
+impl From<TmdbError> for AppError {
+    fn from(error: TmdbError) -> Self {
+        match error {
+            TmdbError::NotFound => AppError::NotFound,
+            TmdbError::Unavailable | TmdbError::LocalLimit => AppError::Unavailable,
+        }
     }
 }
 
@@ -131,6 +148,28 @@ where
             Ok(Json(value)) => Ok(AppJson(value)),
             Err(rejection) => {
                 tracing::debug!(error = %rejection, "rejected request body");
+                Err(AppError::BadRequest)
+            }
+        }
+    }
+}
+
+/// A `Query<T>` extractor whose rejections render as [`AppError::BadRequest`]
+/// in the one JSON error shape, like [`AppJson`].
+pub struct AppQuery<T>(pub T);
+
+impl<T, S> FromRequestParts<S> for AppQuery<T>
+where
+    T: DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        match Query::<T>::from_request_parts(parts, state).await {
+            Ok(Query(value)) => Ok(AppQuery(value)),
+            Err(rejection) => {
+                tracing::debug!(error = %rejection, "rejected query string");
                 Err(AppError::BadRequest)
             }
         }

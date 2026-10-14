@@ -332,6 +332,39 @@ pub async fn delete_expired_sessions(pool: &SqlitePool, now: i64) -> Result<u64,
 }
 
 // ---------------------------------------------------------------------
+// Search annotation
+// ---------------------------------------------------------------------
+
+pub struct RequestState {
+    pub tmdb_id: i64,
+    pub media_type: String,
+    pub status: String,
+}
+
+/// Current status of every request matching any of `tmdb_ids`, in one
+/// SELECT however many IDs there are. The IDs are bound as one JSON array
+/// and expanded by `json_each`, so the statement text never changes.
+/// Callers match `media_type` themselves.
+pub async fn request_states(
+    pool: &SqlitePool,
+    tmdb_ids: &[u32],
+) -> Result<Vec<RequestState>, sqlx::Error> {
+    if tmdb_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids_json = serde_json::to_string(tmdb_ids).map_err(|e| sqlx::Error::Encode(Box::new(e)))?;
+    sqlx::query_as!(
+        RequestState,
+        r#"SELECT tmdb_id AS "tmdb_id!", media_type AS "media_type!", status AS "status!"
+           FROM requests
+           WHERE tmdb_id IN (SELECT value FROM json_each(?))"#,
+        ids_json
+    )
+    .fetch_all(pool)
+    .await
+}
+
+// ---------------------------------------------------------------------
 // Request quota (reads only; writes arrive in Phase 4)
 // ---------------------------------------------------------------------
 

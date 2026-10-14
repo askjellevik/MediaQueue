@@ -1,5 +1,5 @@
-//! User-facing `/api` routes: access-code login, logout and `/api/me`.
-//! Search and request creation arrive in later phases.
+//! User-facing `/api` routes: access-code login, logout, `/api/me` and
+//! search. Request creation arrives in Phase 4.
 
 use axum::{
     extract::State,
@@ -12,8 +12,9 @@ use crate::{
     auth::{self, RequireUser},
     clientip::ClientIp,
     db,
-    error::{AppError, AppJson},
+    error::{AppError, AppJson, AppQuery},
     state::AppState,
+    tmdb::{self, MediaType, SearchItem, SearchType},
 };
 
 #[derive(Deserialize)]
@@ -116,4 +117,87 @@ pub async fn get_me(
         name: user.member_name,
         remaining_today,
     }))
+}
+
+const MIN_QUERY_CHARS: usize = 2;
+const MAX_QUERY_CHARS: usize = 80;
+
+#[derive(Deserialize)]
+pub struct SearchParams {
+    q: String,
+    #[serde(default, rename = "type")]
+    search_type: SearchType,
+}
+
+/// One result as the browser sees it.
+#[derive(Serialize)]
+struct SearchResult {
+    tmdb_id: u32,
+    #[serde(rename = "type")]
+    media_type: MediaType,
+    title: String,
+    year: Option<i32>,
+    poster: Option<String>,
+    overview: String,
+    state: &'static str,
+}
+
+#[derive(Serialize)]
+struct SearchBody {
+    results: Vec<SearchResult>,
+}
+
+/// Maps a request's status to the chip the search dropdown shows.
+fn state_for_status(status: &str) -> &'static str {
+    match status {
+        "pending" => "requested",
+        "added" => "added",
+        "already_had" => "have",
+        "refused" => "unavailable",
+        _ => "requested",
+    }
+}
+
+/// `GET /api/search?q=&type=`: up to 8 movie/TV results from the TMDB
+/// cache, each annotated with whether it has been requested already.
+pub async fn get_search(
+    State(state): State<AppState>,
+    user: RequireUser,
+    AppQuery(params): AppQuery<SearchParams>,
+) -> Result<impl IntoResponse, AppError> {
+    // Limited before validation, so malformed queries cost budget too.
+    state.limits.check_search(user.member_id)?;
+
+    let query = tmdb::normalise_query(&params.q);
+    let chars = query.chars().count();
+    if !(MIN_QUERY_CHARS..=MAX_QUERY_CHARS).contains(&chars) {
+        return Err(AppError::BadRequest);
+    }
+
+    let items = state.tmdb.search(&query, params.search_type).await?;
+
+    let ids: Vec<u32> = items.iter().map(|i| i.tmdb_id).collect();
+    let rows = db::request_states(&state.pool, &ids).await?;
+    let state_of = |item: &SearchItem| {
+        rows.iter()
+            .find(|r| {
+                r.tmdb_id == i64::from(item.tmdb_id) && r.media_type == item.media_type.as_str()
+            })
+            .map(|r| state_for_status(&r.status))
+            .unwrap_or("none")
+    };
+
+    let results = items
+        .iter()
+        .map(|item| SearchResult {
+            tmdb_id: item.tmdb_id,
+            media_type: item.media_type,
+            title: item.title.clone(),
+            year: item.year,
+            poster: item.poster_path.clone(),
+            overview: item.overview.clone(),
+            state: state_of(item),
+        })
+        .collect();
+    Ok(axum::Json(SearchBody { results }))
 }

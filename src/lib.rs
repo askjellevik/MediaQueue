@@ -15,6 +15,7 @@ pub mod ratelimit;
 pub mod routes;
 pub mod state;
 pub mod tasks;
+pub mod tmdb;
 
 use axum::{
     Json, Router,
@@ -49,6 +50,7 @@ fn api_router(state: AppState) -> Router<()> {
         .route("/auth/code", post(routes::public::post_auth_code))
         .route("/auth/logout", post(routes::public::post_auth_logout))
         .route("/me", get(routes::public::get_me))
+        .route("/search", get(routes::public::get_search))
         .route("/admin/login", post(routes::admin::post_admin_login))
         .route("/admin/logout", post(routes::admin::post_admin_logout))
         .layer(axum::middleware::from_fn_with_state(

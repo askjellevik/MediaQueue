@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT tmdb_id AS \"tmdb_id!\", media_type AS \"media_type!\", status AS \"status!\"\n           FROM requests\n           WHERE tmdb_id IN (SELECT value FROM json_each(?))",
+  "describe": {
+    "columns": [
+      {
+        "name": "tmdb_id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "tmdb_id"
+          }
+        }
+      },
+      {
+        "name": "media_type!",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "media_type"
+          }
+        }
+      },
+      {
+        "name": "status!",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "status"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "9fdd6b72f6a525c7b2df53ccd6932f973f3bb3030d43944fef48c2eb52446060"
+}

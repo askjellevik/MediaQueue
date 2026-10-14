@@ -1,5 +1,6 @@
 //! Shared integration test helpers: spin up the real app on a random port
-//! and talk to it with a tiny stdlib HTTP client (no reqwest until Phase 3).
+//! and talk to it with a tiny stdlib HTTP client, so tests see exactly the
+//! bytes the server sent.
 //!
 //! Each `tests/*.rs` file compiles this module separately as its own copy,
 //! so any one binary using only part of this API is expected, not dead code.
@@ -22,6 +23,7 @@ static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub const TEST_ADMIN_USER: &str = "admin";
 pub const TEST_ADMIN_PASSWORD: &str = "test-admin-password";
+pub const TEST_TMDB_TOKEN: &str = "test-tmdb-token";
 
 /// A real Argon2id PHC hash of [`TEST_ADMIN_PASSWORD`], computed once.
 pub fn test_admin_password_hash() -> &'static str {
@@ -114,7 +116,7 @@ pub async fn http_request(
     tokio::task::spawn_blocking(move || {
         let mut stream = TcpStream::connect(addr).expect("connect to test server");
         stream
-            .set_read_timeout(Some(Duration::from_secs(3)))
+            .set_read_timeout(Some(Duration::from_secs(10)))
             .expect("set read timeout");
 
         let mut request =
@@ -186,6 +188,9 @@ fn test_config() -> Config {
             "127.0.0.1/32,::1/128,172.16.0.0/12",
         )
         .expect("valid default trusted proxy cidrs"),
+        tmdb_token: TEST_TMDB_TOKEN.to_string(),
+        // Nothing listens here; tests that search point this at wiremock.
+        tmdb_base_url: "http://127.0.0.1:9".into(),
         ntfy: Default::default(),
         rate_limits: Default::default(),
     }
@@ -276,4 +281,39 @@ pub async fn create_member_with_sessions(
         .await
         .expect("insert test member");
     (id, code)
+}
+
+/// Creates a member and logs them in over HTTP; returns the `name=value`
+/// session cookie to send back.
+pub async fn login_new_member(app: &TestApp, name: &str) -> String {
+    let (_, code) = create_member(&app.pool, &app.config, name).await;
+    let body = format!(r#"{{"code":"{code}"}}"#);
+    let response = app
+        .request("POST", "/api/auth/code", &json_post_headers(), Some(&body))
+        .await;
+    assert_eq!(response.status, 200, "login failed: {}", response.body);
+    let set_cookie = response.header("set-cookie").expect("session cookie");
+    cookie_pair(set_cookie).to_string()
+}
+
+/// Inserts a request row straight into the database, for tests that need
+/// existing requests before Phase 4's endpoint exists.
+pub async fn insert_request(
+    pool: &SqlitePool,
+    member_id: i64,
+    tmdb_id: i64,
+    media_type: &str,
+    status: &str,
+) {
+    sqlx::query(
+        "INSERT INTO requests (tmdb_id, media_type, title, status, requested_by, created_at, status_changed_at)
+         VALUES (?, ?, 'Seeded', ?, ?, 0, 0)",
+    )
+    .bind(tmdb_id)
+    .bind(media_type)
+    .bind(status)
+    .bind(member_id)
+    .execute(pool)
+    .await
+    .expect("insert test request");
 }

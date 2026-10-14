@@ -17,6 +17,8 @@ const MIN_PEPPER_BYTES: usize = 32;
 /// code has only a million values, which a distributed attacker could cover."
 const MIN_CODE_LENGTH: usize = 8;
 
+const DEFAULT_TMDB_BASE_URL: &str = "https://api.themoviedb.org/3";
+
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("missing required environment variable {0}")]
@@ -41,6 +43,10 @@ pub struct Config {
     /// secret itself (it's a salted hash), but never logged regardless.
     pub admin_password_hash: String,
     pub trusted_proxy_cidrs: Vec<Cidr>,
+    /// TMDB API read access token, sent as a bearer token. Never logged.
+    pub tmdb_token: String,
+    /// Without a trailing slash, e.g. `https://api.themoviedb.org/3`.
+    pub tmdb_base_url: String,
     pub ntfy: NtfyConfig,
     pub rate_limits: RateLimitConfig,
 }
@@ -84,6 +90,8 @@ pub struct RateLimitConfig {
     pub api_per_minute: u32,
     pub search_burst: u32,
     pub search_per_second: u32,
+    /// Global cap on outbound TMDB calls.
+    pub tmdb_per_second: u32,
     /// Hard cap on tracked keys per limiter; new keys beyond it are limited.
     pub key_cap: usize,
     pub fail_max: u32,
@@ -106,6 +114,7 @@ impl Default for RateLimitConfig {
             api_per_minute: 120,
             search_burst: 10,
             search_per_second: 5,
+            tmdb_per_second: 20,
             key_cap: 10_000,
             fail_max: 5,
             fail_window_secs: 15 * 60,
@@ -142,6 +151,8 @@ impl std::fmt::Debug for Config {
             .field("admin_user", &self.admin_user)
             .field("admin_password_hash", &"<redacted>")
             .field("trusted_proxy_cidrs", &self.trusted_proxy_cidrs)
+            .field("tmdb_token", &"<redacted>")
+            .field("tmdb_base_url", &self.tmdb_base_url)
             .field("ntfy", &self.ntfy)
             .field("rate_limits", &self.rate_limits)
             .finish()
@@ -260,6 +271,7 @@ fn rate_limit_config(env: &impl EnvLookup) -> Result<RateLimitConfig, ConfigErro
         api_per_minute: positive(env, "RL_API_PER_MINUTE", d.api_per_minute)?,
         search_burst: positive(env, "RL_SEARCH_BURST", d.search_burst)?,
         search_per_second: positive(env, "RL_SEARCH_PER_SECOND", d.search_per_second)?,
+        tmdb_per_second: positive(env, "RL_TMDB_PER_SECOND", d.tmdb_per_second)?,
         key_cap: positive(env, "RL_KEY_CAP", d.key_cap as u64)? as usize,
         fail_max: positive(env, "RL_FAIL_MAX", d.fail_max)?,
         fail_window_secs: positive(env, "RL_FAIL_WINDOW_SECS", d.fail_window_secs)?,
@@ -429,6 +441,21 @@ impl Config {
                 reason,
             })?;
 
+        let tmdb_token = required(env, "TMDB_TOKEN")?.trim().to_string();
+        if tmdb_token.is_empty() {
+            return Err(ConfigError::Missing("TMDB_TOKEN"));
+        }
+        let tmdb_base_url = with_default(env, "TMDB_BASE_URL", DEFAULT_TMDB_BASE_URL)
+            .trim()
+            .trim_end_matches('/')
+            .to_string();
+        if !tmdb_base_url.starts_with("https://") && !tmdb_base_url.starts_with("http://") {
+            return Err(ConfigError::Invalid {
+                name: "TMDB_BASE_URL",
+                reason: "must start with http:// or https://".into(),
+            });
+        }
+
         let ntfy = ntfy_config(env)?;
         let rate_limits = rate_limit_config(env)?;
 
@@ -444,6 +471,8 @@ impl Config {
             admin_user,
             admin_password_hash,
             trusted_proxy_cidrs,
+            tmdb_token,
+            tmdb_base_url,
             ntfy,
             rate_limits,
         })
@@ -478,6 +507,7 @@ mod tests {
             ("CODE_PEPPER", long_pepper()),
             ("ADMIN_USER", "admin"),
             ("ADMIN_PASSWORD_HASH", valid_password_hash()),
+            ("TMDB_TOKEN", "secret-tmdb-token"),
         ])
     }
 
@@ -590,6 +620,21 @@ mod tests {
     }
 
     #[test]
+    fn tmdb_token_is_required_and_base_url_defaults() {
+        let cfg = Config::from_lookup(&base_env()).unwrap();
+        assert_eq!(cfg.tmdb_base_url, "https://api.themoviedb.org/3");
+
+        let mut env = base_env();
+        env.insert("TMDB_BASE_URL", "http://127.0.0.1:9999/");
+        let cfg = Config::from_lookup(&env).unwrap();
+        assert_eq!(cfg.tmdb_base_url, "http://127.0.0.1:9999");
+
+        env.insert("TMDB_TOKEN", "  ");
+        let err = Config::from_lookup(&env).unwrap_err();
+        assert!(matches!(err, ConfigError::Missing("TMDB_TOKEN")));
+    }
+
+    #[test]
     fn rejects_bad_trusted_proxy_cidrs() {
         let mut env = base_env();
         env.insert("TRUSTED_PROXY_CIDRS", "garbage");
@@ -615,6 +660,7 @@ mod tests {
         assert!(!debug.contains(long_pepper()));
         assert!(!debug.contains("secret-topic-name"));
         assert!(!debug.contains("secret-ntfy-token"));
+        assert!(!debug.contains("secret-tmdb-token"));
     }
 
     #[test]
