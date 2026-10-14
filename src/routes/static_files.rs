@@ -8,6 +8,8 @@ use axum::{
 };
 use rust_embed::Embed;
 
+use crate::auth::hex_encode;
+
 #[derive(Embed)]
 #[folder = "web/"]
 struct WebAssets;
@@ -21,16 +23,6 @@ fn asset_key(path: &str) -> &str {
         "admin" => "admin.html",
         other => other,
     }
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        out.push(DIGITS[(b >> 4) as usize] as char);
-        out.push(DIGITS[(b & 0x0f) as usize] as char);
-    }
-    out
 }
 
 fn cache_control_for(content_type: &str) -> &'static str {

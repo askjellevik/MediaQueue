@@ -73,6 +73,286 @@ pub async fn checkpoint(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
+/// Current unix time in seconds. The one place request handlers get "now"
+/// from in this phase; a later phase may swap this for an injectable clock
+/// the way `tmdb.rs` does for cache freshness.
+pub fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
+// ---------------------------------------------------------------------
+// Members
+// ---------------------------------------------------------------------
+
+pub struct Member {
+    pub id: i64,
+    pub name: String,
+    pub max_sessions: i64,
+    pub daily_limit: Option<i64>,
+    pub revoked_at: Option<i64>,
+}
+
+/// Looks up a member by the HMAC of their access code. Does not filter on
+/// `revoked_at` so the caller can give an identical response for "wrong",
+/// "revoked" and "rotated" codes (a rotated code's hash simply won't match
+/// any row, which already falls out of this query naturally).
+pub async fn find_member_by_code_hash(
+    pool: &SqlitePool,
+    code_hash: &[u8],
+) -> Result<Option<Member>, sqlx::Error> {
+    sqlx::query_as!(
+        Member,
+        r#"SELECT id AS "id!", name AS "name!", max_sessions AS "max_sessions!",
+                  daily_limit, revoked_at
+           FROM members WHERE code_hash = ?"#,
+        code_hash
+    )
+    .fetch_optional(pool)
+    .await
+}
+
+/// Inserts a new member with the given (already-hashed) code. Used by the
+/// `add-member` CLI command.
+pub async fn insert_member(
+    pool: &SqlitePool,
+    name: &str,
+    code_hash: &[u8],
+    max_sessions: i64,
+    daily_limit: Option<i64>,
+    now: i64,
+) -> Result<i64, sqlx::Error> {
+    let rec = sqlx::query!(
+        r#"INSERT INTO members (name, code_hash, max_sessions, daily_limit, created_at)
+           VALUES (?, ?, ?, ?, ?)
+           RETURNING id AS "id!""#,
+        name,
+        code_hash,
+        max_sessions,
+        daily_limit,
+        now
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(rec.id)
+}
+
+// ---------------------------------------------------------------------
+// Sessions
+// ---------------------------------------------------------------------
+
+pub struct UserSession {
+    pub session_id: i64,
+    pub expires_at: i64,
+    pub last_seen_at: i64,
+    pub member_id: i64,
+    pub member_name: String,
+}
+
+/// Finds a live user session by its token hash, joined with the member it
+/// belongs to. Expiry is checked by the caller, not here, so validation
+/// stays in one place (`auth.rs`).
+pub async fn find_user_session(
+    pool: &SqlitePool,
+    token_hash: &[u8],
+) -> Result<Option<UserSession>, sqlx::Error> {
+    sqlx::query_as!(
+        UserSession,
+        r#"SELECT s.id AS "session_id!", s.expires_at AS "expires_at!",
+                  s.last_seen_at AS "last_seen_at!",
+                  m.id AS "member_id!", m.name AS "member_name!"
+           FROM sessions s
+           JOIN members m ON m.id = s.member_id
+           WHERE s.token_hash = ? AND s.kind = 'user'"#,
+        token_hash
+    )
+    .fetch_optional(pool)
+    .await
+}
+
+pub struct AdminSession {
+    pub session_id: i64,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub last_seen_at: i64,
+}
+
+/// Finds a live admin session by its token hash.
+pub async fn find_admin_session(
+    pool: &SqlitePool,
+    token_hash: &[u8],
+) -> Result<Option<AdminSession>, sqlx::Error> {
+    sqlx::query_as!(
+        AdminSession,
+        r#"SELECT id AS "session_id!", created_at AS "created_at!",
+                  expires_at AS "expires_at!", last_seen_at AS "last_seen_at!"
+           FROM sessions WHERE token_hash = ? AND kind = 'admin'"#,
+        token_hash
+    )
+    .fetch_optional(pool)
+    .await
+}
+
+/// Outcome of creating a user session: whether an existing session had to
+/// be evicted to stay within `max_sessions`, and if so, which one (so the
+/// caller can log it).
+pub struct SessionCreated {
+    pub evicted_session_id: Option<i64>,
+}
+
+/// Creates a new user session for `member_id`, evicting the oldest session
+/// for that member first if they're already at `max_sessions`. Runs in one
+/// `BEGIN IMMEDIATE` transaction so concurrent logins for the same member
+/// can't both squeeze past the limit.
+pub async fn create_user_session(
+    pool: &SqlitePool,
+    member_id: i64,
+    max_sessions: i64,
+    token_hash: &[u8],
+    now: i64,
+    expires_at: i64,
+) -> Result<SessionCreated, sqlx::Error> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+
+    let current: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!" FROM sessions WHERE member_id = ? AND kind = 'user'"#,
+        member_id
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+
+    let evicted_session_id = if current >= max_sessions {
+        sqlx::query_scalar!(
+            r#"DELETE FROM sessions
+               WHERE id = (
+                   SELECT id FROM sessions
+                   WHERE member_id = ? AND kind = 'user'
+                   ORDER BY created_at ASC, id ASC
+                   LIMIT 1
+               )
+               RETURNING id AS "id!""#,
+            member_id
+        )
+        .fetch_optional(&mut *tx)
+        .await?
+    } else {
+        None
+    };
+
+    sqlx::query!(
+        r#"INSERT INTO sessions (token_hash, kind, member_id, created_at, expires_at, last_seen_at)
+           VALUES (?, 'user', ?, ?, ?, ?)"#,
+        token_hash,
+        member_id,
+        now,
+        expires_at,
+        now
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+
+    Ok(SessionCreated { evicted_session_id })
+}
+
+/// Creates a new admin session. Admin logins aren't capped by `max_sessions`
+/// (that column only applies to members); each login is independent.
+pub async fn create_admin_session(
+    pool: &SqlitePool,
+    token_hash: &[u8],
+    now: i64,
+    expires_at: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        r#"INSERT INTO sessions (token_hash, kind, member_id, created_at, expires_at, last_seen_at)
+           VALUES (?, 'admin', NULL, ?, ?, ?)"#,
+        token_hash,
+        now,
+        expires_at,
+        now
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Updates a session's (and, for user sessions, its member's) `last_seen_at`,
+/// and optionally slides `expires_at` forward. Callers throttle this to at
+/// most once per 10 minutes per session, per the spec's write budget.
+pub async fn touch_session(
+    pool: &SqlitePool,
+    session_id: i64,
+    member_id: Option<i64>,
+    now: i64,
+    new_expires_at: Option<i64>,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+
+    sqlx::query!(
+        "UPDATE sessions SET last_seen_at = ?, expires_at = COALESCE(?, expires_at) WHERE id = ?",
+        now,
+        new_expires_at,
+        session_id
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    if let Some(member_id) = member_id {
+        sqlx::query!(
+            "UPDATE members SET last_seen_at = ? WHERE id = ?",
+            now,
+            member_id
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await
+}
+
+/// Deletes one session (logout, rotate or revoke).
+pub async fn delete_session(pool: &SqlitePool, session_id: i64) -> Result<(), sqlx::Error> {
+    sqlx::query!("DELETE FROM sessions WHERE id = ?", session_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Deletes every session past its `expires_at`. Returns how many were
+/// removed, for the hourly cleanup task's log line.
+pub async fn delete_expired_sessions(pool: &SqlitePool, now: i64) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query!("DELETE FROM sessions WHERE expires_at < ?", now)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected())
+}
+
+// ---------------------------------------------------------------------
+// Request quota (reads only; writes arrive in Phase 4)
+// ---------------------------------------------------------------------
+
+/// Count of `submitted` request events for a member since a given time,
+/// used to compute `remaining_today` on `GET /api/me`.
+pub async fn submitted_count_since(
+    pool: &SqlitePool,
+    member_id: i64,
+    since: i64,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count!"
+           FROM request_events e
+           JOIN requests r ON r.id = e.request_id
+           WHERE e.kind = 'submitted' AND r.requested_by = ? AND e.created_at >= ?"#,
+        member_id,
+        since
+    )
+    .fetch_one(pool)
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
