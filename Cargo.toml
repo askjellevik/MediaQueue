@@ -65,9 +65,9 @@ governor = { version = "0.10", default-features = false, features = [
     "std",
     "dashmap",
 ] }
-reqwest = { version = "0.13", default-features = false, features = [
+reqwest = { version = "0.12", default-features = false, features = [
     "json",
-    "rustls",
+    "rustls-tls",
     "http2",
 ] }
 
