@@ -66,11 +66,13 @@ Everything below happens in one directory on the Pi, for example
    docker compose logs -f
    ```
 
-7. **Add the first member.** The code is printed once and cannot be shown
-   again. If it is lost, rotate it on the admin page.
+7. **Add the first member.** A generated code is printed once and cannot be
+   shown again. If it is lost, rotate it on the admin page. To pick the code
+   yourself, add `--code` (8 to 64 characters; the code is not printed back).
 
    ```sh
    docker compose exec portal /app/media-requests add-member --name Alice
+   docker compose exec portal /app/media-requests add-member --name Bob --code "movie night"
    ```
 
    After that, add members on the admin page at `/admin` (Members tab).
@@ -182,7 +184,7 @@ changes, so the base image picks up Debian security fixes.
 | Search says the movie database is not answering | TMDB is down or the token is wrong (`tmdb rejected the token` in the logs). Cached results keep working for up to an hour. |
 | "Too many attempts" on the code page | Five wrong codes from one network lock it for 15 minutes, then longer. It ends on its own, or restart the container to clear all limits. |
 | No push notifications | `NTFY_URL` empty means notifications are off. Failures are logged as `ntfy notification failed`. |
-| Lost access code | Admin page, Members tab, **Rotate code**. |
+| Lost access code | Admin page, Members tab, **Rotate code** (type a new code, or leave it blank to generate one). |
 | Running outside Docker uses more memory | Set `GLIBC_TUNABLES=glibc.malloc.mmap_threshold=131072` as the Dockerfile does, so Argon2's memory goes back to the OS. |
 
 ## Development

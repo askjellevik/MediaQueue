@@ -352,6 +352,20 @@ fn new_code(state: &AppState) -> Result<(String, Vec<u8>), AppError> {
     Ok((code, hash))
 }
 
+/// The HMAC of an admin-chosen code, or `None` when the field is absent or
+/// blank (meaning "generate one"). A code that breaks the rules is a 400.
+fn chosen_code_hash(state: &AppState, code: Option<&str>) -> Result<Option<Vec<u8>>, AppError> {
+    let Some(code) = code.filter(|c| !c.trim().is_empty()) else {
+        return Ok(None);
+    };
+    let normalised =
+        auth::check_custom_code(code, state.config.code_length).ok_or(AppError::BadRequest)?;
+    Ok(Some(auth::hmac_code(
+        &state.config.code_pepper,
+        &normalised,
+    )))
+}
+
 fn is_unique_violation(error: &sqlx::Error) -> bool {
     matches!(error, sqlx::Error::Database(e) if e.is_unique_violation())
 }
@@ -428,10 +442,14 @@ pub struct CreateMemberBody {
     daily_limit: Option<i64>,
     #[serde(default)]
     max_sessions: Option<i64>,
+    /// An admin-chosen code; blank or absent means "generate one".
+    #[serde(default)]
+    code: Option<String>,
 }
 
-/// `POST /api/admin/members`: returns the new code. This response and
-/// the rotate response are the only places a code ever leaves the server.
+/// `POST /api/admin/members`: returns the new code when one was generated.
+/// This response and the rotate response are the only places a code ever
+/// leaves the server; a code the admin chose is never echoed back.
 pub async fn post_member(
     State(state): State<AppState>,
     _admin: RequireAdmin,
@@ -442,6 +460,23 @@ pub async fn post_member(
     let max_sessions =
         check_max_sessions(body.max_sessions)?.unwrap_or(state.config.default_max_sessions);
     let now = now(&state);
+
+    if let Some(hash) = chosen_code_hash(&state, body.code.as_deref())? {
+        return match db::create_member(&state.pool, &name, &hash, max_sessions, daily_limit, now)
+            .await
+        {
+            Ok(db::MemberWrite::Done(id)) => {
+                tracing::info!(member_id = id, member = %name, "member created with chosen code");
+                let body = json!({ "id": id, "name": name, "code": null });
+                Ok((StatusCode::CREATED, Json(body)).into_response())
+            }
+            Ok(_) => Err(AppError::Conflict("a member with that name exists")),
+            Err(e) if is_unique_violation(&e) => {
+                Err(AppError::Conflict("that code is already in use"))
+            }
+            Err(e) => Err(e.into()),
+        };
+    }
 
     for _ in 0..CODE_ATTEMPTS {
         let (code, hash) = new_code(&state)?;
@@ -512,14 +547,41 @@ pub async fn patch_member(
     }
 }
 
-/// `POST /api/admin/members/{id}/rotate`: a new code, shown once; the old
-/// code and every device using it stop working immediately.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RotateBody {
+    /// An admin-chosen code; blank or absent means "generate one".
+    #[serde(default)]
+    code: Option<String>,
+}
+
+/// `POST /api/admin/members/{id}/rotate`: a new code (shown once if it was
+/// generated); the old code and every device using it stop working
+/// immediately.
 pub async fn post_rotate(
     State(state): State<AppState>,
     _admin: RequireAdmin,
     AppPath(id): AppPath<i64>,
+    AppJson(body): AppJson<RotateBody>,
 ) -> Result<impl IntoResponse, AppError> {
     let now = now(&state);
+    if let Some(hash) = chosen_code_hash(&state, body.code.as_deref())? {
+        return match db::rotate_member_code(&state.pool, id, &hash, now).await {
+            Ok(db::MemberWrite::Done(_)) => {
+                tracing::info!(
+                    member_id = id,
+                    "member code rotated to chosen code; sessions deleted"
+                );
+                Ok(Json(json!({ "code": null })))
+            }
+            Ok(db::MemberWrite::NotFound) => Err(AppError::NotFound),
+            Ok(_) => Err(AppError::Conflict("member is revoked")),
+            Err(e) if is_unique_violation(&e) => {
+                Err(AppError::Conflict("that code is already in use"))
+            }
+            Err(e) => Err(e.into()),
+        };
+    }
     for _ in 0..CODE_ATTEMPTS {
         let (code, hash) = new_code(&state)?;
         match db::rotate_member_code(&state.pool, id, &hash, now).await {

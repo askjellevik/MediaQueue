@@ -409,6 +409,11 @@ function codeBox(name, code, say) {
   );
 }
 
+// A 409 from the member routes is either a taken name or a taken code.
+function codeTaken(res) {
+  return Boolean(res.data && /code/.test(res.data.message || ''));
+}
+
 function numberOrNull(value) {
   const v = value.trim();
   return v === '' ? null : Number(v);
@@ -421,6 +426,7 @@ function renderMembers(panel, { say, expired }) {
   const name = el('input', { id: 'm-name', class: 'field', maxlength: 40, required: true });
   const daily = el('input', { id: 'm-daily', class: 'field', type: 'number', min: 0, max: 1000, inputmode: 'numeric' });
   const devices = el('input', { id: 'm-devices', class: 'field', type: 'number', min: 1, max: 20, inputmode: 'numeric' });
+  const code = el('input', { id: 'm-code', class: 'field', maxlength: 64, autocomplete: 'off', spellcheck: false });
   const add = el('button', { class: 'btn btn-primary', type: 'submit', text: 'Add member' });
   const form = el(
     'form',
@@ -428,6 +434,7 @@ function renderMembers(panel, { say, expired }) {
     el('label', { for: 'm-name' }, 'Name', name),
     el('label', { for: 'm-daily' }, 'Daily limit (optional)', daily),
     el('label', { for: 'm-devices' }, 'Device limit (optional)', devices),
+    el('label', { for: 'm-code' }, 'Access code (optional, 8+ characters; blank makes one)', code),
     add,
   );
   form.addEventListener('submit', async (event) => {
@@ -435,19 +442,27 @@ function renderMembers(panel, { say, expired }) {
     const body = { name: name.value.trim() };
     if (numberOrNull(daily.value) !== null) body.daily_limit = numberOrNull(daily.value);
     if (numberOrNull(devices.value) !== null) body.max_sessions = numberOrNull(devices.value);
+    if (code.value.trim() !== '') body.code = code.value;
     add.disabled = true;
     const res = await send('POST', '/api/admin/members', body);
     add.disabled = false;
     if (expired(res)) return;
     if (res.status === 201) {
       clear(codeSlot);
-      codeSlot.append(codeBox(res.data.name, res.data.code, say));
+      if (res.data.code) {
+        codeSlot.append(codeBox(res.data.name, res.data.code, say));
+      } else {
+        say(`Added ${res.data.name} with the code you chose.`, 'status-ok');
+      }
       form.reset();
       load();
     } else if (res.status === 409) {
-      say('A member with that name already exists.', 'status-bad');
+      say(
+        codeTaken(res) ? 'That code is already in use.' : 'A member with that name already exists.',
+        'status-bad',
+      );
     } else {
-      say('Check the name (1 to 40 characters) and limits.', 'status-bad');
+      say('Check the name (1 to 40 characters), the code (8 to 64 characters) and limits.', 'status-bad');
     }
   });
 
@@ -477,13 +492,24 @@ function renderMembers(panel, { say, expired }) {
     const revoked = m.revoked_at !== null;
     const rotate = el('button', { class: 'btn btn-small', type: 'button', text: 'Rotate code', disabled: revoked });
     rotate.addEventListener('click', async () => {
-      if (!window.confirm(`Give ${m.name} a new code? The old one and all their devices stop working.`)) return;
-      const res = await send('POST', `/api/admin/members/${m.id}/rotate`);
+      const chosen = window.prompt(
+        `Give ${m.name} a new code? The old one and all their devices stop working.\n\nType the new code (8 to 64 characters), or leave blank to generate one.`,
+      );
+      if (chosen === null) return;
+      const res = await send('POST', `/api/admin/members/${m.id}/rotate`, chosen.trim() === '' ? {} : { code: chosen });
       if (expired(res)) return;
       if (res.ok) {
         clear(codeSlot);
-        codeSlot.append(codeBox(m.name, res.data.code, say));
+        if (res.data.code) {
+          codeSlot.append(codeBox(m.name, res.data.code, say));
+        } else {
+          say(`${m.name} now has the code you chose.`, 'status-ok');
+        }
         load();
+      } else if (res.status === 409 && codeTaken(res)) {
+        say('That code is already in use.', 'status-bad');
+      } else if (res.status === 400) {
+        say('The code must be 8 to 64 characters.', 'status-bad');
       } else {
         say("Couldn't rotate the code.", 'status-bad');
       }

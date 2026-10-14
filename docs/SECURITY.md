@@ -28,7 +28,8 @@ The review found these gaps, which are now fixed:
 | Normalise: uppercase, strip spaces and hyphens, hash that | `auth::normalise_code` | `auth_flow::code_normalisation_variants_all_authenticate` |
 | Only `HMAC-SHA256(CODE_PEPPER, code)` stored, unique index, constant-time compare with `subtle` | `auth::hmac_code`, `db::find_member_by_code_hash`, `routes::public::post_auth_code` (`auth::constant_time_eq`) | `auth_flow::database_holds_no_raw_code_or_token`, unit `hmac_is_deterministic_and_key_dependent` |
 | `CODE_PEPPER` at least 32 bytes | `config` | unit `rejects_short_pepper` |
-| Code shown once, never readable again | `routes::admin::post_member`, `post_rotate`; no other route selects `code_hash` | `admin::no_endpoint_returns_a_code_except_create_and_rotate` |
+| Code shown once, never readable again; an admin-chosen code is never echoed back | `routes::admin::post_member`, `post_rotate`; no other route selects `code_hash` | `admin::no_endpoint_returns_a_code_except_create_and_rotate`, `admin::admin_can_choose_a_members_code_on_create_and_rotate` |
+| Admin-chosen codes: 8 to 64 characters after normalising, unique, 400 or 409 otherwise | `auth::check_custom_code`, `routes::admin::chosen_code_hash` | unit `custom_codes_are_normalised_and_length_checked`, `admin::admin_can_choose_a_members_code_on_create_and_rotate` |
 | Session: 32 random bytes in the cookie, SHA-256 in the database | `auth::generate_session_token`, `auth::hash_token` | unit `session_token_hash_matches_hash_token`, `auth_flow::database_holds_no_raw_code_or_token` |
 | 90-day sliding sessions, touched at most every 10 minutes | `auth::RequireUser` | `auth_flow::me_requires_session_and_reports_remaining_today`; load test: no `UPDATE` in 200 requests |
 | Rotate and revoke delete the member's sessions at once | `db::rotate_member_code`, `db::revoke_member` | `admin::member_lifecycle_create_devices_rotate_revoke` |

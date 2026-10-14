@@ -69,6 +69,21 @@ pub fn normalise_code(input: &str) -> String {
         .collect()
 }
 
+/// Longest admin-chosen code (after normalising).
+pub const MAX_CUSTOM_CODE_LENGTH: usize = 64;
+
+/// Checks an admin-chosen code and returns it normalised, or `None` if it
+/// is shorter than `min_length` or longer than [`MAX_CUSTOM_CODE_LENGTH`]
+/// once spaces and hyphens are stripped. Unlike generated codes it may use
+/// any characters; lookups are case-insensitive because of normalising.
+pub fn check_custom_code(input: &str, min_length: usize) -> Option<String> {
+    let normalised = normalise_code(input);
+    let len = normalised.chars().count();
+    ((min_length..=MAX_CUSTOM_CODE_LENGTH).contains(&len)
+        && !normalised.chars().any(char::is_control))
+    .then_some(normalised)
+}
+
 type HmacSha256 = Hmac<Sha256>;
 
 /// `HMAC-SHA256(CODE_PEPPER, normalised_code)`. The pepper is used as the
@@ -401,6 +416,26 @@ mod tests {
         assert_eq!(normalise_code("abcd-efgh"), "ABCDEFGH");
         assert_eq!(normalise_code("ABCD EFGH"), "ABCDEFGH");
         assert_eq!(normalise_code("ab cd-ef-gh"), "ABCDEFGH");
+    }
+
+    #[test]
+    fn custom_codes_are_normalised_and_length_checked() {
+        assert_eq!(
+            check_custom_code("my-film nite", 8).as_deref(),
+            Some("MYFILMNITE")
+        );
+        assert_eq!(check_custom_code("abc-def", 8), None);
+        assert_eq!(
+            check_custom_code("abcd efgh", 8).as_deref(),
+            Some("ABCDEFGH")
+        );
+        assert!(check_custom_code(&"x".repeat(MAX_CUSTOM_CODE_LENGTH), 8).is_some());
+        assert_eq!(
+            check_custom_code(&"x".repeat(MAX_CUSTOM_CODE_LENGTH + 1), 8),
+            None
+        );
+        assert_eq!(check_custom_code("abcdefg\u{7}h", 8), None);
+        assert_eq!(check_custom_code("        ", 8), None);
     }
 
     #[test]

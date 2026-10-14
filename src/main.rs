@@ -28,11 +28,14 @@ enum Command {
     /// Prompt for a password (no echo) and print its Argon2id PHC hash,
     /// for `ADMIN_PASSWORD_HASH`.
     HashPassword,
-    /// Create a member and print their access code. The code is shown
-    /// exactly once and cannot be recovered; rotate it if it's lost.
+    /// Create a member. Without `--code` a random access code is generated
+    /// and printed once; it cannot be recovered, so rotate it if it's lost.
     AddMember {
         #[arg(long)]
         name: String,
+        /// Use this access code instead of generating one.
+        #[arg(long)]
+        code: Option<String>,
         #[arg(long)]
         daily_limit: Option<i64>,
         #[arg(long)]
@@ -51,9 +54,10 @@ fn main() -> ExitCode {
         Command::HashPassword => run_hash_password(),
         Command::AddMember {
             name,
+            code,
             daily_limit,
             max_sessions,
-        } => run_add_member(name, daily_limit, max_sessions),
+        } => run_add_member(name, code, daily_limit, max_sessions),
         Command::Backup => run_backup(),
     }
 }
@@ -193,7 +197,12 @@ fn run_hash_password() -> ExitCode {
     }
 }
 
-fn run_add_member(name: String, daily_limit: Option<i64>, max_sessions: Option<i64>) -> ExitCode {
+fn run_add_member(
+    name: String,
+    code: Option<String>,
+    daily_limit: Option<i64>,
+    max_sessions: Option<i64>,
+) -> ExitCode {
     let config = match Config::from_env() {
         Ok(c) => c,
         Err(e) => {
@@ -213,12 +222,19 @@ fn run_add_member(name: String, daily_limit: Option<i64>, max_sessions: Option<i
         }
     };
 
-    runtime.block_on(add_member_async(config, name, daily_limit, max_sessions))
+    runtime.block_on(add_member_async(
+        config,
+        name,
+        code,
+        daily_limit,
+        max_sessions,
+    ))
 }
 
 async fn add_member_async(
     config: Config,
     name: String,
+    chosen: Option<String>,
     daily_limit: Option<i64>,
     max_sessions: Option<i64>,
 ) -> ExitCode {
@@ -231,25 +247,48 @@ async fn add_member_async(
     };
 
     let max_sessions = max_sessions.unwrap_or(config.default_max_sessions);
-    let code = match auth::generate_code(config.code_length) {
-        Ok(code) => code,
-        Err(e) => {
-            eprintln!("could not read the OS random source: {e}");
-            return ExitCode::FAILURE;
-        }
+    // A chosen code is validated and hashed; otherwise one is generated and
+    // printed once.
+    let (shown, normalised) = match chosen {
+        Some(chosen) => match auth::check_custom_code(&chosen, config.code_length) {
+            Some(normalised) => (None, normalised),
+            None => {
+                eprintln!(
+                    "the code must be {} to {} characters (spaces and hyphens do not count)",
+                    config.code_length,
+                    auth::MAX_CUSTOM_CODE_LENGTH
+                );
+                return ExitCode::FAILURE;
+            }
+        },
+        None => match auth::generate_code(config.code_length) {
+            Ok(code) => {
+                let normalised = auth::normalise_code(&code);
+                (Some(code), normalised)
+            }
+            Err(e) => {
+                eprintln!("could not read the OS random source: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
     };
-    let normalised = auth::normalise_code(&code);
     let code_hash = auth::hmac_code(&config.code_pepper, &normalised);
     let now = db::now_unix();
 
     match db::insert_member(&pool, &name, &code_hash, max_sessions, daily_limit, now).await {
         Ok(id) => {
             println!("Member #{id} ({name}) created.");
-            println!(
-                "Access code (shown once, write it down now): {}",
-                auth::format_code_for_display(&code)
-            );
+            if let Some(code) = shown {
+                println!(
+                    "Access code (shown once, write it down now): {}",
+                    auth::format_code_for_display(&code)
+                );
+            }
             ExitCode::SUCCESS
+        }
+        Err(e) if matches!(&e, sqlx::Error::Database(d) if d.is_unique_violation()) => {
+            eprintln!("failed to create member: that code is already in use");
+            ExitCode::FAILURE
         }
         Err(e) => {
             eprintln!("failed to create member: {e}");

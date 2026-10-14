@@ -833,6 +833,87 @@ async fn member_lifecycle_create_devices_rotate_revoke() {
 }
 
 #[tokio::test]
+async fn admin_can_choose_a_members_code_on_create_and_rotate() {
+    let app = common::spawn_app().await;
+    let admin = login_admin(&app).await;
+    let post = |path: String, body: &'static str| {
+        let (app, admin) = (&app, &admin);
+        async move { call(app, Some(admin), "POST", &path, Some(body)).await }
+    };
+
+    // A chosen code logs in however it is typed, and is not echoed back.
+    let created = post(
+        "/api/admin/members".into(),
+        r#"{"name":"Erin","code":"Movie Night"}"#,
+    )
+    .await;
+    assert_eq!(created.status, 201, "{}", created.body);
+    assert_eq!(json_of(&created)["code"], Value::Null);
+    assert!(!created.body.to_lowercase().contains("movie"));
+    assert_eq!(login_with(&app, "movie-night").await.status, 200);
+    assert_eq!(login_with(&app, "MOVIENIGHT").await.status, 200);
+
+    // Too short, too long, and already in use; none of them create a member.
+    for bad in [
+        r#""abc-123""#.to_string(),
+        format!("\"{}\"", "x".repeat(65)),
+    ] {
+        let body: &'static str =
+            Box::leak(format!(r#"{{"name":"Bad","code":{bad}}}"#).into_boxed_str());
+        assert_eq!(post("/api/admin/members".into(), body).await.status, 400);
+    }
+    let taken = post(
+        "/api/admin/members".into(),
+        r#"{"name":"Frank","code":"movienight"}"#,
+    )
+    .await;
+    assert_eq!(taken.status, 409);
+    assert!(taken.body.contains("code"));
+    assert_eq!(
+        count(&app.pool, "SELECT COUNT(*) FROM members").await,
+        1,
+        "failed creates leave no member behind"
+    );
+
+    // A blank code still generates one.
+    let generated = post(
+        "/api/admin/members".into(),
+        r#"{"name":"Gina","code":"  "}"#,
+    )
+    .await;
+    assert_eq!(generated.status, 201);
+    let generated = json_of(&generated);
+    assert_eq!(generated["code"].as_str().unwrap().len(), 9);
+    let gina = generated["id"].as_i64().unwrap();
+
+    // Rotate to a chosen code: the old one dies. A duplicate changes nothing.
+    let dup = post(
+        format!("/api/admin/members/{gina}/rotate"),
+        r#"{"code":"movie night"}"#,
+    )
+    .await;
+    assert_eq!(dup.status, 409);
+    let short = post(
+        format!("/api/admin/members/{gina}/rotate"),
+        r#"{"code":"short"}"#,
+    )
+    .await;
+    assert_eq!(short.status, 400);
+    let gina_code = generated["code"].as_str().unwrap();
+    assert_eq!(login_with(&app, gina_code).await.status, 200);
+
+    let rotated = post(
+        format!("/api/admin/members/{gina}/rotate"),
+        r#"{"code":"popcorn time"}"#,
+    )
+    .await;
+    assert_eq!(rotated.status, 200, "{}", rotated.body);
+    assert_eq!(json_of(&rotated)["code"], Value::Null);
+    assert_eq!(login_with(&app, gina_code).await.status, 401);
+    assert_eq!(login_with(&app, "POPCORN-TIME").await.status, 200);
+}
+
+#[tokio::test]
 async fn no_endpoint_returns_a_code_except_create_and_rotate() {
     let app = common::spawn_app().await;
     let admin = login_admin(&app).await;
