@@ -48,8 +48,15 @@ pub async fn post_auth_code(
     let code_hash = auth::hmac_code(&state.config.code_pepper, &normalised);
 
     let member = db::find_member_by_code_hash(&state.pool, &code_hash).await?;
+    // The indexed lookup finds the row; the constant-time compare is what
+    // decides, so the decision never depends on SQLite's comparison.
     let member = match member {
-        Some(member) if member.revoked_at.is_none() => member,
+        Some(member)
+            if auth::constant_time_eq(&member.code_hash, &code_hash)
+                && member.revoked_at.is_none() =>
+        {
+            member
+        }
         _ => {
             state.limits.code_login.record_failure(ip);
             tracing::info!(%ip, "access code rejected");

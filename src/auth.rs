@@ -13,7 +13,7 @@ use axum::{
 };
 use axum_extra::extract::cookie::CookieJar;
 use hmac::{Hmac, KeyInit, Mac};
-use rand::{Rng, RngExt};
+use rand::{Rng, TryRng, rngs::SysRng};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
@@ -26,13 +26,26 @@ use crate::{db, error::AppError, state::AppState};
 /// 31 symbols, deliberately excluding look-alikes 0/O, 1/I/L.
 const CODE_ALPHABET: &[u8] = b"23456789ABCDEFGHJKMNPQRSTUVWXYZ";
 
-/// Generates a fresh access code of `length` characters using the OS-backed
-/// CSPRNG's unbiased range sampling (no modulo bias).
-pub fn generate_code(length: usize) -> String {
-    let mut rng = rand::rng();
-    (0..length)
-        .map(|_| CODE_ALPHABET[rng.random_range(0..CODE_ALPHABET.len())] as char)
-        .collect()
+/// Bytes at or above this are rejected: 248 is the largest multiple of the
+/// 31-symbol alphabet that fits in a byte, so `byte % 31` stays unbiased.
+const CODE_BYTE_LIMIT: u8 = (256 / CODE_ALPHABET.len() * CODE_ALPHABET.len()) as u8;
+
+/// Generates a fresh access code of `length` characters straight from the
+/// OS random source, with rejection sampling so no symbol is more likely
+/// than another. Fails only if the OS cannot supply randomness.
+pub fn generate_code(length: usize) -> Result<String, rand::rngs::SysError> {
+    let mut code = String::with_capacity(length);
+    let mut buf = [0u8; 32];
+    while code.len() < length {
+        SysRng.try_fill_bytes(&mut buf)?;
+        for &byte in buf.iter().filter(|b| **b < CODE_BYTE_LIMIT) {
+            if code.len() == length {
+                break;
+            }
+            code.push(CODE_ALPHABET[usize::from(byte) % CODE_ALPHABET.len()] as char);
+        }
+    }
+    Ok(code)
 }
 
 /// Formats a raw code for display, e.g. `ABCDEFGH` -> `ABCD-EFGH`. Purely
@@ -392,7 +405,7 @@ mod tests {
 
     #[test]
     fn lookalike_characters_never_appear_in_generated_codes() {
-        let code = generate_code(200);
+        let code = generate_code(200).unwrap();
         for excluded in ['0', 'O', '1', 'I', 'L'] {
             assert!(
                 !code.contains(excluded),
@@ -403,8 +416,21 @@ mod tests {
 
     #[test]
     fn generated_code_has_requested_length() {
-        assert_eq!(generate_code(8).len(), 8);
-        assert_eq!(generate_code(12).len(), 12);
+        assert_eq!(generate_code(8).unwrap().len(), 8);
+        assert_eq!(generate_code(12).unwrap().len(), 12);
+    }
+
+    #[test]
+    fn generated_codes_use_every_symbol_about_evenly() {
+        let code = generate_code(31 * 2000).unwrap();
+        for symbol in CODE_ALPHABET {
+            let n = code.bytes().filter(|b| b == symbol).count();
+            assert!(
+                (1600..2400).contains(&n),
+                "{} appeared {n} times",
+                *symbol as char
+            );
+        }
     }
 
     #[test]

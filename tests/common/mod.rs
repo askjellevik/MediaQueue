@@ -275,7 +275,7 @@ pub async fn create_member_with_sessions(
     name: &str,
     max_sessions: i64,
 ) -> (i64, String) {
-    let code = media_requests::auth::generate_code(config.code_length);
+    let code = media_requests::auth::generate_code(config.code_length).expect("os random source");
     let normalised = media_requests::auth::normalise_code(&code);
     let code_hash = media_requests::auth::hmac_code(&config.code_pepper, &normalised);
     let now = db::now_unix();

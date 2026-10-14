@@ -345,10 +345,11 @@ fn check_max_sessions(max: Option<i64>) -> Result<Option<i64>, AppError> {
 }
 
 /// A fresh code and its HMAC; only the HMAC is ever stored.
-fn new_code(state: &AppState) -> (String, Vec<u8>) {
-    let code = auth::generate_code(state.config.code_length);
+fn new_code(state: &AppState) -> Result<(String, Vec<u8>), AppError> {
+    let code = auth::generate_code(state.config.code_length)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("OS random source failed: {e}")))?;
     let hash = auth::hmac_code(&state.config.code_pepper, &auth::normalise_code(&code));
-    (code, hash)
+    Ok((code, hash))
 }
 
 fn is_unique_violation(error: &sqlx::Error) -> bool {
@@ -443,7 +444,7 @@ pub async fn post_member(
     let now = now(&state);
 
     for _ in 0..CODE_ATTEMPTS {
-        let (code, hash) = new_code(&state);
+        let (code, hash) = new_code(&state)?;
         match db::create_member(&state.pool, &name, &hash, max_sessions, daily_limit, now).await {
             Ok(db::MemberWrite::Done(id)) => {
                 tracing::info!(member_id = id, member = %name, "member created");
@@ -520,7 +521,7 @@ pub async fn post_rotate(
 ) -> Result<impl IntoResponse, AppError> {
     let now = now(&state);
     for _ in 0..CODE_ATTEMPTS {
-        let (code, hash) = new_code(&state);
+        let (code, hash) = new_code(&state)?;
         match db::rotate_member_code(&state.pool, id, &hash, now).await {
             Ok(db::MemberWrite::Done(_)) => {
                 tracing::info!(member_id = id, "member code rotated; sessions deleted");

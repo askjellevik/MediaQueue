@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", name AS \"name!\", max_sessions AS \"max_sessions!\",\n                  daily_limit, revoked_at\n           FROM members WHERE code_hash = ?",
+  "query": "SELECT id AS \"id!\", name AS \"name!\", code_hash AS \"code_hash!\",\n                  max_sessions AS \"max_sessions!\", daily_limit, revoked_at\n           FROM members WHERE code_hash = ?",
   "describe": {
     "columns": [
       {
@@ -26,8 +26,19 @@
         }
       },
       {
-        "name": "max_sessions!",
+        "name": "code_hash!",
         "ordinal": 2,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "members",
+            "name": "code_hash"
+          }
+        }
+      },
+      {
+        "name": "max_sessions!",
+        "ordinal": 3,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -38,7 +49,7 @@
       },
       {
         "name": "daily_limit",
-        "ordinal": 3,
+        "ordinal": 4,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -49,7 +60,7 @@
       },
       {
         "name": "revoked_at",
-        "ordinal": 4,
+        "ordinal": 5,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -66,9 +77,10 @@
       false,
       false,
       false,
+      false,
       true,
       true
     ]
   },
-  "hash": "3ad5d46dec554f2226565c1ed6cfa4b9caf6b5f14134dc7d2b86a7d042318b0b"
+  "hash": "2ac2bedc6f8c2029bf5ac25a49b9a9390c129e53d7b574a5375a5583d86c6baa"
 }

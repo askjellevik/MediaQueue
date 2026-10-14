@@ -121,6 +121,7 @@ async fn serve_async(config: Config) -> anyhow::Result<()> {
 
     tracing::info!("shutting down, checkpointing WAL");
     db::checkpoint(&pool).await?;
+    log_process_stats();
 
     Ok(())
 }
@@ -230,7 +231,13 @@ async fn add_member_async(
     };
 
     let max_sessions = max_sessions.unwrap_or(config.default_max_sessions);
-    let code = auth::generate_code(config.code_length);
+    let code = match auth::generate_code(config.code_length) {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("could not read the OS random source: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     let normalised = auth::normalise_code(&code);
     let code_hash = auth::hmac_code(&config.code_pepper, &normalised);
     let now = db::now_unix();
@@ -289,4 +296,33 @@ fn run_backup() -> ExitCode {
             }
         }
     })
+}
+
+/// Logs peak resident memory and total CPU time for the life of the
+/// process, read from `/proc/self` (Linux only; silently skipped
+/// elsewhere). Used to measure the load test and handy after an incident.
+fn log_process_stats() {
+    let peak_rss_kb = std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|status| {
+            status
+                .lines()
+                .find_map(|l| l.strip_prefix("VmHWM:"))
+                .and_then(|v| v.trim().trim_end_matches("kB").trim().parse::<u64>().ok())
+        });
+    // utime and stime are fields 14 and 15, in clock ticks (USER_HZ, 100
+    // on Linux). The process name in field 2 may hold spaces, so count
+    // from the closing parenthesis.
+    let cpu_ms = std::fs::read_to_string("/proc/self/stat")
+        .ok()
+        .and_then(|stat| {
+            let rest = stat.rsplit_once(')')?.1;
+            let fields: Vec<&str> = rest.split_whitespace().collect();
+            let utime: u64 = fields.get(11)?.parse().ok()?;
+            let stime: u64 = fields.get(12)?.parse().ok()?;
+            Some((utime + stime) * 10)
+        });
+    if let (Some(peak_rss_kb), Some(cpu_ms)) = (peak_rss_kb, cpu_ms) {
+        tracing::info!(peak_rss_kb, cpu_ms, "process totals");
+    }
 }

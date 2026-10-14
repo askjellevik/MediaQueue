@@ -112,6 +112,7 @@ pub fn now_unix() -> i64 {
 pub struct Member {
     pub id: i64,
     pub name: String,
+    pub code_hash: Vec<u8>,
     pub max_sessions: i64,
     pub daily_limit: Option<i64>,
     pub revoked_at: Option<i64>,
@@ -127,8 +128,8 @@ pub async fn find_member_by_code_hash(
 ) -> Result<Option<Member>, sqlx::Error> {
     sqlx::query_as!(
         Member,
-        r#"SELECT id AS "id!", name AS "name!", max_sessions AS "max_sessions!",
-                  daily_limit, revoked_at
+        r#"SELECT id AS "id!", name AS "name!", code_hash AS "code_hash!",
+                  max_sessions AS "max_sessions!", daily_limit, revoked_at
            FROM members WHERE code_hash = ?"#,
         code_hash
     )
