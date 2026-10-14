@@ -61,6 +61,10 @@ rand = { version = "0.10", default-features = false, features = [
 ] }
 argon2 = "0.6"
 rpassword = "7"
+governor = { version = "0.10", default-features = false, features = [
+    "std",
+    "dashmap",
+] }
 
 [profile.release]
 lto = "thin"
