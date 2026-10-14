@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     auth::{self, RequireUser},
+    clientip::ClientIp,
     db,
     error::{AppError, AppJson},
     state::AppState,
@@ -32,20 +33,26 @@ struct NameBody {
 /// no row, and a revoked member is rejected only after an identical lookup.
 pub async fn post_auth_code(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     AppJson(body): AppJson<CodeBody>,
 ) -> Result<Response, AppError> {
-    // PHASE 2 HOOK: record this attempt (success or failure) against the
-    // per-IP and global failure trackers before returning.
+    // Locked-out IPs stop here; under the global throttle this waits first
+    // and holds a delay permit until the code has been checked.
+    let _throttle_permit = state.limits.code_login.before_attempt(ip).await?;
+
     let normalised = auth::normalise_code(&body.code);
     let code_hash = auth::hmac_code(&state.config.code_pepper, &normalised);
 
     let member = db::find_member_by_code_hash(&state.pool, &code_hash).await?;
-    let Some(member) = member else {
-        return Err(AppError::InvalidCode);
+    let member = match member {
+        Some(member) if member.revoked_at.is_none() => member,
+        _ => {
+            state.limits.code_login.record_failure(ip);
+            tracing::info!(%ip, "access code rejected");
+            return Err(AppError::InvalidCode);
+        }
     };
-    if member.revoked_at.is_some() {
-        return Err(AppError::InvalidCode);
-    }
+    tracing::info!(%ip, member = %member.name, "access code accepted");
 
     let now = db::now_unix();
     let expires_at = now + auth::USER_SESSION_LIFETIME_SECS;

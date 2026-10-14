@@ -10,6 +10,7 @@ use serde::Deserialize;
 
 use crate::{
     auth::{self, RequireAdmin},
+    clientip::ClientIp,
     db,
     error::{AppError, AppJson},
     state::AppState,
@@ -28,10 +29,13 @@ pub struct AdminLoginBody {
 /// username exists.
 pub async fn post_admin_login(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     AppJson(body): AppJson<AdminLoginBody>,
 ) -> Result<Response, AppError> {
-    // PHASE 2 HOOK: record this attempt against the per-IP and global
-    // admin-login failure trackers before returning.
+    // Checked before queueing for Argon2, so a locked-out or throttled
+    // client never costs a hash.
+    let _throttle_permit = state.limits.admin_login.before_attempt(ip).await?;
+
     let username_matches = body.username == state.config.admin_user;
     let hash_to_check =
         auth::admin_password_hash_for(username_matches, &state.config.admin_password_hash);
@@ -45,8 +49,11 @@ pub async fn post_admin_login(
     drop(_permit);
 
     if !username_matches || !password_ok {
+        state.limits.admin_login.record_failure(ip);
+        tracing::info!(%ip, "admin login rejected");
         return Err(AppError::InvalidAdminCredentials);
     }
+    tracing::info!(%ip, "admin login accepted");
 
     let now = db::now_unix();
     let expires_at = now + auth::ADMIN_SESSION_ABSOLUTE_SECS;
