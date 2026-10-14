@@ -228,7 +228,7 @@ mock TMDB with 120 ms latency):
 | Measure | Result | Target |
 | --- | --- | --- |
 | Idle RSS | 9.4 MB | under 25 MB |
-| Peak RSS during the load test (30 Argon2 logins queued) | 31.6 MiB | under 50 MB |
+| Peak RSS during the load test (30 Argon2 logins queued) | 32.0 MiB (highest of three runs) | under 50 MB |
 | Image size | 33.5 MB unpacked, 14.2 MB compressed | under 50 MB |
 | Warm search | 2.7 ms round trip | under 10 ms |
 | Cold search | 136 ms (120 ms of it is the mock) | under 800 ms |

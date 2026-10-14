@@ -52,7 +52,7 @@ The review found these gaps, which are now fixed:
 | --- | --- | --- |
 | `ADMIN_USER` and an Argon2id PHC hash from env; malformed hash refused at startup | `config` | unit `rejects_malformed_admin_password_hash` |
 | `hash-password` prompts without echo and prints only the hash | `main::run_hash_password` (`rpassword`) | manual: run under a pty while building the load test |
-| Argon2id 19 MiB, t=2, p=1 in `spawn_blocking`, semaphore of 1 | `auth::argon2_params`, `auth::verify_admin_password`, `AppState::admin_login_semaphore` | unit `verify_admin_password_*`; load test peak 31.6 MiB with 30 logins queued |
+| Argon2id 19 MiB, t=2, p=1 in `spawn_blocking`, semaphore of 1 | `auth::argon2_params`, `auth::verify_admin_password`, `AppState::admin_login_semaphore` | unit `verify_admin_password_*`; load test peak 32.0 MiB with 30 logins queued |
 | Unknown usernames still run a real verification | `auth::admin_password_hash_for`, `dummy_password_hash` | `auth_flow::admin_login_rejects_unknown_username_and_wrong_password_identically`, unit `dummy_hash_is_well_formed_but_never_guessable` |
 | 8 h absolute, 2 h idle, new token every login | `auth::RequireAdmin`, `routes::admin::post_admin_login` | `hardening::admin_session_ends_after_two_idle_hours`, `admin_session_ends_after_eight_hours_even_when_active`, `every_admin_login_issues_a_new_token` |
 | Same per-IP failure tracking; global throttle above 30 per 15 min | `RateLimits::admin_login` | `rate_limit::admin_login_is_locked_out_per_ip_independently_of_codes`, `admin_throttle_is_separate_from_code_throttle` |
@@ -125,7 +125,7 @@ The review found these gaps, which are now fixed:
 - **`GLIBC_TUNABLES` in the Dockerfile.** Without a fixed mmap threshold,
   glibc keeps each 19 MiB Argon2 block in a per-thread arena. Under the
   load test, RSS ratcheted up until the 64 MB container was OOM-killed.
-  With the tunable, peak RSS is 31.6 MiB and returns to about 13 MB. Argon2's
+  With the tunable, peak RSS is about 32 MiB and returns to about 13 MB. Argon2's
   cost and the memory limit are unchanged.
 - **`rsa` advisory RUSTSEC-2023-0071 is ignored.** It only enters through
   the optional `cf-access` feature, which uses public-key verification only.
