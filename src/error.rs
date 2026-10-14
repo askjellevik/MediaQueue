@@ -30,6 +30,12 @@ pub enum AppError {
     /// A rate limit or lockout was hit; sent as 429 with `Retry-After`.
     #[error("rate limited")]
     RateLimited { retry_after_secs: u64 },
+    /// The member's per-minute or daily request quota is used up.
+    #[error("request quota exceeded")]
+    QuotaExceeded {
+        retry_after_secs: u64,
+        remaining_today: i64,
+    },
     #[error("malformed request")]
     BadRequest,
     /// TMDB is unreachable and no usable cached answer exists.
@@ -48,7 +54,9 @@ impl AppError {
             AppError::Unauthorized => StatusCode::UNAUTHORIZED,
             AppError::Forbidden => StatusCode::FORBIDDEN,
             AppError::InvalidCode | AppError::InvalidAdminCredentials => StatusCode::UNAUTHORIZED,
-            AppError::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
+            AppError::RateLimited { .. } | AppError::QuotaExceeded { .. } => {
+                StatusCode::TOO_MANY_REQUESTS
+            }
             AppError::BadRequest => StatusCode::BAD_REQUEST,
             AppError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             AppError::Database(_) | AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -63,6 +71,7 @@ impl AppError {
             AppError::InvalidCode => "invalid_code",
             AppError::InvalidAdminCredentials => "invalid_credentials",
             AppError::RateLimited { .. } => "rate_limited",
+            AppError::QuotaExceeded { .. } => "quota_exceeded",
             AppError::BadRequest => "bad_request",
             AppError::Unavailable => "upstream_unavailable",
             AppError::Database(_) | AppError::Internal(_) => "internal_error",
@@ -80,6 +89,7 @@ impl AppError {
             AppError::InvalidCode => "that code didn't work",
             AppError::InvalidAdminCredentials => "invalid username or password",
             AppError::RateLimited { .. } => "too many requests, try again later",
+            AppError::QuotaExceeded { .. } => "you have used up your requests for now",
             AppError::BadRequest => "the request was malformed",
             AppError::Unavailable => {
                 "the movie database is not reachable right now, try again shortly"
@@ -108,6 +118,8 @@ impl From<TmdbError> for AppError {
 struct ErrorBody {
     error: &'static str,
     message: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remaining_today: Option<i64>,
 }
 
 impl IntoResponse for AppError {
@@ -119,9 +131,19 @@ impl IntoResponse for AppError {
         let body = ErrorBody {
             error: self.code(),
             message: self.public_message(),
+            remaining_today: match self {
+                AppError::QuotaExceeded {
+                    remaining_today, ..
+                } => Some(remaining_today),
+                _ => None,
+            },
         };
         let mut response = (status, Json(body)).into_response();
-        if let AppError::RateLimited { retry_after_secs } = self {
+        if let AppError::RateLimited { retry_after_secs }
+        | AppError::QuotaExceeded {
+            retry_after_secs, ..
+        } = self
+        {
             response
                 .headers_mut()
                 .insert(header::RETRY_AFTER, HeaderValue::from(retry_after_secs));

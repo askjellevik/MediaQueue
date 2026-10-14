@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO requests (tmdb_id, media_type, imdb_id, title, year, poster_path, note,\n                                 status, requested_by, created_at, status_changed_at)\n           VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)\n           ON CONFLICT (tmdb_id, media_type) DO NOTHING\n           RETURNING id AS \"id!\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 10
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "71445377db24fd5d952bb1e2909b7aa61b7b72b2daa583bcca0e4dd4c790e28e"
+}

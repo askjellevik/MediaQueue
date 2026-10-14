@@ -1,0 +1,35 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT\n             (SELECT COUNT(*) FROM request_events e JOIN requests r ON r.id = e.request_id\n              WHERE e.kind = 'submitted' AND r.requested_by = ?1 AND e.created_at >= ?2)\n               AS \"today!: i64\",\n             (SELECT COUNT(*) FROM request_events\n              WHERE kind IN ('submitted', 'duplicate') AND actor = ?3 AND created_at > ?4)\n               AS \"last_minute!: i64\",\n             (SELECT MIN(created_at) FROM request_events\n              WHERE kind IN ('submitted', 'duplicate') AND actor = ?3 AND created_at > ?4)\n               AS \"oldest_in_minute: i64\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "today!: i64",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "last_minute!: i64",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "oldest_in_minute: i64",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "b802cfe1058aa12aeadd70113325f3f3da64a93d21a4b0b3300d5a5dd1db9161"
+}

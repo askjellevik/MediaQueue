@@ -92,6 +92,9 @@ pub struct RateLimitConfig {
     pub search_per_second: u32,
     /// Global cap on outbound TMDB calls.
     pub tmdb_per_second: u32,
+    /// New requests (and duplicates) per member per minute. The daily cap is
+    /// `DEFAULT_DAILY_LIMIT` or the member's own override.
+    pub requests_per_minute: u32,
     /// Hard cap on tracked keys per limiter; new keys beyond it are limited.
     pub key_cap: usize,
     pub fail_max: u32,
@@ -115,6 +118,7 @@ impl Default for RateLimitConfig {
             search_burst: 10,
             search_per_second: 5,
             tmdb_per_second: 20,
+            requests_per_minute: 3,
             key_cap: 10_000,
             fail_max: 5,
             fail_window_secs: 15 * 60,
@@ -272,6 +276,7 @@ fn rate_limit_config(env: &impl EnvLookup) -> Result<RateLimitConfig, ConfigErro
         search_burst: positive(env, "RL_SEARCH_BURST", d.search_burst)?,
         search_per_second: positive(env, "RL_SEARCH_PER_SECOND", d.search_per_second)?,
         tmdb_per_second: positive(env, "RL_TMDB_PER_SECOND", d.tmdb_per_second)?,
+        requests_per_minute: positive(env, "RL_REQUESTS_PER_MINUTE", d.requests_per_minute)?,
         key_cap: positive(env, "RL_KEY_CAP", d.key_cap as u64)? as usize,
         fail_max: positive(env, "RL_FAIL_MAX", d.fail_max)?,
         fail_window_secs: positive(env, "RL_FAIL_WINDOW_SECS", d.fail_window_secs)?,

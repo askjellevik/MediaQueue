@@ -1,0 +1,110 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT r.id AS \"id!\", r.tmdb_id AS \"tmdb_id!\", r.media_type AS \"media_type!\",\n                  r.title AS \"title!\", r.year, r.poster_path, r.status AS \"status!\",\n                  r.created_at AS \"created_at!\"\n           FROM requests r\n           WHERE (r.requested_by = ?1\n                  OR EXISTS (SELECT 1 FROM request_events e\n                             WHERE e.request_id = r.id AND e.kind = 'duplicate'\n                               AND e.actor = ?2))\n             AND (r.created_at < ?3 OR (r.created_at = ?3 AND r.id < ?4))\n           ORDER BY r.created_at DESC, r.id DESC\n           LIMIT ?5",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "tmdb_id!",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "tmdb_id"
+          }
+        }
+      },
+      {
+        "name": "media_type!",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "media_type"
+          }
+        }
+      },
+      {
+        "name": "title!",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "name": "year",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "year"
+          }
+        }
+      },
+      {
+        "name": "poster_path",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "poster_path"
+          }
+        }
+      },
+      {
+        "name": "status!",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "name": "created_at!",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "8d9e136b48b341d28fe0ac4f454d423207bb8c4b8cd36eab4a7332892d5241b4"
+}

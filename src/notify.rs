@@ -1,7 +1,7 @@
 //! Fire-and-forget ntfy pushes. Sending runs on its own task with a short
 //! timeout, so a slow or broken ntfy server can never delay or fail the
-//! request that triggered it. Phase 2 uses it for throttle alerts; the
-//! new-request message arrives in Phase 4.
+//! request that triggered it. Used for throttle alerts and for genuinely new
+//! requests (never duplicates).
 
 use std::{sync::Arc, time::Duration};
 
@@ -23,6 +23,40 @@ pub struct Message {
     /// ntfy priority, 1 (min) to 5 (max); 3 is the default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub priority: Option<u8>,
+}
+
+/// What the push for a genuinely new request says.
+pub struct NewRequestInfo<'a> {
+    pub title: &'a str,
+    pub year: Option<i64>,
+    pub is_movie: bool,
+    pub requester: &'a str,
+    pub note: Option<&'a str>,
+    pub imdb_id: Option<&'a str>,
+}
+
+impl Message {
+    /// `New request: Dune (2021)`, with type, requester, note and IMDb ID
+    /// in the body, and a click-through to the admin Pending tab.
+    pub fn new_request(info: &NewRequestInfo<'_>, public_origin: &str) -> Self {
+        let title = match info.year {
+            Some(year) => format!("New request: {} ({year})", info.title),
+            None => format!("New request: {}", info.title),
+        };
+        let kind = if info.is_movie { "Movie" } else { "Series" };
+        let mut lines = vec![format!("{kind}, requested by {}", info.requester)];
+        if let Some(note) = info.note {
+            lines.push(format!("Note: {note}"));
+        }
+        lines.push(format!("IMDb: {}", info.imdb_id.unwrap_or("unknown")));
+        Message {
+            title,
+            message: lines.join("\n"),
+            tags: vec![if info.is_movie { "movie_camera" } else { "tv" }],
+            click: Some(format!("{public_origin}/admin#pending")),
+            priority: None,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -114,6 +148,42 @@ mod tests {
                 "priority": 4,
             })
         );
+    }
+
+    #[test]
+    fn new_request_message_matches_spec() {
+        let info = NewRequestInfo {
+            title: "Dune",
+            year: Some(2021),
+            is_movie: true,
+            requester: "Alice",
+            note: Some("the 2021 one"),
+            imdb_id: Some("tt1160419"),
+        };
+        let m = Message::new_request(&info, "https://requests.example.com");
+        assert_eq!(m.title, "New request: Dune (2021)");
+        assert_eq!(
+            m.message,
+            "Movie, requested by Alice\nNote: the 2021 one\nIMDb: tt1160419"
+        );
+        assert_eq!(m.tags, ["movie_camera"]);
+        assert_eq!(
+            m.click.as_deref(),
+            Some("https://requests.example.com/admin#pending")
+        );
+
+        let series = NewRequestInfo {
+            title: "Severance",
+            year: None,
+            is_movie: false,
+            requester: "Bob",
+            note: None,
+            imdb_id: None,
+        };
+        let m = Message::new_request(&series, "https://r.example");
+        assert_eq!(m.title, "New request: Severance");
+        assert_eq!(m.message, "Series, requested by Bob\nIMDb: unknown");
+        assert_eq!(m.tags, ["tv"]);
     }
 
     #[test]

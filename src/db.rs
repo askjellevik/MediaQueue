@@ -365,25 +365,207 @@ pub async fn request_states(
 }
 
 // ---------------------------------------------------------------------
-// Request quota (reads only; writes arrive in Phase 4)
+// Requests and quotas
 // ---------------------------------------------------------------------
 
-/// Count of `submitted` request events for a member since a given time,
-/// used to compute `remaining_today` on `GET /api/me`.
-pub async fn submitted_count_since(
+/// How much of a member's request quota is used. Read before any TMDB
+/// work for a cheap early 429, and again inside the write transaction so
+/// concurrent submits cannot overshoot.
+#[derive(Debug, Clone, Copy)]
+pub struct QuotaUsage {
+    /// `submitted` events since the start of the UTC day.
+    pub today: i64,
+    /// `submitted` and `duplicate` events in the last minute.
+    pub last_minute: i64,
+    /// Time of the oldest event in that minute, for `Retry-After`.
+    pub oldest_in_minute: Option<i64>,
+}
+
+/// Counts quota use from `request_events`, so limits survive restarts.
+/// The daily count follows `requests.requested_by` (exact); duplicate
+/// events carry no member id, so the per-minute count matches on the
+/// `actor` name the events were written with.
+pub async fn quota_usage(
+    executor: impl sqlx::SqliteExecutor<'_>,
+    member_id: i64,
+    member_name: &str,
+    day_start: i64,
+    minute_start: i64,
+) -> Result<QuotaUsage, sqlx::Error> {
+    let row = sqlx::query!(
+        r#"SELECT
+             (SELECT COUNT(*) FROM request_events e JOIN requests r ON r.id = e.request_id
+              WHERE e.kind = 'submitted' AND r.requested_by = ?1 AND e.created_at >= ?2)
+               AS "today!: i64",
+             (SELECT COUNT(*) FROM request_events
+              WHERE kind IN ('submitted', 'duplicate') AND actor = ?3 AND created_at > ?4)
+               AS "last_minute!: i64",
+             (SELECT MIN(created_at) FROM request_events
+              WHERE kind IN ('submitted', 'duplicate') AND actor = ?3 AND created_at > ?4)
+               AS "oldest_in_minute: i64""#,
+        member_id,
+        day_start,
+        member_name,
+        minute_start
+    )
+    .fetch_one(executor)
+    .await?;
+    Ok(QuotaUsage {
+        today: row.today,
+        last_minute: row.last_minute,
+        oldest_in_minute: row.oldest_in_minute,
+    })
+}
+
+/// Everything needed to write a request row; title and friends come from
+/// TMDB, never from the client.
+pub struct NewRequest<'a> {
+    pub tmdb_id: i64,
+    pub media_type: &'a str,
+    pub imdb_id: Option<&'a str>,
+    pub title: &'a str,
+    pub year: Option<i64>,
+    pub poster_path: Option<&'a str>,
+    pub note: Option<&'a str>,
+    pub member_id: i64,
+    pub member_name: &'a str,
+    pub now: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct RequestRow {
+    pub id: i64,
+    pub tmdb_id: i64,
+    pub media_type: String,
+    pub title: String,
+    pub year: Option<i64>,
+    pub poster_path: Option<String>,
+    pub status: String,
+    pub created_at: i64,
+}
+
+pub enum CreateOutcome {
+    Created(RequestRow),
+    Duplicate(RequestRow),
+    /// The quota re-check inside the transaction failed; nothing written.
+    OverQuota(QuotaUsage),
+}
+
+/// Inserts the request, or logs a `duplicate` event if the title is
+/// already queued, in one `BEGIN IMMEDIATE` transaction. `within_quota`
+/// re-checks the quota under the write lock; if it says no, the
+/// transaction is rolled back and nothing is written.
+pub async fn create_request(
+    pool: &SqlitePool,
+    new: &NewRequest<'_>,
+    day_start: i64,
+    minute_start: i64,
+    within_quota: impl FnOnce(&QuotaUsage) -> bool,
+) -> Result<CreateOutcome, sqlx::Error> {
+    let mut tx = begin_immediate(pool).await?;
+
+    let usage = quota_usage(
+        &mut *tx,
+        new.member_id,
+        new.member_name,
+        day_start,
+        minute_start,
+    )
+    .await?;
+    if !within_quota(&usage) {
+        tx.rollback().await?;
+        return Ok(CreateOutcome::OverQuota(usage));
+    }
+
+    let inserted = sqlx::query_scalar!(
+        r#"INSERT INTO requests (tmdb_id, media_type, imdb_id, title, year, poster_path, note,
+                                 status, requested_by, created_at, status_changed_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+           ON CONFLICT (tmdb_id, media_type) DO NOTHING
+           RETURNING id AS "id!""#,
+        new.tmdb_id,
+        new.media_type,
+        new.imdb_id,
+        new.title,
+        new.year,
+        new.poster_path,
+        new.note,
+        new.member_id,
+        new.now,
+        new.now
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    let kind = if inserted.is_some() {
+        "submitted"
+    } else {
+        "duplicate"
+    };
+
+    let row = sqlx::query_as!(
+        RequestRow,
+        r#"SELECT id AS "id!", tmdb_id AS "tmdb_id!", media_type AS "media_type!",
+                  title AS "title!", year, poster_path, status AS "status!",
+                  created_at AS "created_at!"
+           FROM requests WHERE tmdb_id = ? AND media_type = ?"#,
+        new.tmdb_id,
+        new.media_type
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+
+    sqlx::query!(
+        "INSERT INTO request_events (request_id, kind, actor, note, created_at)
+         VALUES (?, ?, ?, ?, ?)",
+        row.id,
+        kind,
+        new.member_name,
+        new.note,
+        new.now
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(if inserted.is_some() {
+        CreateOutcome::Created(row)
+    } else {
+        CreateOutcome::Duplicate(row)
+    })
+}
+
+/// A member's requests, newest first: titles they asked for first, plus
+/// titles they asked for again after someone else (matched by the
+/// `duplicate` event's actor name). Keyset pagination on
+/// `(created_at, id)`: pass the last row's values to get the next page.
+pub async fn requests_for_member(
     pool: &SqlitePool,
     member_id: i64,
-    since: i64,
-) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar!(
-        r#"SELECT COUNT(*) AS "count!"
-           FROM request_events e
-           JOIN requests r ON r.id = e.request_id
-           WHERE e.kind = 'submitted' AND r.requested_by = ? AND e.created_at >= ?"#,
+    member_name: &str,
+    before: (i64, i64),
+    limit: i64,
+) -> Result<Vec<RequestRow>, sqlx::Error> {
+    let (before_created, before_id) = before;
+    sqlx::query_as!(
+        RequestRow,
+        r#"SELECT r.id AS "id!", r.tmdb_id AS "tmdb_id!", r.media_type AS "media_type!",
+                  r.title AS "title!", r.year, r.poster_path, r.status AS "status!",
+                  r.created_at AS "created_at!"
+           FROM requests r
+           WHERE (r.requested_by = ?1
+                  OR EXISTS (SELECT 1 FROM request_events e
+                             WHERE e.request_id = r.id AND e.kind = 'duplicate'
+                               AND e.actor = ?2))
+             AND (r.created_at < ?3 OR (r.created_at = ?3 AND r.id < ?4))
+           ORDER BY r.created_at DESC, r.id DESC
+           LIMIT ?5"#,
         member_id,
-        since
+        member_name,
+        before_created,
+        before_id,
+        limit
     )
-    .fetch_one(pool)
+    .fetch_all(pool)
     .await
 }
 
