@@ -149,6 +149,7 @@ pub struct UserSession {
     pub last_seen_at: i64,
     pub member_id: i64,
     pub member_name: String,
+    pub daily_limit: Option<i64>,
 }
 
 /// Finds a live user session by its token hash, joined with the member it
@@ -162,7 +163,7 @@ pub async fn find_user_session(
         UserSession,
         r#"SELECT s.id AS "session_id!", s.expires_at AS "expires_at!",
                   s.last_seen_at AS "last_seen_at!",
-                  m.id AS "member_id!", m.name AS "member_name!"
+                  m.id AS "member_id!", m.name AS "member_name!", m.daily_limit
            FROM sessions s
            JOIN members m ON m.id = s.member_id
            WHERE s.token_hash = ? AND s.kind = 'user'"#,

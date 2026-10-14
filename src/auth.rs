@@ -159,7 +159,7 @@ fn set_cookie_header(name: &str, value: &str, max_age_secs: i64, secure: bool) -
     HeaderValue::from_str(&s).unwrap_or_else(|_| HeaderValue::from_static("invalid=cookie"))
 }
 
-pub fn build_session_cookie(
+fn build_session_cookie(
     base: &str,
     token: &str,
     max_age_secs: i64,
@@ -169,9 +169,35 @@ pub fn build_session_cookie(
     set_cookie_header(&name, token, max_age_secs, !dev_insecure)
 }
 
-pub fn build_clear_cookie(base: &str, dev_insecure: bool) -> HeaderValue {
+fn build_clear_cookie(base: &str, dev_insecure: bool) -> HeaderValue {
     let name = cookie_name(base, dev_insecure);
     set_cookie_header(&name, "", 0, !dev_insecure)
+}
+
+pub fn build_user_cookie(token: &str, dev_insecure: bool) -> HeaderValue {
+    build_session_cookie(
+        USER_COOKIE_BASE,
+        token,
+        USER_SESSION_LIFETIME_SECS,
+        dev_insecure,
+    )
+}
+
+pub fn build_admin_cookie(token: &str, dev_insecure: bool) -> HeaderValue {
+    build_session_cookie(
+        ADMIN_COOKIE_BASE,
+        token,
+        ADMIN_SESSION_ABSOLUTE_SECS,
+        dev_insecure,
+    )
+}
+
+pub fn clear_user_cookie(dev_insecure: bool) -> HeaderValue {
+    build_clear_cookie(USER_COOKIE_BASE, dev_insecure)
+}
+
+pub fn clear_admin_cookie(dev_insecure: bool) -> HeaderValue {
+    build_clear_cookie(ADMIN_COOKIE_BASE, dev_insecure)
 }
 
 fn cookie_token(jar: &CookieJar, name: &str) -> Option<Vec<u8>> {
@@ -254,6 +280,7 @@ pub struct RequireUser {
     pub member_id: i64,
     pub member_name: String,
     pub session_id: i64,
+    pub daily_limit: Option<i64>,
 }
 
 impl FromRequestParts<AppState> for RequireUser {
@@ -291,6 +318,7 @@ impl FromRequestParts<AppState> for RequireUser {
             member_id: session.member_id,
             member_name: session.member_name,
             session_id: session.session_id,
+            daily_limit: session.daily_limit,
         })
     }
 }
@@ -417,6 +445,32 @@ mod tests {
         assert!(s.contains("Secure"));
         assert!(s.contains("SameSite=Strict"));
         assert!(!s.contains("Domain="));
+    }
+
+    #[test]
+    fn public_cookie_wrappers_use_correct_names_and_lifetimes() {
+        let user = build_user_cookie("tok", false);
+        let user_s = user.to_str().unwrap();
+        assert!(user_s.starts_with("__Host-mp_user=tok;"));
+        assert!(user_s.contains(&format!("Max-Age={USER_SESSION_LIFETIME_SECS}")));
+
+        let admin = build_admin_cookie("tok", false);
+        let admin_s = admin.to_str().unwrap();
+        assert!(admin_s.starts_with("__Host-mp_admin=tok;"));
+        assert!(admin_s.contains(&format!("Max-Age={ADMIN_SESSION_ABSOLUTE_SECS}")));
+
+        assert!(
+            clear_user_cookie(false)
+                .to_str()
+                .unwrap()
+                .contains("Max-Age=0")
+        );
+        assert!(
+            clear_admin_cookie(false)
+                .to_str()
+                .unwrap()
+                .contains("Max-Age=0")
+        );
     }
 
     #[test]

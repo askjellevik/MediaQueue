@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use sqlx::SqlitePool;
+use tokio::sync::Semaphore;
 
 use crate::config::Config;
 
@@ -11,6 +12,9 @@ use crate::config::Config;
 pub struct AppState {
     pub pool: SqlitePool,
     pub config: Arc<Config>,
+    /// Bounds concurrent Argon2id hashing to 1 permit, so a flood of admin
+    /// logins queues instead of exhausting RAM on 19 MiB hashes at once.
+    pub admin_login_semaphore: Arc<Semaphore>,
 }
 
 impl AppState {
@@ -18,6 +22,7 @@ impl AppState {
         Self {
             pool,
             config: Arc::new(config),
+            admin_login_semaphore: Arc::new(Semaphore::new(1)),
         }
     }
 }
