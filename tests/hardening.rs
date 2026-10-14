@@ -114,3 +114,18 @@ async fn every_admin_login_issues_a_new_token() {
     assert_eq!(admin_status(&app, &first).await, 200);
     assert_eq!(admin_status(&app, &second).await, 200);
 }
+
+#[tokio::test]
+async fn bodies_over_16_kb_are_refused() {
+    let app = common::spawn_app().await;
+    let big = format!(r#"{{"code":"{}"}}"#, "A".repeat(17 * 1024));
+    let response = app
+        .request("POST", "/api/auth/code", &json_post_headers(), Some(&big))
+        .await;
+    assert_eq!(response.status, 413);
+    let fits = format!(r#"{{"code":"{}"}}"#, "A".repeat(15 * 1024));
+    let response = app
+        .request("POST", "/api/auth/code", &json_post_headers(), Some(&fits))
+        .await;
+    assert_eq!(response.status, 401, "a body under the cap is parsed normally");
+}
