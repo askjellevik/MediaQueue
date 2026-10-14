@@ -38,6 +38,9 @@ enum Command {
         #[arg(long)]
         max_sessions: Option<i64>,
     },
+    /// Write a consistent snapshot of the database to the backups directory
+    /// next to it (e.g. `/data/backups`), keeping the newest 14.
+    Backup,
 }
 
 fn main() -> ExitCode {
@@ -51,6 +54,7 @@ fn main() -> ExitCode {
             daily_limit,
             max_sessions,
         } => run_add_member(name, daily_limit, max_sessions),
+        Command::Backup => run_backup(),
     }
 }
 
@@ -100,6 +104,7 @@ async fn serve_async(config: Config) -> anyhow::Result<()> {
     let pool = db::connect(&config).await?;
     let bind_addr = config.bind_addr;
     tasks::spawn_session_cleanup(pool.clone());
+    tasks::spawn_daily_backup(pool.clone(), config.database_path.clone());
     let state = AppState::new(pool.clone(), config)?;
     tasks::spawn_rate_limit_maintenance(state.limits.clone());
     let app = build_router(state);
@@ -244,4 +249,44 @@ async fn add_member_async(
             ExitCode::FAILURE
         }
     }
+}
+
+fn run_backup() -> ExitCode {
+    let config = match Config::from_env() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("configuration error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("failed to start tokio runtime: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    runtime.block_on(async {
+        let pool = match db::connect(&config).await {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("database error: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let dir = tasks::backup_dir(&config.database_path);
+        match tasks::backup_now(&pool, &dir, db::now_unix()).await {
+            Ok(path) => {
+                println!("Backup written to {}", path.display());
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("backup failed: {e}");
+                ExitCode::FAILURE
+            }
+        }
+    })
 }

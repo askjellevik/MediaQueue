@@ -73,6 +73,28 @@ pub async fn checkpoint(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
+/// Writes a consistent snapshot of the whole database to `path` with
+/// `VACUUM INTO`, which works while the app keeps serving. Fails if `path`
+/// already exists.
+pub async fn vacuum_into(pool: &SqlitePool, path: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("VACUUM INTO ?")
+        .bind(path)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// `20231114T221320Z` for a unix time, for sortable backup file names.
+pub async fn compact_utc(pool: &SqlitePool, unix: i64) -> Result<String, sqlx::Error> {
+    let formatted = sqlx::query_scalar!(
+        r#"SELECT strftime('%Y%m%dT%H%M%SZ', ?, 'unixepoch') AS "formatted!: String""#,
+        unix
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(formatted)
+}
+
 /// Current unix time in seconds. The one place request handlers get "now"
 /// from in this phase; a later phase may swap this for an injectable clock
 /// the way `tmdb.rs` does for cache freshness.
