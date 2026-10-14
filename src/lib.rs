@@ -13,7 +13,12 @@ pub mod routes;
 pub mod state;
 pub mod tasks;
 
-use axum::{Json, Router, http::StatusCode, response::IntoResponse, routing::get};
+use axum::{
+    Json, Router,
+    http::StatusCode,
+    response::IntoResponse,
+    routing::{get, post},
+};
 use serde_json::json;
 
 use crate::state::AppState;
@@ -32,11 +37,41 @@ async fn healthz(state: axum::extract::State<AppState>) -> impl IntoResponse {
     }
 }
 
-/// Assembles the full application router. Shared by `main.rs` and the
-/// integration tests so both exercise the exact same routing.
-pub fn build_router(state: AppState) -> Router {
+/// All `/api` routes, with the CSRF/Origin guard and `Cache-Control:
+/// no-store` applied to this subtree only — static assets keep their own
+/// caching policy.
+fn api_router(state: AppState) -> Router<()> {
     Router::new()
-        .route("/healthz", get(healthz))
-        .fallback(routes::static_files::serve)
+        .route("/auth/code", post(routes::public::post_auth_code))
+        .route("/auth/logout", post(routes::public::post_auth_logout))
+        .route("/me", get(routes::public::get_me))
+        .route("/admin/login", post(routes::admin::post_admin_login))
+        .route("/admin/logout", post(routes::admin::post_admin_logout))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::csrf_guard,
+        ))
+        .layer(middleware::no_store_layer())
         .with_state(state)
+}
+
+/// Assembles the full application router. Shared by `main.rs` and the
+/// integration tests so both exercise the exact same routing and
+/// middleware stack.
+pub fn build_router(state: AppState) -> Router {
+    let healthz_router = Router::new()
+        .route("/healthz", get(healthz))
+        .layer(middleware::no_store_layer())
+        .with_state(state.clone());
+
+    let app = Router::new()
+        .merge(healthz_router)
+        .nest("/api", api_router(state))
+        .fallback(routes::static_files::serve)
+        .layer(middleware::catch_panic_layer())
+        .layer(middleware::body_limit_layer())
+        .layer(middleware::timeout_layer())
+        .layer(middleware::concurrency_limit_layer());
+
+    middleware::apply_security_headers(app)
 }

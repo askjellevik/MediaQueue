@@ -98,9 +98,12 @@ pub async fn spawn_app() -> SocketAddr {
     let addr = listener.local_addr().expect("local addr");
 
     tokio::spawn(async move {
-        axum::serve(listener, app)
-            .await
-            .expect("test server crashed");
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .expect("test server crashed");
     });
 
     addr
