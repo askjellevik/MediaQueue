@@ -4,13 +4,31 @@
 use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
 use media_requests::{build_router, config::Config, db, state::AppState};
 
 static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+pub const TEST_ADMIN_USER: &str = "admin";
+pub const TEST_ADMIN_PASSWORD: &str = "test-admin-password";
+
+/// A real Argon2id PHC hash of [`TEST_ADMIN_PASSWORD`], computed once.
+pub fn test_admin_password_hash() -> &'static str {
+    static HASH: OnceLock<String> = OnceLock::new();
+    HASH.get_or_init(|| {
+        use argon2::password_hash::PasswordHasher;
+        argon2::Argon2::default()
+            .hash_password(TEST_ADMIN_PASSWORD.as_bytes())
+            .expect("hash the fixed test admin password")
+            .to_string()
+    })
+}
 
 /// A minimal raw-socket HTTP/1.1 GET. Returns the full response text
 /// (status line, headers and body) so tests can assert on any of it.
@@ -52,6 +70,15 @@ fn test_config() -> Config {
         database_path: db_path,
         code_pepper: b"integration-test-pepper-at-least-32-bytes!!".to_vec(),
         cookie_dev_insecure: false,
+        code_length: 8,
+        default_max_sessions: 3,
+        default_daily_limit: 10,
+        admin_user: TEST_ADMIN_USER.to_string(),
+        admin_password_hash: test_admin_password_hash().to_string(),
+        trusted_proxy_cidrs: media_requests::clientip::parse_cidr_list(
+            "127.0.0.1/32,::1/128,172.16.0.0/12",
+        )
+        .expect("valid default trusted proxy cidrs"),
     }
 }
 

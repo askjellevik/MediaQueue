@@ -3,6 +3,7 @@
 // return a proper `AppError` instead of panicking.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
+pub mod clientip;
 pub mod config;
 pub mod db;
 pub mod error;
