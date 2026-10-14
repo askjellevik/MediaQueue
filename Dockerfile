@@ -3,11 +3,13 @@ WORKDIR /src
 ENV SQLX_OFFLINE=true
 # Extra cargo features, e.g. `--build-arg FEATURES=cf-access`.
 ARG FEATURES=""
+# Set by buildx; keeps amd64 and arm64 builds out of each other's target dir.
+ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential pkg-config \
  && rm -rf /var/lib/apt/lists/*
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/src/target \
+    --mount=type=cache,target=/src/target,id=target-$TARGETARCH \
     cargo build --release --locked --features "$FEATURES" \
  && cp target/release/media-requests /media-requests
 
