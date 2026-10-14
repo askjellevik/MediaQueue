@@ -602,3 +602,27 @@ async fn detail_404_is_not_found_even_with_a_stale_entry_and_removes_it() {
     let after = app.state.tmdb.detail(438631, MediaType::Movie).await;
     assert_eq!(after, Err(TmdbError::Unavailable));
 }
+
+#[tokio::test]
+async fn global_tmdb_limit_answers_503_without_calling_upstream() {
+    let server = tmdb_mock().await;
+    mount_search(&server, 200, multi_body(&["Dune"]), Duration::ZERO).await;
+    let uri = server.uri();
+    let app = common::spawn_app_with(move |cfg| {
+        cfg.tmdb_base_url = uri;
+        cfg.rate_limits.tmdb_per_second = 1;
+    })
+    .await;
+    let cookie = login_new_member(&app, "Alice").await;
+
+    assert_eq!(search(&app, &cookie, "dune").await.status, 200);
+    // A different query needs TMDB, but this second's call is used up.
+    let limited = search(&app, &cookie, "alien").await;
+    assert_eq!(limited.status, 503);
+    assert_eq!(upstream_calls(&server).await, 1);
+    // Cached results are unaffected, and the next second refills.
+    assert_eq!(search(&app, &cookie, "dune").await.status, 200);
+    app.clock.advance(Duration::from_secs(1));
+    assert_eq!(search(&app, &cookie, "alien").await.status, 200);
+    assert_eq!(upstream_calls(&server).await, 2);
+}
