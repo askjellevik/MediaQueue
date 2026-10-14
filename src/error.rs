@@ -4,10 +4,12 @@
 use axum::{
     Json,
     extract::{FromRequest, Request},
-    http::StatusCode,
+    http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use serde::{Serialize, de::DeserializeOwned};
+
+use crate::ratelimit::RetryAfter;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
@@ -25,6 +27,9 @@ pub enum AppError {
     InvalidCode,
     #[error("invalid admin credentials")]
     InvalidAdminCredentials,
+    /// A rate limit or lockout was hit; sent as 429 with `Retry-After`.
+    #[error("rate limited")]
+    RateLimited { retry_after_secs: u64 },
     #[error("malformed request body")]
     BadRequest,
     #[error("database error")]
@@ -40,6 +45,7 @@ impl AppError {
             AppError::Unauthorized => StatusCode::UNAUTHORIZED,
             AppError::Forbidden => StatusCode::FORBIDDEN,
             AppError::InvalidCode | AppError::InvalidAdminCredentials => StatusCode::UNAUTHORIZED,
+            AppError::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
             AppError::BadRequest => StatusCode::BAD_REQUEST,
             AppError::Database(_) | AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -52,6 +58,7 @@ impl AppError {
             AppError::Forbidden => "forbidden",
             AppError::InvalidCode => "invalid_code",
             AppError::InvalidAdminCredentials => "invalid_credentials",
+            AppError::RateLimited { .. } => "rate_limited",
             AppError::BadRequest => "bad_request",
             AppError::Database(_) | AppError::Internal(_) => "internal_error",
         }
@@ -67,9 +74,16 @@ impl AppError {
             AppError::Forbidden => "forbidden",
             AppError::InvalidCode => "that code didn't work",
             AppError::InvalidAdminCredentials => "invalid username or password",
+            AppError::RateLimited { .. } => "too many requests, try again later",
             AppError::BadRequest => "the request body was malformed",
             AppError::Database(_) | AppError::Internal(_) => "internal error",
         }
+    }
+}
+
+impl From<RetryAfter> for AppError {
+    fn from(RetryAfter(retry_after_secs): RetryAfter) -> Self {
+        AppError::RateLimited { retry_after_secs }
     }
 }
 
@@ -89,7 +103,13 @@ impl IntoResponse for AppError {
             error: self.code(),
             message: self.public_message(),
         };
-        (status, Json(body)).into_response()
+        let mut response = (status, Json(body)).into_response();
+        if let AppError::RateLimited { retry_after_secs } = self {
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from(retry_after_secs));
+        }
+        response
     }
 }
 

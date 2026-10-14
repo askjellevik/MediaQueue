@@ -1,11 +1,12 @@
-//! Background maintenance spawned once at startup. The daily backup task
-//! arrives in Phase 7.
+//! Background maintenance spawned once at startup: hourly session cleanup
+//! and per-minute rate-limit housekeeping. The daily backup task arrives
+//! in Phase 7.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use sqlx::SqlitePool;
 
-use crate::db;
+use crate::{db, ratelimit::RateLimits};
 
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(3600);
 
@@ -24,6 +25,22 @@ pub fn spawn_session_cleanup(pool: SqlitePool) {
                 Ok(count) => tracing::info!(count, "cleaned up expired sessions"),
                 Err(error) => tracing::error!(%error, "session cleanup failed"),
             }
+        }
+    });
+}
+
+const RATE_LIMIT_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Once a minute, evicts idle rate-limit keys so the tables stay small,
+/// and lets the global throttle notice it has turned off even when no
+/// further attempts arrive.
+pub fn spawn_rate_limit_maintenance(limits: Arc<RateLimits>) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(RATE_LIMIT_MAINTENANCE_INTERVAL);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            limits.maintain();
         }
     });
 }

@@ -18,7 +18,7 @@ use tower_http::{
     timeout::TimeoutLayer,
 };
 
-use crate::{error::AppError, state::AppState};
+use crate::{clientip::ClientIp, error::AppError, state::AppState};
 
 pub const BODY_LIMIT_BYTES: usize = 16 * 1024;
 pub const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -98,6 +98,22 @@ pub async fn csrf_guard(State(state): State<AppState>, req: Request, next: Next)
         if !origin_ok || !xrw_ok || !content_type_ok {
             return AppError::Forbidden.into_response();
         }
+    }
+    next.run(req).await
+}
+
+/// The global per-IP limit on every `/api` call. Runs before the CSRF
+/// guard and before any handler parses a body, so a flood is turned away
+/// as cheaply as possible.
+pub async fn api_rate_limit(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    req: Request,
+    next: Next,
+) -> Response {
+    if let Err(retry) = state.limits.check_api(ip) {
+        tracing::info!(%ip, retry_after_secs = retry.0, "api rate limit hit");
+        return AppError::from(retry).into_response();
     }
     next.run(req).await
 }

@@ -40,9 +40,10 @@ async fn healthz(state: axum::extract::State<AppState>) -> impl IntoResponse {
     }
 }
 
-/// All `/api` routes, with the CSRF/Origin guard and `Cache-Control:
-/// no-store` applied to this subtree only — static assets keep their own
-/// caching policy.
+/// All `/api` routes, with the per-IP rate limit, the CSRF/Origin guard and
+/// `Cache-Control: no-store` applied to this subtree only — static assets
+/// keep their own caching policy. Layers run outermost-last: no-store
+/// wraps everything (429s included), then the rate limit, then CSRF.
 fn api_router(state: AppState) -> Router<()> {
     Router::new()
         .route("/auth/code", post(routes::public::post_auth_code))
@@ -53,6 +54,10 @@ fn api_router(state: AppState) -> Router<()> {
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::csrf_guard,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::api_rate_limit,
         ))
         .layer(middleware::no_store_layer())
         .with_state(state)

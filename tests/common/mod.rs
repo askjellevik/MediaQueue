@@ -15,7 +15,7 @@ use std::{
     time::Duration,
 };
 
-use media_requests::{build_router, config::Config, db, state::AppState};
+use media_requests::{build_router, clock::Clock, config::Config, db, state::AppState};
 use sqlx::SqlitePool;
 
 static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -195,6 +195,10 @@ pub struct TestApp {
     pub addr: SocketAddr,
     pub pool: SqlitePool,
     pub config: Config,
+    /// The app's shared state, for reaching into limiters directly.
+    pub state: AppState,
+    /// The fake clock every time-based limit in the app reads.
+    pub clock: Clock,
 }
 
 impl TestApp {
@@ -224,8 +228,10 @@ pub async fn spawn_app_with(customize: impl FnOnce(&mut Config)) -> TestApp {
     let pool = db::connect(&config)
         .await
         .expect("connect and migrate test database");
-    let state = AppState::new(pool.clone(), config.clone());
-    let app = build_router(state);
+    let clock = Clock::fake(1_700_000_000);
+    let state =
+        AppState::with_clock(pool.clone(), config.clone(), clock.clone()).expect("build app state");
+    let app = build_router(state.clone());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -241,7 +247,13 @@ pub async fn spawn_app_with(customize: impl FnOnce(&mut Config)) -> TestApp {
         .expect("test server crashed");
     });
 
-    TestApp { addr, pool, config }
+    TestApp {
+        addr,
+        pool,
+        config,
+        state,
+        clock,
+    }
 }
 
 /// Creates a member directly in the database (bypassing HTTP) and returns

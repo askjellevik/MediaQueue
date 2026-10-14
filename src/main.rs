@@ -100,7 +100,8 @@ async fn serve_async(config: Config) -> anyhow::Result<()> {
     let pool = db::connect(&config).await?;
     let bind_addr = config.bind_addr;
     tasks::spawn_session_cleanup(pool.clone());
-    let state = AppState::new(pool.clone(), config);
+    let state = AppState::new(pool.clone(), config)?;
+    tasks::spawn_rate_limit_maintenance(state.limits.clone());
     let app = build_router(state);
 
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
