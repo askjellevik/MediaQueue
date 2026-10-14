@@ -1,12 +1,15 @@
 FROM rust:1-slim-bookworm AS build
 WORKDIR /src
 ENV SQLX_OFFLINE=true
+# Extra cargo features, e.g. `--build-arg FEATURES=cf-access`.
+ARG FEATURES=""
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential pkg-config \
  && rm -rf /var/lib/apt/lists/*
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked && cp target/release/media-requests /media-requests
+    cargo build --release --locked --features "$FEATURES" \
+ && cp target/release/media-requests /media-requests
 
 FROM gcr.io/distroless/cc-debian12:nonroot
 # Large allocations (each Argon2 login takes 19 MiB) go straight to mmap and
