@@ -115,6 +115,11 @@ pub fn build_router(state: AppState) -> Router {
         .layer(middleware::catch_panic_layer())
         .layer(middleware::body_limit_layer())
         .layer(middleware::timeout_layer())
+        // Outside the timeout and panic layers, so 408s and 500s are logged.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::request_log,
+        ))
         .layer(middleware::concurrency_limit_layer());
 
     middleware::apply_security_headers(app)

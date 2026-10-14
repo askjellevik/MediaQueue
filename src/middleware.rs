@@ -118,6 +118,28 @@ pub async fn api_rate_limit(
     next.run(req).await
 }
 
+/// One structured log line per request: method, path, status, latency and
+/// client IP. Never the query string (it carries search text), headers,
+/// cookies or bodies. Health checks are skipped; they run every 30 s.
+pub async fn request_log(ClientIp(ip): ClientIp, req: Request, next: Next) -> Response {
+    let method = req.method().clone();
+    let path = req.uri().path().to_string();
+    let started = std::time::Instant::now();
+    let response = next.run(req).await;
+    if path != "/healthz" {
+        tracing::info!(
+            target: "media_requests::request",
+            %ip,
+            %method,
+            %path,
+            status = response.status().as_u16(),
+            ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            "request"
+        );
+    }
+    response
+}
+
 pub fn body_limit_layer() -> RequestBodyLimitLayer {
     RequestBodyLimitLayer::new(BODY_LIMIT_BYTES)
 }
