@@ -415,4 +415,38 @@ mod tests {
             .expect("count");
         assert_eq!(row.0, 1);
     }
+
+    #[tokio::test]
+    async fn delete_expired_sessions_removes_only_expired_rows() {
+        let pool = test_pool().await;
+        let member_id = insert_member(&pool, "Alice", b"hash", 3, None, 0)
+            .await
+            .expect("insert member");
+
+        sqlx::query!(
+            "INSERT INTO sessions (token_hash, kind, member_id, created_at, expires_at, last_seen_at)
+             VALUES (x'01', 'user', ?, 0, 100, 0)",
+            member_id
+        )
+        .execute(&pool)
+        .await
+        .expect("insert expired session");
+        sqlx::query!(
+            "INSERT INTO sessions (token_hash, kind, member_id, created_at, expires_at, last_seen_at)
+             VALUES (x'02', 'user', ?, 0, 999999, 0)",
+            member_id
+        )
+        .execute(&pool)
+        .await
+        .expect("insert live session");
+
+        let removed = delete_expired_sessions(&pool, 500).await.expect("cleanup");
+        assert_eq!(removed, 1);
+
+        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions")
+            .fetch_one(&pool)
+            .await
+            .expect("count");
+        assert_eq!(remaining, 1);
+    }
 }
