@@ -2,8 +2,8 @@ mod common;
 
 #[tokio::test]
 async fn healthz_returns_ok_true() {
-    let addr = common::spawn_app().await;
-    let response = common::http_get(addr, "/healthz").await;
+    let app = common::spawn_app().await;
+    let response = common::http_get(app.addr, "/healthz").await;
 
     assert!(
         response.starts_with("HTTP/1.1 200"),
@@ -17,8 +17,8 @@ async fn healthz_returns_ok_true() {
 
 #[tokio::test]
 async fn unknown_path_returns_404() {
-    let addr = common::spawn_app().await;
-    let response = common::http_get(addr, "/does-not-exist").await;
+    let app = common::spawn_app().await;
+    let response = common::http_get(app.addr, "/does-not-exist").await;
 
     assert!(
         response.starts_with("HTTP/1.1 404"),
@@ -28,8 +28,8 @@ async fn unknown_path_returns_404() {
 
 #[tokio::test]
 async fn root_serves_embedded_index_html_with_no_cache() {
-    let addr = common::spawn_app().await;
-    let response = common::http_get(addr, "/").await;
+    let app = common::spawn_app().await;
+    let response = common::http_get(app.addr, "/").await;
 
     assert!(response.starts_with("HTTP/1.1 200"));
     assert!(

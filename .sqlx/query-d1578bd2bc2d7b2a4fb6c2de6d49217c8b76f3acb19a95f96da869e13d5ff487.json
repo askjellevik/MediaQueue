@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM sessions\n               WHERE id = (\n                   SELECT id FROM sessions\n                   WHERE member_id = ? AND kind = 'user'\n                   ORDER BY created_at ASC, id ASC\n                   LIMIT 1\n               )\n               RETURNING id AS \"id!\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d1578bd2bc2d7b2a4fb6c2de6d49217c8b76f3acb19a95f96da869e13d5ff487"
+}

@@ -1,5 +1,9 @@
 //! Shared integration test helpers: spin up the real app on a random port
 //! and talk to it with a tiny stdlib HTTP client (no reqwest until Phase 3).
+//!
+//! Each `tests/*.rs` file compiles this module separately as its own copy,
+//! so any one binary using only part of this API is expected, not dead code.
+#![allow(dead_code)]
 
 use std::{
     io::{Read, Write},
@@ -12,6 +16,7 @@ use std::{
 };
 
 use media_requests::{build_router, config::Config, db, state::AppState};
+use sqlx::SqlitePool;
 
 static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -30,28 +35,130 @@ pub fn test_admin_password_hash() -> &'static str {
     })
 }
 
-/// A minimal raw-socket HTTP/1.1 GET. Returns the full response text
-/// (status line, headers and body) so tests can assert on any of it.
-///
-/// Runs on a blocking-pool thread so the synchronous socket I/O never
-/// starves the single test task's runtime, which would otherwise never get
-/// a chance to poll the spawned server and accept the connection.
-pub async fn http_get(addr: SocketAddr, path: &str) -> String {
+/// A parsed HTTP/1.1 response: status code, headers (in order, duplicates
+/// kept) and body text.
+pub struct HttpResponse {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: String,
+}
+
+impl HttpResponse {
+    /// First header matching `name`, case-insensitively.
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// Every header matching `name`, case-insensitively (a response may set
+    /// more than one `Set-Cookie`, for example).
+    pub fn headers_all(&self, name: &str) -> Vec<&str> {
+        self.headers
+            .iter()
+            .filter(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+            .collect()
+    }
+}
+
+/// The `name=value` pair from a `Set-Cookie` header value, discarding
+/// attributes, ready to send back in a `Cookie:` request header.
+pub fn cookie_pair(set_cookie_value: &str) -> &str {
+    set_cookie_value.split(';').next().unwrap_or("").trim()
+}
+
+fn parse_http_response(raw: &str) -> HttpResponse {
+    let (head, body) = raw.split_once("\r\n\r\n").unwrap_or((raw, ""));
+    let mut lines = head.split("\r\n");
+    let status = lines
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let headers = lines
+        .filter_map(|l| {
+            l.split_once(": ")
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+        })
+        .collect();
+    HttpResponse {
+        status,
+        headers,
+        body: body.to_string(),
+    }
+}
+
+/// A minimal raw-socket HTTP/1.1 request. Runs on a blocking-pool thread so
+/// the synchronous socket I/O never starves the single test task's
+/// runtime, which would otherwise never get a chance to poll the spawned
+/// server and accept the connection.
+pub async fn http_request(
+    addr: SocketAddr,
+    method: &str,
+    path: &str,
+    extra_headers: &[(&str, &str)],
+    body: Option<&str>,
+) -> HttpResponse {
+    let method = method.to_string();
     let path = path.to_string();
+    let extra_headers: Vec<(String, String)> = extra_headers
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    let body = body.map(str::to_string);
+
     tokio::task::spawn_blocking(move || {
         let mut stream = TcpStream::connect(addr).expect("connect to test server");
         stream
             .set_read_timeout(Some(Duration::from_secs(3)))
             .expect("set read timeout");
-        let request =
-            format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+
+        let mut request =
+            format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n");
+        for (k, v) in &extra_headers {
+            request.push_str(&format!("{k}: {v}\r\n"));
+        }
+        if let Some(b) = &body {
+            request.push_str(&format!("Content-Length: {}\r\n", b.len()));
+        }
+        request.push_str("\r\n");
+        if let Some(b) = &body {
+            request.push_str(b);
+        }
+
         stream.write_all(request.as_bytes()).expect("write request");
         let mut buf = Vec::new();
         stream.read_to_end(&mut buf).expect("read response");
-        String::from_utf8_lossy(&buf).into_owned()
+        parse_http_response(&String::from_utf8_lossy(&buf))
     })
     .await
-    .expect("blocking http_get task panicked")
+    .expect("blocking http_request task panicked")
+}
+
+/// Convenience GET, used by the Phase 0 healthz/static-file tests.
+pub async fn http_get(addr: SocketAddr, path: &str) -> String {
+    let response = http_request(addr, "GET", path, &[], None).await;
+    let mut raw = format!("HTTP/1.1 {} \r\n", response.status);
+    for (k, v) in &response.headers {
+        raw.push_str(&format!("{k}: {v}\r\n"));
+    }
+    raw.push_str("\r\n");
+    raw.push_str(&response.body);
+    raw
+}
+
+/// The standard headers a browser's `fetch` sends for a same-origin JSON
+/// POST, matching what the CSRF guard requires.
+pub fn json_post_headers() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("Origin", "https://example.com"),
+        ("X-Requested-With", "mp"),
+        ("Content-Type", "application/json"),
+    ]
 }
 
 /// Builds a fresh `Config` pointed at a unique temp-file database, bypassing
@@ -82,14 +189,40 @@ fn test_config() -> Config {
     }
 }
 
+pub struct TestApp {
+    pub addr: SocketAddr,
+    pub pool: SqlitePool,
+    pub config: Config,
+}
+
+impl TestApp {
+    pub async fn request(
+        &self,
+        method: &str,
+        path: &str,
+        extra_headers: &[(&str, &str)],
+        body: Option<&str>,
+    ) -> HttpResponse {
+        http_request(self.addr, method, path, extra_headers, body).await
+    }
+}
+
 /// Starts the real app (router, DB pool, migrations) on an OS-assigned
-/// loopback port and returns the address it is listening on.
-pub async fn spawn_app() -> SocketAddr {
-    let config = test_config();
+/// loopback port with the default test config.
+pub async fn spawn_app() -> TestApp {
+    spawn_app_with(|_| {}).await
+}
+
+/// Like [`spawn_app`], but lets the caller tweak the config first (e.g. a
+/// smaller `default_max_sessions`, or `cookie_dev_insecure = true`).
+pub async fn spawn_app_with(customize: impl FnOnce(&mut Config)) -> TestApp {
+    let mut config = test_config();
+    customize(&mut config);
+
     let pool = db::connect(&config)
         .await
         .expect("connect and migrate test database");
-    let state = AppState::new(pool, config);
+    let state = AppState::new(pool.clone(), config.clone());
     let app = build_router(state);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -106,5 +239,27 @@ pub async fn spawn_app() -> SocketAddr {
         .expect("test server crashed");
     });
 
-    addr
+    TestApp { addr, pool, config }
+}
+
+/// Creates a member directly in the database (bypassing HTTP) and returns
+/// `(member_id, raw_code)`. Mirrors what the `add-member` CLI does.
+pub async fn create_member(pool: &SqlitePool, config: &Config, name: &str) -> (i64, String) {
+    create_member_with_sessions(pool, config, name, config.default_max_sessions).await
+}
+
+pub async fn create_member_with_sessions(
+    pool: &SqlitePool,
+    config: &Config,
+    name: &str,
+    max_sessions: i64,
+) -> (i64, String) {
+    let code = media_requests::auth::generate_code(config.code_length);
+    let normalised = media_requests::auth::normalise_code(&code);
+    let code_hash = media_requests::auth::hmac_code(&config.code_pepper, &normalised);
+    let now = db::now_unix();
+    let id = db::insert_member(pool, name, &code_hash, max_sessions, None, now)
+        .await
+        .expect("insert test member");
+    (id, code)
 }
