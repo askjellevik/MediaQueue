@@ -1,6 +1,6 @@
 services:
   portal:
-    image: media-requests:latest        # built on a laptop or CI for linux/arm64
+    image: ghcr.io/askjellevik/mediaqueue:latest   # built for linux/arm64 by GitHub Actions
     restart: unless-stopped
     env_file: .env
     ports: ["127.0.0.1:8088:8000"]     # loopback only, never 0.0.0.0

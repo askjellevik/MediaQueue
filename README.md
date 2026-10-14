@@ -25,7 +25,7 @@ Everything below happens in one directory on the Pi, for example
    openssl rand -base64 48
 
    # Argon2id hash of your admin password (prompts, no echo).
-   docker run --rm -it media-requests:latest hash-password
+   docker run --rm -it ghcr.io/askjellevik/mediaqueue:latest hash-password
    ```
 
 3. **Create a TMDB token.** Sign in at themoviedb.org, open Settings > API,
@@ -80,18 +80,14 @@ Everything below happens in one directory on the Pi, for example
 ## Build and deploy
 
 Compiling on the Pi is slow and can run out of memory while linking, so
-build the arm64 image on a laptop or in CI:
+GitHub Actions builds the arm64 image (`.github/workflows/image.yml`) on
+every push to `main`, monthly, and on demand, and publishes it to
+`ghcr.io/askjellevik/mediaqueue` as `latest` and `sha-<commit>`. If the
+package is private, run `docker login ghcr.io` once on the Pi with a token
+that has `read:packages`.
 
-```sh
-docker buildx build --platform linux/arm64 -t media-requests:latest --load .
-docker save media-requests:latest | gzip | ssh pi 'gunzip | docker load'
-```
-
-To include the optional Cloudflare Access check, add
-`--build-arg FEATURES=cf-access` (see "Cloudflare" below).
-
-Then copy `compose.yaml` and `.env` to the Pi, if you haven't yet, and run
-`docker compose up -d` there. The container listens only on
+Copy `compose.yaml` and `.env` to the Pi, if you haven't yet, then run
+`docker compose pull && docker compose up -d` there. The container listens only on
 `127.0.0.1:8088`. Docker's published ports bypass UFW, so binding to
 loopback keeps Caddy as the only way in.
 
@@ -163,15 +159,25 @@ Keep a copy of `.env` with the backups.
 
 ## Updates
 
+Push to `main`, wait for the `image` workflow to finish, then on the Pi:
+
 ```sh
-git pull
-docker buildx build --platform linux/arm64 -t media-requests:latest --load .
-docker save media-requests:latest | gzip | ssh pi 'gunzip | docker load'
-ssh pi 'cd media-requests && docker compose up -d'
+cd media-requests && docker compose pull && docker compose up -d
 ```
 
-Migrations run at startup. Rebuild at least monthly even without code
-changes, so the base image picks up Debian security fixes.
+To go back, set the image in `compose.yaml` to a `sha-<commit>` tag.
+
+Migrations run at startup. The workflow also rebuilds monthly, so the base
+image picks up Debian security fixes; pull after it runs.
+
+To build by hand instead (for example with `--build-arg FEATURES=cf-access`):
+
+```sh
+docker buildx build --platform linux/arm64 -t media-requests:latest --load .
+docker save media-requests:latest | gzip | ssh pi 'gunzip | docker load'
+```
+
+and point `image:` in `compose.yaml` at `media-requests:latest`.
 
 ## Troubleshooting
 
