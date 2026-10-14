@@ -127,5 +127,8 @@ async fn bodies_over_16_kb_are_refused() {
     let response = app
         .request("POST", "/api/auth/code", &json_post_headers(), Some(&fits))
         .await;
-    assert_eq!(response.status, 401, "a body under the cap is parsed normally");
+    assert_eq!(
+        response.status, 401,
+        "a body under the cap is parsed normally"
+    );
 }
