@@ -11,6 +11,7 @@ pub mod db;
 pub mod error;
 pub mod middleware;
 pub mod notify;
+pub mod ratelimit;
 pub mod routes;
 pub mod state;
 pub mod tasks;
