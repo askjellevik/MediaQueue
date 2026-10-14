@@ -42,5 +42,5 @@ async fn root_serves_embedded_index_html_with_no_cache() {
             .to_ascii_lowercase()
             .contains("cache-control: no-cache")
     );
-    assert!(response.contains("Media requests portal"));
+    assert!(response.contains("<title>Media requests</title>"));
 }
