@@ -1,0 +1,21 @@
+services:
+  portal:
+    image: media-requests:latest        # built on a laptop or CI for linux/arm64
+    restart: unless-stopped
+    env_file: .env
+    ports: ["127.0.0.1:8088:8000"]     # loopback only, never 0.0.0.0
+    volumes: ["./data:/data"]           # must be owned by UID 65532
+    read_only: true
+    tmpfs: ["/tmp:size=8m"]
+    user: "65532:65532"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 64m
+    cpus: 0.5
+    pids_limit: 64
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
+    healthcheck:
+      test: ["CMD", "/app/media-requests", "healthcheck"]
+      interval: 30s
+      timeout: 3s
+      retries: 3

@@ -1,0 +1,7 @@
+target
+data
+.git
+.env
+plan.md
+*.md
+!README.md
