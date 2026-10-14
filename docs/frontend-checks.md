@@ -29,9 +29,14 @@ They check:
   the confirm sheet with focus on **Add to queue**, submitting closes it,
   focus returns to the search box and "My requests" refreshes. Escape
   closes the list, and a second Escape clears the box.
+- **Admin page** (`tests/js/admin_driver.js`): six tabs, the Pending row
+  with requester, IMDb ID and an `Open in DMM` link (`rel=noopener`), a
+  status change that fails rolls back and one that succeeds removes the
+  row, Archive history expands, and adding a member shows the code once
+  with the "you will not see this again" notice.
 
-The driver is `tests/js/driver.js`. It runs next to the real page modules
-and writes `PASS` or a list of failures into the page.
+The drivers run next to the real page modules and write `PASS` or a list
+of failures into the page.
 
 ## Manual checks
 

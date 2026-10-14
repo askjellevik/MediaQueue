@@ -280,3 +280,121 @@ async fn console_check_catches_a_csp_violation() {
         "violation not seen in:\n{log}"
     );
 }
+
+#[tokio::test]
+#[ignore = "needs a local Chrome"]
+async fn admin_queue_archive_and_members_work_end_to_end() {
+    let server = MockServer::start().await;
+    let page = String::from_utf8(web_file("web/admin.html"))
+        .unwrap()
+        .replace("__V__", "t")
+        .replace(
+            "</head>",
+            "<script type=\"module\" src=\"/v/t/admin_driver.js\"></script>\n</head>",
+        );
+    serve_file(
+        &server,
+        "/admin",
+        page.into_bytes(),
+        "text/html; charset=utf-8",
+    )
+    .await;
+    for (rel, content_type) in [
+        ("js/admin.js", "text/javascript"),
+        ("js/api.js", "text/javascript"),
+        ("js/ui.js", "text/javascript"),
+        ("css/app.css", "text/css"),
+        ("img/tmdb.svg", "image/svg+xml"),
+        ("img/icon.svg", "image/svg+xml"),
+    ] {
+        serve_file(
+            &server,
+            &format!("/v/t/{rel}"),
+            web_file(&format!("web/{rel}")),
+            content_type,
+        )
+        .await;
+    }
+    serve_file(
+        &server,
+        "/v/t/admin_driver.js",
+        web_file("tests/js/admin_driver.js"),
+        "text/javascript",
+    )
+    .await;
+
+    let dune = json!({
+        "id": 1, "tmdb_id": 438631, "type": "movie", "title": "Dune", "year": 2021,
+        "poster": null, "imdb_id": "tt1160419", "dmm_url": "https://dmm.example/movie/tt1160419",
+        "note": "the 2021 one", "status": "pending", "requester": "Alice", "times_requested": 2,
+        "created_at": 1700000000, "status_changed_at": 1700000000
+    });
+    api_json(&server, "GET", "/api/admin/members", 200, json!({
+        "members": [{
+            "id": 2, "name": "Bob", "daily_limit": null, "max_sessions": 3,
+            "created_at": 1700000000, "rotated_at": null, "revoked_at": null,
+            "last_seen_at": 1700000100, "request_count": 4,
+            "devices": [{"id": 9, "created_at": 1700000000, "last_seen_at": 1700000100, "expires_at": 1800000000}]
+        }],
+        "default_daily_limit": 10, "default_max_sessions": 3
+    }))
+    .await;
+    api_json(
+        &server,
+        "GET",
+        "/api/admin/requests",
+        200,
+        json!({"items": [dune], "next_cursor": null}),
+    )
+    .await;
+    // The first status change fails, to exercise the rollback.
+    Mock::given(method("PATCH"))
+        .and(path("/api/admin/requests/1"))
+        .respond_with(
+            ResponseTemplate::new(500)
+                .set_body_json(json!({"error": "internal_error", "message": "internal error"})),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    api_json(
+        &server,
+        "PATCH",
+        "/api/admin/requests/1",
+        200,
+        json!({"id": 1, "status": "added", "changed": true}),
+    )
+    .await;
+    api_json(
+        &server,
+        "GET",
+        "/api/admin/requests/1/events",
+        200,
+        json!({"events": [
+            {"id": 1, "kind": "submitted", "actor": "Alice", "from_status": null, "to_status": null,
+             "note": "the 2021 one", "created_at": 1700000000}
+        ]}),
+    )
+    .await;
+    api_json(
+        &server,
+        "POST",
+        "/api/admin/members",
+        201,
+        json!({"id": 3, "name": "Carol", "code": "ABCD-EFGH"}),
+    )
+    .await;
+
+    let (dom, log) = dump_dom(format!("{}/admin", server.uri())).await;
+    let verdict = dom
+        .split(r#"<pre id="e2e-result">"#)
+        .nth(1)
+        .and_then(|rest| rest.split("</pre>").next())
+        .unwrap_or("driver never reported");
+    assert_eq!(verdict, "PASS", "\nDOM:\n{dom}\nLOG:\n{log}");
+    assert!(
+        console_problems(&log).is_empty(),
+        "console: {:#?}",
+        console_problems(&log)
+    );
+}

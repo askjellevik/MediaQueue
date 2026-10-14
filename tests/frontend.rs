@@ -35,6 +35,23 @@ fn has_event_attribute(html: &str) -> bool {
 }
 
 #[tokio::test]
+async fn admin_page_carries_no_data_and_no_inline_code() {
+    let app = common::spawn_app().await;
+    let page = get(&app, "/admin").await;
+    assert_eq!(page.status, 200);
+    assert_eq!(page.header("cache-control"), Some("no-cache"));
+    let html = page.body.to_ascii_lowercase();
+    assert!(html.contains(&versioned("js/admin.js")));
+    for marker in ["<table", "<input", "<form", "tt0", "<style", " style="] {
+        assert!(!html.contains(marker), "admin.html contains {marker:?}");
+    }
+    for tag in html.split("<script").skip(1) {
+        assert!(tag.split('>').next().unwrap_or("").contains("src="));
+    }
+    assert!(!has_event_attribute(&html));
+}
+
+#[tokio::test]
 async fn index_has_no_search_ui_before_login() {
     let app = common::spawn_app().await;
     let page = get(&app, "/").await;
@@ -78,8 +95,9 @@ async fn index_references_assets_by_current_version_and_has_no_inline_code() {
 #[tokio::test]
 async fn scripts_never_write_html() {
     let app = common::spawn_app().await;
-    for asset in PAGE_ASSETS.iter().filter(|a| a.ends_with(".js")) {
+    for asset in ["js/search.js", "js/api.js", "js/ui.js", "js/admin.js"] {
         let js = get(&app, &versioned(asset)).await.body;
+        assert!(!js.is_empty(), "{asset} missing");
         for banned in [
             "innerHTML",
             "outerHTML",
@@ -97,7 +115,7 @@ async fn scripts_never_write_html() {
 #[tokio::test]
 async fn module_imports_resolve() {
     let app = common::spawn_app().await;
-    for asset in PAGE_ASSETS.iter().filter(|a| a.ends_with(".js")) {
+    for asset in ["js/search.js", "js/api.js", "js/ui.js", "js/admin.js"] {
         let js = get(&app, &versioned(asset)).await.body;
         for line in js.lines().filter(|l| l.contains(" from './")) {
             let target = line
