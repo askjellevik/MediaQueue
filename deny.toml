@@ -1,0 +1,43 @@
+# cargo deny check: licenses, advisories, duplicate crates and sources.
+
+[graph]
+all-features = true
+
+[advisories]
+ignore = [
+    # rsa "Marvin" timing side channel in private-key operations. rsa is
+    # only pulled in by jsonwebtoken behind the optional `cf-access`
+    # feature, which only ever verifies signatures with Cloudflare's
+    # public keys, so the affected code paths never run.
+    { id = "RUSTSEC-2023-0071", reason = "public-key verification only (cf-access feature)" },
+]
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unlicense",
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.9
+
+# This crate itself is never published.
+[licenses.private]
+ignore = true
+
+[bans]
+# Duplicate versions are reported, not fatal: several come from upstream
+# crates pinning different majors (e.g. rand, hashbrown).
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
