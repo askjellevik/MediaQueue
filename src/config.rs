@@ -18,6 +18,7 @@ const MIN_PEPPER_BYTES: usize = 32;
 const MIN_CODE_LENGTH: usize = 8;
 
 const DEFAULT_TMDB_BASE_URL: &str = "https://api.themoviedb.org/3";
+const DEFAULT_DMM_BASE_URL: &str = "https://debridmediamanager.com";
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -47,6 +48,9 @@ pub struct Config {
     pub tmdb_token: String,
     /// Without a trailing slash, e.g. `https://api.themoviedb.org/3`.
     pub tmdb_base_url: String,
+    /// Debrid Media Manager, for the admin page's "Open in DMM" links
+    /// (`/movie/<imdb_id>`, `/show/<imdb_id>`). No trailing slash.
+    pub dmm_base_url: String,
     pub ntfy: NtfyConfig,
     pub rate_limits: RateLimitConfig,
 }
@@ -157,6 +161,7 @@ impl std::fmt::Debug for Config {
             .field("trusted_proxy_cidrs", &self.trusted_proxy_cidrs)
             .field("tmdb_token", &"<redacted>")
             .field("tmdb_base_url", &self.tmdb_base_url)
+            .field("dmm_base_url", &self.dmm_base_url)
             .field("ntfy", &self.ntfy)
             .field("rate_limits", &self.rate_limits)
             .finish()
@@ -461,6 +466,17 @@ impl Config {
             });
         }
 
+        let dmm_base_url = with_default(env, "DMM_BASE_URL", DEFAULT_DMM_BASE_URL)
+            .trim()
+            .trim_end_matches('/')
+            .to_string();
+        if !dmm_base_url.starts_with("https://") && !dmm_base_url.starts_with("http://") {
+            return Err(ConfigError::Invalid {
+                name: "DMM_BASE_URL",
+                reason: "must start with http:// or https://".into(),
+            });
+        }
+
         let ntfy = ntfy_config(env)?;
         let rate_limits = rate_limit_config(env)?;
 
@@ -478,6 +494,7 @@ impl Config {
             trusted_proxy_cidrs,
             tmdb_token,
             tmdb_base_url,
+            dmm_base_url,
             ntfy,
             rate_limits,
         })
@@ -628,6 +645,7 @@ mod tests {
     fn tmdb_token_is_required_and_base_url_defaults() {
         let cfg = Config::from_lookup(&base_env()).unwrap();
         assert_eq!(cfg.tmdb_base_url, "https://api.themoviedb.org/3");
+        assert_eq!(cfg.dmm_base_url, "https://debridmediamanager.com");
 
         let mut env = base_env();
         env.insert("TMDB_BASE_URL", "http://127.0.0.1:9999/");

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE requests SET status = ?, status_changed_at = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "8f1f0daa9d2cffb3b619a20da2f906a47eb5de268f8f826637d4f3e30b3fe665"
+}

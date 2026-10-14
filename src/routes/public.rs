@@ -18,6 +18,8 @@ use crate::{
     tmdb::{self, MediaType, SearchItem, SearchType},
 };
 
+use super::{next_page, page_limit, parse_cursor};
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CodeBody {
@@ -424,37 +426,10 @@ pub async fn post_request(
     Ok((status, axum::Json(body)).into_response())
 }
 
-const DEFAULT_PAGE: i64 = 20;
-const MAX_PAGE: i64 = 50;
-
 #[derive(Deserialize)]
 pub struct PageParams {
     cursor: Option<String>,
     limit: Option<i64>,
-}
-
-/// Parses a `created_at.id` cursor; `None` (first page) starts past
-/// every row.
-pub fn parse_cursor(cursor: Option<&str>) -> Result<(i64, i64), AppError> {
-    let Some(cursor) = cursor.filter(|c| !c.is_empty()) else {
-        return Ok((i64::MAX, i64::MAX));
-    };
-    let (created_at, id) = cursor.split_once('.').ok_or(AppError::BadRequest)?;
-    let created_at = created_at.parse().map_err(|_| AppError::BadRequest)?;
-    let id = id.parse().map_err(|_| AppError::BadRequest)?;
-    Ok((created_at, id))
-}
-
-pub fn format_cursor(created_at: i64, id: i64) -> String {
-    format!("{created_at}.{id}")
-}
-
-pub fn page_limit(limit: Option<i64>) -> Result<i64, AppError> {
-    match limit {
-        None => Ok(DEFAULT_PAGE),
-        Some(n) if (1..=MAX_PAGE).contains(&n) => Ok(n),
-        Some(_) => Err(AppError::BadRequest),
-    }
 }
 
 #[derive(Serialize)]
@@ -481,12 +456,7 @@ pub async fn get_requests_mine(
         limit + 1,
     )
     .await?;
-    let next_cursor = if rows.len() as i64 > limit {
-        rows.truncate(limit as usize);
-        rows.last().map(|r| format_cursor(r.created_at, r.id))
-    } else {
-        None
-    };
+    let next_cursor = next_page(&mut rows, limit, |r| (r.created_at, r.id));
     Ok(axum::Json(MineBody {
         items: rows.into_iter().map(RequestView::from).collect(),
         next_cursor,
@@ -548,16 +518,5 @@ mod tests {
         assert!(clean_note(Some(&"x".repeat(200))).unwrap().is_some());
         assert!(clean_note(Some(&"x".repeat(201))).is_err());
         assert!(clean_note(Some(&"æ".repeat(200))).unwrap().is_some());
-    }
-
-    #[test]
-    fn cursor_round_trips_and_rejects_garbage() {
-        assert_eq!(parse_cursor(None).unwrap(), (i64::MAX, i64::MAX));
-        assert_eq!(parse_cursor(Some(&format_cursor(5, 7))).unwrap(), (5, 7));
-        assert!(parse_cursor(Some("5")).is_err());
-        assert!(parse_cursor(Some("a.b")).is_err());
-        assert_eq!(page_limit(None).unwrap(), DEFAULT_PAGE);
-        assert!(page_limit(Some(0)).is_err());
-        assert!(page_limit(Some(51)).is_err());
     }
 }

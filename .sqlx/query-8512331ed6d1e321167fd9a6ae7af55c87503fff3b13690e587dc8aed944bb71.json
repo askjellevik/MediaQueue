@@ -1,0 +1,128 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!: String\", tmdb_id AS \"tmdb_id!: String\",\n                  media_type AS \"media_type!: String\", title AS \"title!: String\",\n                  year AS \"year?: String\", imdb_id AS \"imdb_id?: String\",\n                  status AS \"status!: String\", requested_by AS \"requested_by!: String\",\n                  note AS \"note?: String\", times_requested AS \"times_requested!: String\",\n                  created_at AS \"created_at!: String\",\n                  status_changed_at AS \"status_changed_at!: String\"\n           FROM (\n             SELECT 0 AS sort_key, 0 AS sort_id,\n                    'id' AS id, 'tmdb_id' AS tmdb_id, 'type' AS media_type, 'title' AS title,\n                    'year' AS year, 'imdb_id' AS imdb_id, 'status' AS status,\n                    'requested_by' AS requested_by, 'note' AS note,\n                    'times_requested' AS times_requested, 'created_at' AS created_at,\n                    'status_changed_at' AS status_changed_at\n             UNION ALL\n             SELECT 1, r.id, CAST(r.id AS TEXT), CAST(r.tmdb_id AS TEXT), r.media_type, r.title,\n                    CAST(r.year AS TEXT), r.imdb_id, r.status, m.name, r.note,\n                    CAST((SELECT COUNT(*) FROM request_events e\n                          WHERE e.request_id = r.id AND e.kind IN ('submitted', 'duplicate'))\n                         AS TEXT),\n                    strftime('%Y-%m-%dT%H:%M:%SZ', r.created_at, 'unixepoch'),\n                    strftime('%Y-%m-%dT%H:%M:%SZ', r.status_changed_at, 'unixepoch')\n             FROM requests r JOIN members m ON m.id = r.requested_by\n           )\n           ORDER BY sort_key, sort_id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "name": "tmdb_id!: String",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "name": "media_type!: String",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "media_type"
+          }
+        }
+      },
+      {
+        "name": "title!: String",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "name": "year?: String",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "name": "imdb_id?: String",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "imdb_id"
+          }
+        }
+      },
+      {
+        "name": "status!: String",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "name": "requested_by!: String",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "members",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "note?: String",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "note"
+          }
+        }
+      },
+      {
+        "name": "times_requested!: String",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "name": "created_at!: String",
+        "ordinal": 10,
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "name": "status_changed_at!: String",
+        "ordinal": 11,
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "8512331ed6d1e321167fd9a6ae7af55c87503fff3b13690e587dc8aed944bb71"
+}

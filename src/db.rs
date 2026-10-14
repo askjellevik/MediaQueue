@@ -569,6 +569,476 @@ pub async fn requests_for_member(
     .await
 }
 
+// ---------------------------------------------------------------------
+// Admin: requests
+// ---------------------------------------------------------------------
+
+pub struct AdminRequestRow {
+    pub id: i64,
+    pub tmdb_id: i64,
+    pub media_type: String,
+    pub imdb_id: Option<String>,
+    pub title: String,
+    pub year: Option<i64>,
+    pub poster_path: Option<String>,
+    pub note: Option<String>,
+    pub status: String,
+    pub requester: String,
+    pub created_at: i64,
+    pub status_changed_at: i64,
+    /// `submitted` plus `duplicate` events: how many times people asked.
+    pub times_requested: i64,
+}
+
+/// One page of the admin queue, newest first, keyset-paginated on
+/// `(created_at, id)` so rows arriving between page loads never shift
+/// later pages. `status: None` means every status. `title_like` is a
+/// ready-escaped LIKE pattern (backslash escapes) matched against title
+/// and requester; `exact` is matched against the IMDb ID.
+pub async fn admin_requests(
+    pool: &SqlitePool,
+    status: Option<&str>,
+    title_like: Option<&str>,
+    exact: Option<&str>,
+    before: (i64, i64),
+    limit: i64,
+) -> Result<Vec<AdminRequestRow>, sqlx::Error> {
+    let (before_created, before_id) = before;
+    sqlx::query_as!(
+        AdminRequestRow,
+        r#"SELECT r.id AS "id!", r.tmdb_id AS "tmdb_id!", r.media_type AS "media_type!",
+                  r.imdb_id, r.title AS "title!", r.year, r.poster_path, r.note,
+                  r.status AS "status!", m.name AS "requester!",
+                  r.created_at AS "created_at!", r.status_changed_at AS "status_changed_at!",
+                  (SELECT COUNT(*) FROM request_events e
+                   WHERE e.request_id = r.id AND e.kind IN ('submitted', 'duplicate'))
+                    AS "times_requested!: i64"
+           FROM requests r
+           JOIN members m ON m.id = r.requested_by
+           WHERE (?1 IS NULL OR r.status = ?1)
+             AND (?2 IS NULL OR r.title LIKE ?2 ESCAPE '\' OR m.name LIKE ?2 ESCAPE '\'
+                  OR r.imdb_id = ?3)
+             AND (r.created_at < ?4 OR (r.created_at = ?4 AND r.id < ?5))
+           ORDER BY r.created_at DESC, r.id DESC
+           LIMIT ?6"#,
+        status,
+        title_like,
+        exact,
+        before_created,
+        before_id,
+        limit
+    )
+    .fetch_all(pool)
+    .await
+}
+
+pub enum StatusChange {
+    NotFound,
+    /// Already in that status; nothing written.
+    Unchanged,
+    Changed {
+        from: String,
+    },
+}
+
+/// Moves a request to `to` and logs a `status` event in the same
+/// transaction, so the archive always explains the current status.
+pub async fn set_request_status(
+    pool: &SqlitePool,
+    request_id: i64,
+    to: &str,
+    now: i64,
+) -> Result<StatusChange, sqlx::Error> {
+    let mut tx = begin_immediate(pool).await?;
+    let current = sqlx::query_scalar!(
+        r#"SELECT status AS "status!" FROM requests WHERE id = ?"#,
+        request_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(from) = current else {
+        tx.rollback().await?;
+        return Ok(StatusChange::NotFound);
+    };
+    if from == to {
+        tx.rollback().await?;
+        return Ok(StatusChange::Unchanged);
+    }
+    sqlx::query!(
+        "UPDATE requests SET status = ?, status_changed_at = ? WHERE id = ?",
+        to,
+        now,
+        request_id
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query!(
+        "INSERT INTO request_events (request_id, kind, actor, from_status, to_status, created_at)
+         VALUES (?, 'status', 'admin', ?, ?, ?)",
+        request_id,
+        from,
+        to,
+        now
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(StatusChange::Changed { from })
+}
+
+pub struct EventRow {
+    pub id: i64,
+    pub kind: String,
+    pub actor: String,
+    pub from_status: Option<String>,
+    pub to_status: Option<String>,
+    pub note: Option<String>,
+    pub created_at: i64,
+}
+
+/// Full history of one request, oldest first; `None` if no such request.
+pub async fn request_history(
+    pool: &SqlitePool,
+    request_id: i64,
+) -> Result<Option<Vec<EventRow>>, sqlx::Error> {
+    let exists = sqlx::query_scalar!(
+        r#"SELECT id AS "id!" FROM requests WHERE id = ?"#,
+        request_id
+    )
+    .fetch_optional(pool)
+    .await?;
+    if exists.is_none() {
+        return Ok(None);
+    }
+    let events = sqlx::query_as!(
+        EventRow,
+        r#"SELECT id AS "id!", kind AS "kind!", actor AS "actor!", from_status, to_status,
+                  note, created_at AS "created_at!"
+           FROM request_events WHERE request_id = ? ORDER BY id"#,
+        request_id
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(Some(events))
+}
+
+/// One CSV line of the export. All cells are text; the first row the
+/// query yields is the header.
+pub struct ExportRow {
+    pub id: String,
+    pub tmdb_id: String,
+    pub media_type: String,
+    pub title: String,
+    pub year: Option<String>,
+    pub imdb_id: Option<String>,
+    pub status: String,
+    pub requested_by: String,
+    pub note: Option<String>,
+    pub times_requested: String,
+    pub created_at: String,
+    pub status_changed_at: String,
+}
+
+/// Neutralises spreadsheet formulas: a cell starting with `=`, `+`, `-`
+/// or `@` (or a tab or carriage return, which some spreadsheets strip
+/// first) gets a leading `'` so it is shown as text, never evaluated.
+pub fn csv_safe(cell: &str) -> std::borrow::Cow<'_, str> {
+    match cell.chars().next() {
+        Some('=' | '+' | '-' | '@' | '\t' | '\r') => format!("'{cell}").into(),
+        _ => cell.into(),
+    }
+}
+
+/// Lets the database row stream feed the response body directly, one
+/// line at a time, so the export never holds the whole archive in memory.
+impl From<ExportRow> for axum::body::Bytes {
+    fn from(row: ExportRow) -> Self {
+        let cells = [
+            row.id.as_str(),
+            &row.tmdb_id,
+            &row.media_type,
+            &row.title,
+            row.year.as_deref().unwrap_or(""),
+            row.imdb_id.as_deref().unwrap_or(""),
+            &row.status,
+            &row.requested_by,
+            row.note.as_deref().unwrap_or(""),
+            &row.times_requested,
+            &row.created_at,
+            &row.status_changed_at,
+        ];
+        let mut writer = csv::Writer::from_writer(Vec::with_capacity(256));
+        // Writing to a Vec cannot fail; an error would only drop the line.
+        let _ = writer.write_record(cells.iter().map(|c| csv_safe(c).into_owned()));
+        writer.into_inner().unwrap_or_default().into()
+    }
+}
+
+/// The whole archive as a streamed CSV body: a header line, then one line
+/// per request, oldest first. Needs a `'static` pool handle because the
+/// row stream outlives the handler that starts it.
+pub fn export_csv(pool: &'static SqlitePool) -> axum::body::Body {
+    let rows = sqlx::query_as!(
+        ExportRow,
+        r#"SELECT id AS "id!: String", tmdb_id AS "tmdb_id!: String",
+                  media_type AS "media_type!: String", title AS "title!: String",
+                  year AS "year?: String", imdb_id AS "imdb_id?: String",
+                  status AS "status!: String", requested_by AS "requested_by!: String",
+                  note AS "note?: String", times_requested AS "times_requested!: String",
+                  created_at AS "created_at!: String",
+                  status_changed_at AS "status_changed_at!: String"
+           FROM (
+             SELECT 0 AS sort_key, 0 AS sort_id,
+                    'id' AS id, 'tmdb_id' AS tmdb_id, 'type' AS media_type, 'title' AS title,
+                    'year' AS year, 'imdb_id' AS imdb_id, 'status' AS status,
+                    'requested_by' AS requested_by, 'note' AS note,
+                    'times_requested' AS times_requested, 'created_at' AS created_at,
+                    'status_changed_at' AS status_changed_at
+             UNION ALL
+             SELECT 1, r.id, CAST(r.id AS TEXT), CAST(r.tmdb_id AS TEXT), r.media_type, r.title,
+                    CAST(r.year AS TEXT), r.imdb_id, r.status, m.name, r.note,
+                    CAST((SELECT COUNT(*) FROM request_events e
+                          WHERE e.request_id = r.id AND e.kind IN ('submitted', 'duplicate'))
+                         AS TEXT),
+                    strftime('%Y-%m-%dT%H:%M:%SZ', r.created_at, 'unixepoch'),
+                    strftime('%Y-%m-%dT%H:%M:%SZ', r.status_changed_at, 'unixepoch')
+             FROM requests r JOIN members m ON m.id = r.requested_by
+           )
+           ORDER BY sort_key, sort_id"#
+    )
+    .fetch(pool);
+    axum::body::Body::from_stream(rows)
+}
+
+// ---------------------------------------------------------------------
+// Admin: members and devices
+// ---------------------------------------------------------------------
+
+pub struct MemberRow {
+    pub id: i64,
+    pub name: String,
+    pub max_sessions: i64,
+    pub daily_limit: Option<i64>,
+    pub created_at: i64,
+    pub rotated_at: Option<i64>,
+    pub revoked_at: Option<i64>,
+    pub last_seen_at: Option<i64>,
+    pub request_count: i64,
+}
+
+/// Every member, newest first. Never selects `code_hash`.
+pub async fn list_members(pool: &SqlitePool) -> Result<Vec<MemberRow>, sqlx::Error> {
+    sqlx::query_as!(
+        MemberRow,
+        r#"SELECT m.id AS "id!", m.name AS "name!", m.max_sessions AS "max_sessions!",
+                  m.daily_limit, m.created_at AS "created_at!", m.rotated_at, m.revoked_at,
+                  m.last_seen_at,
+                  (SELECT COUNT(*) FROM requests r WHERE r.requested_by = m.id)
+                    AS "request_count!: i64"
+           FROM members m ORDER BY m.id DESC"#
+    )
+    .fetch_all(pool)
+    .await
+}
+
+pub struct DeviceRow {
+    pub id: i64,
+    pub member_id: i64,
+    pub created_at: i64,
+    pub last_seen_at: i64,
+    pub expires_at: i64,
+}
+
+/// Live user sessions ("devices") of every member, oldest first.
+pub async fn list_devices(pool: &SqlitePool, now: i64) -> Result<Vec<DeviceRow>, sqlx::Error> {
+    sqlx::query_as!(
+        DeviceRow,
+        r#"SELECT id AS "id!", member_id AS "member_id!", created_at AS "created_at!",
+                  last_seen_at AS "last_seen_at!", expires_at AS "expires_at!"
+           FROM sessions
+           WHERE kind = 'user' AND expires_at > ?
+           ORDER BY created_at, id"#,
+        now
+    )
+    .fetch_all(pool)
+    .await
+}
+
+/// Whether another member already uses `name` (case-insensitively).
+/// Names double as event actors, so they are kept unique.
+async fn name_taken(
+    executor: impl sqlx::SqliteExecutor<'_>,
+    name: &str,
+    except_id: i64,
+) -> Result<bool, sqlx::Error> {
+    let found = sqlx::query_scalar!(
+        r#"SELECT id AS "id!" FROM members WHERE lower(name) = lower(?) AND id != ? LIMIT 1"#,
+        name,
+        except_id
+    )
+    .fetch_optional(executor)
+    .await?;
+    Ok(found.is_some())
+}
+
+pub enum MemberWrite {
+    Done(i64),
+    NotFound,
+    NameTaken,
+    Revoked,
+}
+
+/// Creates a member unless the name is taken. A `code_hash` collision
+/// (two 40-bit codes alike) surfaces as a unique-constraint error for the
+/// caller to retry with a new code.
+pub async fn create_member(
+    pool: &SqlitePool,
+    name: &str,
+    code_hash: &[u8],
+    max_sessions: i64,
+    daily_limit: Option<i64>,
+    now: i64,
+) -> Result<MemberWrite, sqlx::Error> {
+    let mut tx = begin_immediate(pool).await?;
+    if name_taken(&mut *tx, name, 0).await? {
+        tx.rollback().await?;
+        return Ok(MemberWrite::NameTaken);
+    }
+    let id = sqlx::query_scalar!(
+        r#"INSERT INTO members (name, code_hash, max_sessions, daily_limit, created_at)
+           VALUES (?, ?, ?, ?, ?)
+           RETURNING id AS "id!""#,
+        name,
+        code_hash,
+        max_sessions,
+        daily_limit,
+        now
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(MemberWrite::Done(id))
+}
+
+/// Fields a member PATCH may change; `None` leaves a field alone, and
+/// `daily_limit: Some(None)` resets it to the global default.
+pub struct MemberUpdate<'a> {
+    pub name: Option<&'a str>,
+    pub daily_limit: Option<Option<i64>>,
+    pub max_sessions: Option<i64>,
+}
+
+pub async fn update_member(
+    pool: &SqlitePool,
+    member_id: i64,
+    update: &MemberUpdate<'_>,
+) -> Result<MemberWrite, sqlx::Error> {
+    let mut tx = begin_immediate(pool).await?;
+    if let Some(name) = update.name {
+        if name_taken(&mut *tx, name, member_id).await? {
+            tx.rollback().await?;
+            return Ok(MemberWrite::NameTaken);
+        }
+    }
+    let set_limit = update.daily_limit.is_some();
+    let new_limit = update.daily_limit.flatten();
+    let result = sqlx::query!(
+        "UPDATE members
+         SET name = COALESCE(?, name),
+             max_sessions = COALESCE(?, max_sessions),
+             daily_limit = CASE WHEN ? THEN ? ELSE daily_limit END
+         WHERE id = ?",
+        update.name,
+        update.max_sessions,
+        set_limit,
+        new_limit,
+        member_id
+    )
+    .execute(&mut *tx)
+    .await?;
+    if result.rows_affected() == 0 {
+        tx.rollback().await?;
+        return Ok(MemberWrite::NotFound);
+    }
+    tx.commit().await?;
+    Ok(MemberWrite::Done(member_id))
+}
+
+/// Replaces a member's code and deletes all their sessions, so the old
+/// code and every device logged in with it stop working at once.
+pub async fn rotate_member_code(
+    pool: &SqlitePool,
+    member_id: i64,
+    code_hash: &[u8],
+    now: i64,
+) -> Result<MemberWrite, sqlx::Error> {
+    let mut tx = begin_immediate(pool).await?;
+    let revoked = sqlx::query_scalar!("SELECT revoked_at FROM members WHERE id = ?", member_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    match revoked {
+        None => {
+            tx.rollback().await?;
+            return Ok(MemberWrite::NotFound);
+        }
+        Some(Some(_)) => {
+            tx.rollback().await?;
+            return Ok(MemberWrite::Revoked);
+        }
+        Some(None) => {}
+    }
+    sqlx::query!(
+        "UPDATE members SET code_hash = ?, rotated_at = ? WHERE id = ?",
+        code_hash,
+        now,
+        member_id
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query!("DELETE FROM sessions WHERE member_id = ?", member_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(MemberWrite::Done(member_id))
+}
+
+/// Marks a member revoked (keeping the first revocation time) and deletes
+/// all their sessions.
+pub async fn revoke_member(
+    pool: &SqlitePool,
+    member_id: i64,
+    now: i64,
+) -> Result<MemberWrite, sqlx::Error> {
+    let mut tx = begin_immediate(pool).await?;
+    let result = sqlx::query!(
+        "UPDATE members SET revoked_at = COALESCE(revoked_at, ?) WHERE id = ?",
+        now,
+        member_id
+    )
+    .execute(&mut *tx)
+    .await?;
+    if result.rows_affected() == 0 {
+        tx.rollback().await?;
+        return Ok(MemberWrite::NotFound);
+    }
+    sqlx::query!("DELETE FROM sessions WHERE member_id = ?", member_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(MemberWrite::Done(member_id))
+}
+
+/// Kills one member device. Admin sessions are not touched here.
+pub async fn delete_user_session(pool: &SqlitePool, session_id: i64) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query!(
+        "DELETE FROM sessions WHERE id = ? AND kind = 'user'",
+        session_id
+    )
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

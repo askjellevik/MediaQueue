@@ -1,0 +1,98 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", kind AS \"kind!\", actor AS \"actor!\", from_status, to_status,\n                  note, created_at AS \"created_at!\"\n           FROM request_events WHERE request_id = ? ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "request_events",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "kind!",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "request_events",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "name": "actor!",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "request_events",
+            "name": "actor"
+          }
+        }
+      },
+      {
+        "name": "from_status",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "request_events",
+            "name": "from_status"
+          }
+        }
+      },
+      {
+        "name": "to_status",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "request_events",
+            "name": "to_status"
+          }
+        }
+      },
+      {
+        "name": "note",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "request_events",
+            "name": "note"
+          }
+        }
+      },
+      {
+        "name": "created_at!",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "request_events",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "282b881c1af12912b5dee88a4aa1f9e7c2774e6c106bb65fb3f4664fd130a810"
+}

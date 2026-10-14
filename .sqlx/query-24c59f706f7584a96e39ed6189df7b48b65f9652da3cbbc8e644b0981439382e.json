@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE members SET code_hash = ?, rotated_at = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "24c59f706f7584a96e39ed6189df7b48b65f9652da3cbbc8e644b0981439382e"
+}

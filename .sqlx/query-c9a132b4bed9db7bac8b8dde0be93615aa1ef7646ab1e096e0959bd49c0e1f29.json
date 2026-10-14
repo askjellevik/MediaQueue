@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT revoked_at FROM members WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "revoked_at",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "members",
+            "name": "revoked_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "c9a132b4bed9db7bac8b8dde0be93615aa1ef7646ab1e096e0959bd49c0e1f29"
+}

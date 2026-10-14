@@ -3,7 +3,7 @@
 
 use axum::{
     Json,
-    extract::{FromRequest, FromRequestParts, Query, Request},
+    extract::{FromRequest, FromRequestParts, Path, Query, Request},
     http::{HeaderValue, StatusCode, header, request::Parts},
     response::{IntoResponse, Response},
 };
@@ -38,6 +38,9 @@ pub enum AppError {
     },
     #[error("malformed request")]
     BadRequest,
+    /// The change conflicts with current state (e.g. a member name in use).
+    #[error("conflict: {0}")]
+    Conflict(&'static str),
     /// TMDB is unreachable and no usable cached answer exists.
     #[error("upstream unavailable")]
     Unavailable,
@@ -58,6 +61,7 @@ impl AppError {
                 StatusCode::TOO_MANY_REQUESTS
             }
             AppError::BadRequest => StatusCode::BAD_REQUEST,
+            AppError::Conflict(_) => StatusCode::CONFLICT,
             AppError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             AppError::Database(_) | AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -73,6 +77,7 @@ impl AppError {
             AppError::RateLimited { .. } => "rate_limited",
             AppError::QuotaExceeded { .. } => "quota_exceeded",
             AppError::BadRequest => "bad_request",
+            AppError::Conflict(_) => "conflict",
             AppError::Unavailable => "upstream_unavailable",
             AppError::Database(_) | AppError::Internal(_) => "internal_error",
         }
@@ -91,6 +96,7 @@ impl AppError {
             AppError::RateLimited { .. } => "too many requests, try again later",
             AppError::QuotaExceeded { .. } => "you have used up your requests for now",
             AppError::BadRequest => "the request was malformed",
+            AppError::Conflict(message) => message,
             AppError::Unavailable => {
                 "the movie database is not reachable right now, try again shortly"
             }
@@ -194,6 +200,25 @@ where
                 tracing::debug!(error = %rejection, "rejected query string");
                 Err(AppError::BadRequest)
             }
+        }
+    }
+}
+
+/// A `Path<T>` extractor whose rejections (e.g. a non-numeric ID) render
+/// as [`AppError::NotFound`] in the JSON error shape.
+pub struct AppPath<T>(pub T);
+
+impl<T, S> FromRequestParts<S> for AppPath<T>
+where
+    T: DeserializeOwned + Send,
+    S: Send + Sync,
+{
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        match Path::<T>::from_request_parts(parts, state).await {
+            Ok(Path(value)) => Ok(AppPath(value)),
+            Err(_) => Err(AppError::NotFound),
         }
     }
 }

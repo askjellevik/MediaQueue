@@ -21,7 +21,7 @@ use axum::{
     Json, Router,
     http::StatusCode,
     response::IntoResponse,
-    routing::{get, post},
+    routing::{delete, get, patch, post},
 };
 use serde_json::json;
 
@@ -55,6 +55,30 @@ fn api_router(state: AppState) -> Router<()> {
         .route("/requests/mine", get(routes::public::get_requests_mine))
         .route("/admin/login", post(routes::admin::post_admin_login))
         .route("/admin/logout", post(routes::admin::post_admin_logout))
+        .route("/admin/requests", get(routes::admin::get_requests))
+        .route("/admin/requests/{id}", patch(routes::admin::patch_request))
+        .route(
+            "/admin/requests/{id}/events",
+            get(routes::admin::get_request_events),
+        )
+        .route("/admin/export.csv", get(routes::admin::get_export))
+        .route(
+            "/admin/members",
+            get(routes::admin::get_members).post(routes::admin::post_member),
+        )
+        .route("/admin/members/{id}", patch(routes::admin::patch_member))
+        .route(
+            "/admin/members/{id}/rotate",
+            post(routes::admin::post_rotate),
+        )
+        .route(
+            "/admin/members/{id}/revoke",
+            post(routes::admin::post_revoke),
+        )
+        .route(
+            "/admin/sessions/{id}",
+            delete(routes::admin::delete_session),
+        )
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::csrf_guard,

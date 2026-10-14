@@ -21,6 +21,10 @@ pub struct AppState {
     pub notifier: Notifier,
     pub limits: Arc<RateLimits>,
     pub tmdb: Arc<Tmdb>,
+    /// The same pool as `pool`, leaked once per state so the streamed CSV
+    /// export can borrow it for `'static` (its row stream outlives the
+    /// handler). Costs one pointer for the life of the process.
+    pub export_pool: &'static SqlitePool,
     /// Bounds concurrent Argon2id hashing to 1 permit, so a flood of admin
     /// logins queues instead of exhausting RAM on 19 MiB hashes at once.
     pub admin_login_semaphore: Arc<Semaphore>,
@@ -41,6 +45,7 @@ impl AppState {
         let notifier = Notifier::new(http.clone(), config.ntfy.clone());
         let limits = RateLimits::new(&config.rate_limits, clock.clone(), notifier.clone());
         let tmdb = Tmdb::new(http.clone(), &config, clock.clone());
+        let export_pool: &'static SqlitePool = Box::leak(Box::new(pool.clone()));
         Ok(Self {
             pool,
             config: Arc::new(config),
@@ -49,6 +54,7 @@ impl AppState {
             notifier,
             limits: Arc::new(limits),
             tmdb: Arc::new(tmdb),
+            export_pool,
             admin_login_semaphore: Arc::new(Semaphore::new(1)),
         })
     }

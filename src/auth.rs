@@ -333,30 +333,50 @@ impl FromRequestParts<AppState> for RequireAdmin {
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, AppError> {
         let jar = CookieJar::from_headers(&parts.headers);
-        let name = admin_cookie_name(state.config.cookie_dev_insecure);
-        let raw_token = cookie_token(&jar, &name).ok_or(AppError::Unauthorized)?;
-        let token_hash = hash_token(&raw_token);
-
-        let session = db::find_admin_session(&state.pool, &token_hash)
-            .await?
-            .ok_or(AppError::Unauthorized)?;
-
-        let now = db::now_unix();
-        let idle_expired = now - session.last_seen_at >= ADMIN_SESSION_IDLE_SECS;
-        let absolute_expired = now >= session.expires_at;
-        if idle_expired || absolute_expired {
-            db::delete_session(&state.pool, session.session_id).await?;
-            return Err(AppError::Unauthorized);
+        match admin_session(&jar, state).await {
+            Err(AppError::Unauthorized) if has_user_session(&jar, state).await? => {
+                Err(AppError::Forbidden)
+            }
+            other => other,
         }
-
-        if now - session.last_seen_at >= SESSION_TOUCH_INTERVAL_SECS {
-            db::touch_session(&state.pool, session.session_id, None, now, None).await?;
-        }
-
-        Ok(RequireAdmin {
-            session_id: session.session_id,
-        })
     }
+}
+
+/// A signed-in member who is not the admin gets 403, not 401: they are
+/// authenticated, just not allowed. Only checked on the failure path.
+async fn has_user_session(jar: &CookieJar, state: &AppState) -> Result<bool, AppError> {
+    let name = user_cookie_name(state.config.cookie_dev_insecure);
+    let Some(raw_token) = cookie_token(jar, &name) else {
+        return Ok(false);
+    };
+    let session = db::find_user_session(&state.pool, &hash_token(&raw_token)).await?;
+    Ok(session.is_some_and(|s| db::now_unix() < s.expires_at))
+}
+
+async fn admin_session(jar: &CookieJar, state: &AppState) -> Result<RequireAdmin, AppError> {
+    let name = admin_cookie_name(state.config.cookie_dev_insecure);
+    let raw_token = cookie_token(jar, &name).ok_or(AppError::Unauthorized)?;
+    let token_hash = hash_token(&raw_token);
+
+    let session = db::find_admin_session(&state.pool, &token_hash)
+        .await?
+        .ok_or(AppError::Unauthorized)?;
+
+    let now = db::now_unix();
+    let idle_expired = now - session.last_seen_at >= ADMIN_SESSION_IDLE_SECS;
+    let absolute_expired = now >= session.expires_at;
+    if idle_expired || absolute_expired {
+        db::delete_session(&state.pool, session.session_id).await?;
+        return Err(AppError::Unauthorized);
+    }
+
+    if now - session.last_seen_at >= SESSION_TOUCH_INTERVAL_SECS {
+        db::touch_session(&state.pool, session.session_id, None, now, None).await?;
+    }
+
+    Ok(RequireAdmin {
+        session_id: session.session_id,
+    })
 }
 
 #[cfg(test)]

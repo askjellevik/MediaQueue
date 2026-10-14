@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE members SET revoked_at = COALESCE(revoked_at, ?) WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "8ae6c315a834000d06337d0b20e348c9b4bde7245adf94146f0736e0941668d6"
+}

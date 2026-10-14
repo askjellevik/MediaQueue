@@ -1,0 +1,117 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT m.id AS \"id!\", m.name AS \"name!\", m.max_sessions AS \"max_sessions!\",\n                  m.daily_limit, m.created_at AS \"created_at!\", m.rotated_at, m.revoked_at,\n                  m.last_seen_at,\n                  (SELECT COUNT(*) FROM requests r WHERE r.requested_by = m.id)\n                    AS \"request_count!: i64\"\n           FROM members m ORDER BY m.id DESC",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "members",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "name!",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "members",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "max_sessions!",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "members",
+            "name": "max_sessions"
+          }
+        }
+      },
+      {
+        "name": "daily_limit",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "members",
+            "name": "daily_limit"
+          }
+        }
+      },
+      {
+        "name": "created_at!",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "members",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "rotated_at",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "members",
+            "name": "rotated_at"
+          }
+        }
+      },
+      {
+        "name": "revoked_at",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "members",
+            "name": "revoked_at"
+          }
+        }
+      },
+      {
+        "name": "last_seen_at",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "members",
+            "name": "last_seen_at"
+          }
+        }
+      },
+      {
+        "name": "request_count!: i64",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "19a78af1ab69fa80c22bbfcc1c961c6f571d364a1e1d24c80ac81680f30e3987"
+}
