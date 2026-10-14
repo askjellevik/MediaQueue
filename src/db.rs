@@ -18,14 +18,14 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 /// migrations. Creates the database file's parent directory if needed,
 /// since SQLite will create the file but not the directory.
 pub async fn connect(cfg: &Config) -> Result<SqlitePool, sqlx::Error> {
-    if let Some(parent) = cfg.database_path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                sqlx::Error::Configuration(
-                    format!("creating database directory {parent:?}: {e}").into(),
-                )
-            })?;
-        }
+    if let Some(parent) = cfg.database_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            sqlx::Error::Configuration(
+                format!("creating database directory {parent:?}: {e}").into(),
+            )
+        })?;
     }
 
     let options = SqliteConnectOptions::new()
@@ -956,11 +956,11 @@ pub async fn update_member(
     update: &MemberUpdate<'_>,
 ) -> Result<MemberWrite, sqlx::Error> {
     let mut tx = begin_immediate(pool).await?;
-    if let Some(name) = update.name {
-        if name_taken(&mut *tx, name, member_id).await? {
-            tx.rollback().await?;
-            return Ok(MemberWrite::NameTaken);
-        }
+    if let Some(name) = update.name
+        && name_taken(&mut *tx, name, member_id).await?
+    {
+        tx.rollback().await?;
+        return Ok(MemberWrite::NameTaken);
     }
     let set_limit = update.daily_limit.is_some();
     let new_limit = update.daily_limit.flatten();

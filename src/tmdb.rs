@@ -186,10 +186,10 @@ where
             let Some(old_epoch) = epoch.checked_sub(back) else {
                 break;
             };
-            if let Some(entry) = self.cache.get(&(key.clone(), old_epoch)).await {
-                if now.saturating_sub(entry.fetched_at) < self.max_age_secs {
-                    return Some((old_epoch, entry));
-                }
+            if let Some(entry) = self.cache.get(&(key.clone(), old_epoch)).await
+                && now.saturating_sub(entry.fetched_at) < self.max_age_secs
+            {
+                return Some((old_epoch, entry));
             }
         }
         None
@@ -325,10 +325,10 @@ impl Tmdb {
         }
 
         let stale = cache.find_stale(&key, epoch, now).await;
-        if let Some((_, entry)) = &stale {
-            if self.is_unhealthy() {
-                return Ok(entry.value.clone());
-            }
+        if let Some((_, entry)) = &stale
+            && self.is_unhealthy()
+        {
+            return Ok(entry.value.clone());
         }
 
         // Concurrent callers for the same key share this one load; an

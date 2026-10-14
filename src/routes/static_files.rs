@@ -54,13 +54,13 @@ struct Target<'a> {
 
 fn resolve(path: &str) -> Target<'_> {
     let path = path.trim_start_matches('/');
-    if let Some(rest) = path.strip_prefix("v/") {
-        if let Some((version, key)) = rest.split_once('/') {
-            return Target {
-                key,
-                versioned: version == asset_version(),
-            };
-        }
+    if let Some(rest) = path.strip_prefix("v/")
+        && let Some((version, key)) = rest.split_once('/')
+    {
+        return Target {
+            key,
+            versioned: version == asset_version(),
+        };
     }
     let key = match path {
         "" => "index.html",
