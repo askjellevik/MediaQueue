@@ -51,8 +51,21 @@ pub struct Config {
     /// Debrid Media Manager, for the admin page's "Open in DMM" links
     /// (`/movie/<imdb_id>`, `/show/<imdb_id>`). No trailing slash.
     pub dmm_base_url: String,
+    /// Cloudflare Access JWT check for `/admin` and `/api/admin`; `None` = off.
+    pub cf_access: Option<CfAccessConfig>,
     pub ntfy: NtfyConfig,
     pub rate_limits: RateLimitConfig,
+}
+
+/// Cloudflare Access settings (Phase 7 hardening, `cf-access` feature).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CfAccessConfig {
+    /// Expected `iss`, e.g. `https://myteam.cloudflareaccess.com`.
+    pub issuer: String,
+    /// The Access application's AUD tag.
+    pub audience: String,
+    /// Where the team's signing keys are published (JWKS).
+    pub certs_url: String,
 }
 
 /// Where push notifications go. `url: None` turns them off.
@@ -162,6 +175,7 @@ impl std::fmt::Debug for Config {
             .field("tmdb_token", &"<redacted>")
             .field("tmdb_base_url", &self.tmdb_base_url)
             .field("dmm_base_url", &self.dmm_base_url)
+            .field("cf_access", &self.cf_access)
             .field("ntfy", &self.ntfy)
             .field("rate_limits", &self.rate_limits)
             .finish()
@@ -310,6 +324,54 @@ fn rate_limit_config(env: &impl EnvLookup) -> Result<RateLimitConfig, ConfigErro
         alert_interval_secs: positive(env, "RL_ALERT_INTERVAL_SECS", d.alert_interval_secs)?,
     };
     Ok(cfg)
+}
+
+fn cf_access_config(env: &impl EnvLookup) -> Result<Option<CfAccessConfig>, ConfigError> {
+    if !bool_flag(env, "CF_ACCESS_ENABLED", false) {
+        return Ok(None);
+    }
+    if !cfg!(feature = "cf-access") {
+        return Err(ConfigError::Invalid {
+            name: "CF_ACCESS_ENABLED",
+            reason: "this build lacks the cf-access feature; rebuild with --features cf-access"
+                .into(),
+        });
+    }
+    let team = env
+        .get("CF_ACCESS_TEAM_DOMAIN")
+        .map(|v| {
+            v.trim()
+                .trim_start_matches("https://")
+                .trim_end_matches('/')
+                .to_string()
+        })
+        .filter(|v| !v.is_empty())
+        .ok_or(ConfigError::Missing("CF_ACCESS_TEAM_DOMAIN"))?;
+    if !team
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+    {
+        return Err(ConfigError::Invalid {
+            name: "CF_ACCESS_TEAM_DOMAIN",
+            reason: "must be a host name such as myteam.cloudflareaccess.com".into(),
+        });
+    }
+    let audience = env
+        .get("CF_ACCESS_AUD")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .ok_or(ConfigError::Missing("CF_ACCESS_AUD"))?;
+    let issuer = format!("https://{team}");
+    let certs_url = with_default(
+        env,
+        "CF_ACCESS_CERTS_URL",
+        &format!("{issuer}/cdn-cgi/access/certs"),
+    );
+    Ok(Some(CfAccessConfig {
+        issuer,
+        audience,
+        certs_url,
+    }))
 }
 
 fn ntfy_config(env: &impl EnvLookup) -> Result<NtfyConfig, ConfigError> {
@@ -477,6 +539,8 @@ impl Config {
             });
         }
 
+        let cf_access = cf_access_config(env)?;
+
         let ntfy = ntfy_config(env)?;
         let rate_limits = rate_limit_config(env)?;
 
@@ -495,6 +559,7 @@ impl Config {
             tmdb_token,
             tmdb_base_url,
             dmm_base_url,
+            cf_access,
             ntfy,
             rate_limits,
         })
@@ -655,6 +720,47 @@ mod tests {
         env.insert("TMDB_TOKEN", "  ");
         let err = Config::from_lookup(&env).unwrap_err();
         assert!(matches!(err, ConfigError::Missing("TMDB_TOKEN")));
+    }
+
+    #[test]
+    fn cf_access_is_off_by_default() {
+        let cfg = Config::from_lookup(&base_env()).unwrap();
+        assert!(cfg.cf_access.is_none());
+    }
+
+    #[cfg(feature = "cf-access")]
+    #[test]
+    fn cf_access_needs_team_and_audience() {
+        let mut env = base_env();
+        env.insert("CF_ACCESS_ENABLED", "1");
+        let err = Config::from_lookup(&env).unwrap_err();
+        assert!(matches!(err, ConfigError::Missing("CF_ACCESS_TEAM_DOMAIN")));
+        env.insert(
+            "CF_ACCESS_TEAM_DOMAIN",
+            "https://myteam.cloudflareaccess.com/",
+        );
+        env.insert("CF_ACCESS_AUD", "aud-tag");
+        let cf = Config::from_lookup(&env).unwrap().cf_access.unwrap();
+        assert_eq!(cf.issuer, "https://myteam.cloudflareaccess.com");
+        assert_eq!(
+            cf.certs_url,
+            "https://myteam.cloudflareaccess.com/cdn-cgi/access/certs"
+        );
+    }
+
+    #[cfg(not(feature = "cf-access"))]
+    #[test]
+    fn cf_access_switch_fails_fast_without_the_feature() {
+        let mut env = base_env();
+        env.insert("CF_ACCESS_ENABLED", "1");
+        let err = Config::from_lookup(&env).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::Invalid {
+                name: "CF_ACCESS_ENABLED",
+                ..
+            }
+        ));
     }
 
     #[test]

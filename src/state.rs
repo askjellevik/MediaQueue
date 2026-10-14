@@ -25,6 +25,9 @@ pub struct AppState {
     /// export can borrow it for `'static` (its row stream outlives the
     /// handler). Costs one pointer for the life of the process.
     pub export_pool: &'static SqlitePool,
+    /// Cloudflare Access verifier, when switched on.
+    #[cfg(feature = "cf-access")]
+    pub cf_access: Option<Arc<crate::cf_access::CfAccess>>,
     /// Bounds concurrent Argon2id hashing to 1 permit, so a flood of admin
     /// logins queues instead of exhausting RAM on 19 MiB hashes at once.
     pub admin_login_semaphore: Arc<Semaphore>,
@@ -46,6 +49,14 @@ impl AppState {
         let limits = RateLimits::new(&config.rate_limits, clock.clone(), notifier.clone());
         let tmdb = Tmdb::new(http.clone(), &config, clock.clone());
         let export_pool: &'static SqlitePool = Box::leak(Box::new(pool.clone()));
+        #[cfg(feature = "cf-access")]
+        let cf_access = config.cf_access.as_ref().map(|cf| {
+            Arc::new(crate::cf_access::CfAccess::new(
+                http.clone(),
+                cf,
+                clock.clone(),
+            ))
+        });
         Ok(Self {
             pool,
             config: Arc::new(config),
@@ -55,6 +66,8 @@ impl AppState {
             limits: Arc::new(limits),
             tmdb: Arc::new(tmdb),
             export_pool,
+            #[cfg(feature = "cf-access")]
+            cf_access,
             admin_login_semaphore: Arc::new(Semaphore::new(1)),
         })
     }

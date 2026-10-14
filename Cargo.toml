@@ -72,6 +72,10 @@ reqwest = { version = "0.12", default-features = false, features = [
 ] }
 moka = { version = "0.12", default-features = false, features = ["future"] }
 csv = "1"
+# Only with the `cf-access` feature.
+jsonwebtoken = { version = "10.3", default-features = false, features = [
+    "rust_crypto",
+], optional = true }
 
 [dev-dependencies]
 wiremock = "0.6"
@@ -81,3 +85,8 @@ lto = "thin"
 codegen-units = 1
 strip = true
 panic = "unwind"
+
+[features]
+# Optional Cloudflare Access JWT check for /admin and /api/admin. Also
+# needs CF_ACCESS_ENABLED=1 at runtime.
+cf-access = ["dep:jsonwebtoken"]

@@ -192,6 +192,7 @@ fn test_config() -> Config {
         // Nothing listens here; tests that search point this at wiremock.
         tmdb_base_url: "http://127.0.0.1:9".into(),
         dmm_base_url: "https://dmm.example".into(),
+        cf_access: None,
         ntfy: Default::default(),
         rate_limits: Default::default(),
     }

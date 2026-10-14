@@ -4,6 +4,8 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod auth;
+#[cfg(feature = "cf-access")]
+pub mod cf_access;
 pub mod clientip;
 pub mod clock;
 pub mod config;
@@ -102,8 +104,14 @@ pub fn build_router(state: AppState) -> Router {
 
     let app = Router::new()
         .merge(healthz_router)
-        .nest("/api", api_router(state))
-        .fallback(routes::static_files::serve)
+        .nest("/api", api_router(state.clone()))
+        .fallback(routes::static_files::serve);
+    #[cfg(feature = "cf-access")]
+    let app = app.layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        cf_access::guard,
+    ));
+    let app = app
         .layer(middleware::catch_panic_layer())
         .layer(middleware::body_limit_layer())
         .layer(middleware::timeout_layer())

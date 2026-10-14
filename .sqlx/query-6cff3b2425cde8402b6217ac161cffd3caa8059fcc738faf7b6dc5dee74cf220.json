@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT strftime('%Y%m%dT%H%M%SZ', ?, 'unixepoch') AS \"formatted!: String\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "formatted!: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "6cff3b2425cde8402b6217ac161cffd3caa8059fcc738faf7b6dc5dee74cf220"
+}
