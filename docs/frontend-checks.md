@@ -32,7 +32,8 @@ They check:
 - **Admin page** (`tests/js/admin_driver.js`): six tabs, the Pending row
   with requester, IMDb ID and an `Open in DMM` link (`rel=noopener`), a
   status change that fails rolls back and one that succeeds removes the
-  row, Archive history expands, and adding a member shows the code once
+  row and shows a toast whose Undo brings it back, All requests history
+  expands and refetches after a status change, and adding a member shows the code once
   with the "you will not see this again" notice.
 
 The drivers run next to the real page modules and write `PASS` or a list

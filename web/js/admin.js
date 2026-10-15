@@ -8,23 +8,25 @@ import {
   TYPE_LABEL,
   chip,
   clear,
+  copyOnClick,
   countdown,
   el,
   footer,
   formatDateTime,
   formatWait,
   posterSmall,
+  toast,
 } from './ui.js';
 
 const root = document.getElementById('app');
 const TITLE = 'MediaQueue admin';
 
 const TABS = [
-  { id: 'pending', label: STATUS_LABEL.pending, status: 'pending' },
-  { id: 'added', label: STATUS_LABEL.added, status: 'added' },
-  { id: 'refused', label: STATUS_LABEL.refused, status: 'refused' },
-  { id: 'already_had', label: STATUS_LABEL.already_had, status: 'already_had' },
-  { id: 'archive', label: 'All requests', status: 'all' },
+  { id: 'pending', label: STATUS_LABEL.pending, status: 'pending', empty: 'Nothing pending.' },
+  { id: 'added', label: STATUS_LABEL.added, status: 'added', empty: 'Nothing marked added yet.' },
+  { id: 'refused', label: STATUS_LABEL.refused, status: 'refused', empty: 'Nothing declined.' },
+  { id: 'already_had', label: STATUS_LABEL.already_had, status: 'already_had', empty: 'Nothing marked in library.' },
+  { id: 'archive', label: 'All requests', status: 'all', empty: 'No requests yet.' },
   { id: 'members', label: 'Members' },
 ];
 
@@ -187,6 +189,29 @@ function renderAdmin() {
 // Queue and archive tabs
 // ---------------------------------------------------------------------
 
+// One menu open at a time; it closes on an outside click or Escape.
+document.addEventListener('click', (event) => {
+  for (const menu of document.querySelectorAll('details.menu[open]')) {
+    if (!menu.contains(event.target)) menu.open = false;
+  }
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  const menu = document.querySelector('details.menu[open]');
+  if (!menu) return;
+  menu.open = false;
+  menu.querySelector('summary').focus();
+});
+
+function menu(label, ariaLabel, items, busy) {
+  return el(
+    'details',
+    { class: 'menu', inert: busy },
+    el('summary', { class: 'btn btn-small', 'aria-label': ariaLabel, text: label }),
+    el('div', { class: 'menu-list' }, items),
+  );
+}
+
 function renderQueue(panel, tab, { say, expired }) {
   const archive = tab.id === 'archive';
   let cursor = null;
@@ -201,13 +226,15 @@ function renderQueue(panel, tab, { say, expired }) {
     maxlength: 100,
   });
   const tbody = el('tbody');
-  const empty = el('p', { class: 'muted', text: 'Nothing here.', hidden: true });
+  const empty = el('p', { class: 'muted', text: tab.empty, hidden: true });
   const more = el('button', { class: 'btn btn-small', type: 'button', text: 'Load more', hidden: true });
+  const refresh = el('button', { class: 'btn btn-small', type: 'button', text: 'Refresh' });
   const toolbar = el(
     'div',
     { class: 'toolbar' },
     el('label', { class: 'vh', for: 'filter', text: 'Filter' }),
     filter,
+    refresh,
     archive ? el('a', { class: 'btn btn-small', href: '/api/admin/export.csv', download: 'mediaqueue.csv', text: 'Export CSV' }) : null,
   );
   const head = el(
@@ -226,8 +253,10 @@ function renderQueue(panel, tab, { say, expired }) {
     if (q) params.set('q', q);
     if (!reset && cursor) params.set('cursor', cursor);
     more.disabled = true;
+    refresh.disabled = true;
     const res = await get(`/api/admin/requests?${params}`);
     more.disabled = false;
+    refresh.disabled = false;
     if (mine !== generation || expired(res)) return;
     if (!res.ok) {
       say("Couldn't load requests.", 'status-bad');
@@ -237,6 +266,7 @@ function renderQueue(panel, tab, { say, expired }) {
     for (const item of res.data.items) tbody.append(...rowFor(item));
     cursor = res.data.next_cursor;
     more.hidden = !cursor;
+    empty.textContent = q ? 'No requests match.' : tab.empty;
     empty.hidden = tbody.children.length > 0;
   };
 
@@ -258,32 +288,49 @@ function renderQueue(panel, tab, { say, expired }) {
       el('td', { text: TYPE_LABEL[item.type] || item.type }),
       el('td', {}, item.requester, item.times_requested > 1 ? el('span', { class: 'muted', text: ` +${item.times_requested - 1}` }) : null),
       el('td', { text: formatDateTime(item.created_at) }),
-      el('td', {}, imdbCell(item, say)),
+      el('td', {}, imdbCell(item)),
       statusCell,
       el('td', {}, actions),
     );
 
-    const setStatus = async (to) => {
+    // True while a status change is in flight; the buttons stay disabled.
+    let busy = false;
+    // Where the row was before it left the tab, so Undo can put it back.
+    let anchor = null;
+
+    const setStatus = async (to, isUndo = false) => {
       const from = item.status;
+      if (busy || from === to) return;
       // Optimistic: update at once, put it back if the server says no.
       const leaves = !archive && to !== tab.status;
+      const returns = !archive && !row.isConnected && to === tab.status;
+      busy = true;
       item.status = to;
-      if (leaves) row.hidden = true;
+      if (leaves) {
+        anchor = row.nextSibling;
+        row.remove();
+      } else if (returns) {
+        tbody.insertBefore(row, anchor && anchor.parentNode === tbody ? anchor : null);
+      }
+      empty.hidden = tbody.children.length > 0;
       paint();
       const res = await send('PATCH', `/api/admin/requests/${item.id}`, { status: to });
+      busy = false;
       if (expired(res)) return;
       if (res.ok) {
-        if (leaves) {
-          row.remove();
-          historyRow.remove();
-          empty.hidden = tbody.children.length > 0;
-        }
-        say(`“${item.title}” is now ${STATUS_LABEL[to]}.`, 'status-ok');
+        paint();
+        toast(`“${item.title}” is now ${STATUS_LABEL[to]}.`, {
+          undo: isUndo ? null : () => setStatus(from, true),
+        });
+        // A history that is open would otherwise miss the new event.
+        if (toggle.getAttribute('aria-expanded') === 'true') loadHistory();
       } else {
         item.status = from;
-        row.hidden = false;
+        if (leaves) tbody.insertBefore(row, anchor && anchor.parentNode === tbody ? anchor : null);
+        else if (returns) row.remove();
+        empty.hidden = tbody.children.length > 0;
         paint();
-        say(`Couldn't update “${item.title}”. Nothing was changed.`, 'status-bad');
+        toast(`Couldn't update “${item.title}”. Nothing was changed.`, { kind: 'bad' });
       }
     };
 
@@ -291,37 +338,55 @@ function renderQueue(panel, tab, { say, expired }) {
       clear(statusCell);
       statusCell.append(chip(item.status, STATUS_LABEL[item.status] || item.status));
       clear(actions);
-      for (const action of ACTIONS) {
-        if (action.status === item.status) continue;
+      const button = (action) =>
+        el('button', {
+          class: 'btn btn-small',
+          type: 'button',
+          text: action.label,
+          'aria-label': `${action.label}: ${item.title}`,
+          disabled: busy,
+          onclick: () => {
+            for (const open of actions.querySelectorAll('details[open]')) open.open = false;
+            setStatus(action.status);
+          },
+        });
+      const byStatus = (status) => ACTIONS.find((a) => a.status === status);
+      if (tab.id === 'pending') {
+        if (item.dmm_url) {
+          actions.append(
+            el('a', {
+              class: 'btn btn-small',
+              href: item.dmm_url,
+              target: '_blank',
+              rel: 'noopener noreferrer',
+              text: 'Open in DMM',
+              'aria-label': `Open in DMM: ${item.title}`,
+            }),
+          );
+        }
         actions.append(
-          el('button', {
-            class: 'btn btn-small',
-            type: 'button',
-            text: action.label,
-            'aria-label': `${action.label}: ${item.title}`,
-            onclick: () => setStatus(action.status),
-          }),
+          button(byStatus('added')),
+          button(byStatus('refused')),
+          menu('More', `More actions: ${item.title}`, [button(byStatus('already_had'))], busy),
         );
+      } else {
+        const others = ACTIONS.filter((a) => a.status !== item.status).map(button);
+        actions.append(menu('Change status', `Change status: ${item.title}`, others, busy));
       }
       if (archive) actions.append(toggle);
     };
 
     const historyRow = el('tr', { hidden: true }, el('td', { colspan: 8 }));
     const toggle = el('button', {
-      class: 'btn btn-small',
+      class: 'btn btn-small chevron',
       type: 'button',
-      text: 'History',
+      text: '›',
       'aria-expanded': 'false',
       'aria-label': `History: ${item.title}`,
     });
-    toggle.addEventListener('click', async () => {
-      const open = toggle.getAttribute('aria-expanded') === 'true';
-      toggle.setAttribute('aria-expanded', open ? 'false' : 'true');
-      historyRow.hidden = open;
-      if (open) return;
+    const loadHistory = async () => {
       const cell = historyRow.firstChild;
-      clear(cell);
-      cell.append(el('span', { class: 'muted', text: 'Loading…' }));
+      if (!cell.firstChild) cell.append(el('span', { class: 'muted', text: 'Loading…' }));
       const res = await get(`/api/admin/requests/${item.id}/events`);
       if (expired(res)) return;
       clear(cell);
@@ -343,6 +408,15 @@ function renderQueue(panel, tab, { say, expired }) {
           ),
         ),
       );
+    };
+    toggle.addEventListener('click', () => {
+      const open = toggle.getAttribute('aria-expanded') === 'true';
+      toggle.setAttribute('aria-expanded', open ? 'false' : 'true');
+      historyRow.hidden = open;
+      if (open) return;
+      // Fetched again on every open, so it is never stale.
+      clear(historyRow.firstChild);
+      loadHistory();
     });
 
     paint();
@@ -353,6 +427,7 @@ function renderQueue(panel, tab, { say, expired }) {
     clearTimeout(filterTimer);
     filterTimer = setTimeout(() => load(true), 250);
   });
+  refresh.addEventListener('click', () => load(true));
   more.addEventListener('click', () => load(false));
 
   clear(panel);
@@ -360,31 +435,16 @@ function renderQueue(panel, tab, { say, expired }) {
   load(true);
 }
 
-function imdbCell(item, say) {
+function imdbCell(item) {
   if (!item.imdb_id) return el('span', { class: 'muted', text: 'none' });
-  const copy = el('button', {
-    class: 'btn btn-small',
+  const id = el('button', {
+    class: 'code-btn',
     type: 'button',
-    text: 'Copy',
+    text: item.imdb_id,
     'aria-label': `Copy IMDb ID ${item.imdb_id}`,
   });
-  copy.addEventListener('click', async () => {
-    try {
-      await navigator.clipboard.writeText(item.imdb_id);
-      say(`Copied ${item.imdb_id}.`, 'status-ok');
-    } catch {
-      say(`Couldn't copy. The ID is ${item.imdb_id}.`, 'status-bad');
-    }
-  });
-  return el(
-    'div',
-    { class: 'row-actions' },
-    el('code', { text: item.imdb_id }),
-    copy,
-    item.dmm_url
-      ? el('a', { class: 'btn btn-small', href: item.dmm_url, target: '_blank', rel: 'noopener noreferrer', text: 'Open in DMM' })
-      : null,
-  );
+  copyOnClick(id, item.imdb_id, `Couldn't copy. The ID is ${item.imdb_id}.`);
+  return id;
 }
 
 // ---------------------------------------------------------------------
@@ -392,16 +452,9 @@ function imdbCell(item, say) {
 // ---------------------------------------------------------------------
 
 // Shows a freshly issued code exactly once, with a copy button.
-function codeBox(name, code, say) {
+function codeBox(name, code) {
   const copy = el('button', { class: 'btn btn-primary', type: 'button', text: 'Copy code' });
-  copy.addEventListener('click', async () => {
-    try {
-      await navigator.clipboard.writeText(code);
-      say('Code copied.', 'status-ok');
-    } catch {
-      say("Couldn't copy. Select the code and copy it by hand.", 'status-bad');
-    }
-  });
+  copyOnClick(copy, code, "Couldn't copy. Select the code and copy it by hand.");
   return el(
     'div',
     { class: 'code-box', role: 'alert' },
@@ -461,20 +514,20 @@ function renderMembers(panel, { say, expired }) {
     if (res.status === 201) {
       clear(codeSlot);
       if (res.data.code) {
-        codeSlot.append(codeBox(res.data.name, res.data.code, say));
+        codeSlot.append(codeBox(res.data.name, res.data.code));
       } else {
-        say(`Added ${res.data.name} with the code you chose.`, 'status-ok');
+        toast(`Added ${res.data.name} with the code you chose.`);
       }
       form.reset();
       codeWarning.textContent = '';
       load();
     } else if (res.status === 409) {
-      say(
+      toast(
         codeTaken(res) ? 'That code is already in use.' : 'A member with that name already exists.',
-        'status-bad',
+        { kind: 'bad' },
       );
     } else {
-      say('Check the name (1 to 40 characters), the code (3 to 64 characters) and limits.', 'status-bad');
+      toast('Check the name (1 to 40 characters), the code (3 to 64 characters) and limits.', { kind: 'bad' });
     }
   });
 
@@ -496,7 +549,7 @@ function renderMembers(panel, { say, expired }) {
       kill.addEventListener('click', async () => {
         const res = await send('DELETE', `/api/admin/sessions/${d.id}`);
         if (expired(res)) return;
-        say(res.ok ? `Logged out one of ${m.name}'s devices.` : "Couldn't log that device out.", res.ok ? 'status-ok' : 'status-bad');
+        toast(res.ok ? `Logged out one of ${m.name}'s devices.` : "Couldn't log that device out.", { kind: res.ok ? 'ok' : 'bad' });
         load();
       });
       deviceList.append(el('li', {}, `Since ${formatDateTime(d.created_at)}, seen ${formatDateTime(d.last_seen_at)} `, kill));
@@ -513,17 +566,17 @@ function renderMembers(panel, { say, expired }) {
       if (res.ok) {
         clear(codeSlot);
         if (res.data.code) {
-          codeSlot.append(codeBox(m.name, res.data.code, say));
+          codeSlot.append(codeBox(m.name, res.data.code));
         } else {
-          say(`${m.name} now has the code you chose.`, 'status-ok');
+          toast(`${m.name} now has the code you chose.`);
         }
         load();
       } else if (res.status === 409 && codeTaken(res)) {
-        say('That code is already in use.', 'status-bad');
+        toast('That code is already in use.', { kind: 'bad' });
       } else if (res.status === 400) {
-        say('The code must be 3 to 64 characters.', 'status-bad');
+        toast('The code must be 3 to 64 characters.', { kind: 'bad' });
       } else {
-        say("Couldn't rotate the code.", 'status-bad');
+        toast("Couldn't rotate the code.", { kind: 'bad' });
       }
     });
     const revoke = el('button', { class: 'btn btn-small', type: 'button', text: 'Revoke', disabled: revoked });
@@ -531,7 +584,7 @@ function renderMembers(panel, { say, expired }) {
       if (!window.confirm(`Revoke ${m.name}? Their code and devices stop working for good.`)) return;
       const res = await send('POST', `/api/admin/members/${m.id}/revoke`);
       if (expired(res)) return;
-      say(res.ok ? `${m.name} is revoked.` : "Couldn't revoke.", res.ok ? 'status-ok' : 'status-bad');
+      toast(res.ok ? `${m.name} is revoked.` : "Couldn't revoke.", { kind: res.ok ? 'ok' : 'bad' });
       load();
     });
     const edit = el('button', { class: 'btn btn-small', type: 'button', text: 'Edit', 'aria-label': `Edit ${m.name}` });
@@ -609,7 +662,7 @@ function renderMembers(panel, { say, expired }) {
       }
       if (res.ok) {
         dialog.close();
-        say(`Saved ${eName.value.trim()}.`, 'status-ok');
+        toast(`Saved ${eName.value.trim()}.`);
         load();
       } else {
         message.className = 'status status-bad';

@@ -117,6 +117,105 @@ export function spinner() {
   return el('span', { class: 'spinner', 'aria-hidden': 'true' });
 }
 
+// ----- Toasts -----
+// Short messages next to where the user just acted. The live region exists
+// from the start so screen readers announce what is added to it later.
+
+const TOAST_MS = 5000;
+const MAX_TOASTS = 3;
+
+function toastRegion() {
+  let region = document.getElementById('toasts');
+  if (!region) {
+    region = el('div', { id: 'toasts', class: 'toasts', 'aria-live': 'polite' });
+    document.body.append(region);
+  }
+  return region;
+}
+
+toastRegion();
+
+// `kind` is 'ok' or 'bad'; `undo`, if given, adds an Undo button. The timer
+// pauses while the pointer or keyboard focus is on the toast.
+export function toast(text, { kind = 'ok', undo = null } = {}) {
+  const region = toastRegion();
+  let timer = 0;
+  const dismiss = () => {
+    clearTimeout(timer);
+    node.remove();
+  };
+  const arm = () => {
+    clearTimeout(timer);
+    timer = setTimeout(dismiss, TOAST_MS);
+  };
+  const node = el('div', { class: `toast toast-${kind}` }, el('span', { text }));
+  if (undo) {
+    node.append(
+      el('button', {
+        class: 'btn btn-small',
+        type: 'button',
+        text: 'Undo',
+        onclick: () => {
+          dismiss();
+          undo();
+        },
+      }),
+    );
+  }
+  node.addEventListener('mouseenter', () => clearTimeout(timer));
+  node.addEventListener('focusin', () => clearTimeout(timer));
+  node.addEventListener('mouseleave', arm);
+  node.addEventListener('focusout', arm);
+  region.append(node);
+  while (region.children.length > MAX_TOASTS) region.firstChild.remove();
+  arm();
+}
+
+// ----- Clipboard -----
+
+// navigator.clipboard needs a secure context; fall back to selecting a
+// hidden field and the old copy command. Resolves to whether it worked.
+export async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // Insecure context or permission denied: try the fallback.
+  }
+  const active = document.activeElement;
+  const field = el('textarea', { class: 'vh', readonly: true, 'aria-hidden': 'true', tabindex: '-1' });
+  field.value = text;
+  document.body.append(field);
+  field.select();
+  let ok = false;
+  try {
+    ok = document.execCommand('copy');
+  } catch {
+    ok = false;
+  }
+  field.remove();
+  if (active && active.focus) active.focus();
+  return ok;
+}
+
+// Click copies `text`; the button says "Copied" for a moment. If copying is
+// impossible, `failText` goes into a toast.
+export function copyOnClick(button, text, failText) {
+  const label = button.textContent;
+  let timer = 0;
+  button.addEventListener('click', async () => {
+    if (!(await copyText(text))) {
+      toast(failText, { kind: 'bad' });
+      return;
+    }
+    clearTimeout(timer);
+    button.textContent = 'Copied';
+    timer = setTimeout(() => {
+      button.textContent = label;
+    }, 1500);
+  });
+}
+
 export function footer(onLogout) {
   return el(
     'footer',
