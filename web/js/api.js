@@ -39,6 +39,7 @@ export const api = {
     call('POST', '/api/requests', {
       body: note ? { tmdb_id: tmdbId, media_type: mediaType, note } : { tmdb_id: tmdbId, media_type: mediaType },
     }),
+  cancel: (id) => call('DELETE', `/api/requests/${id}`, { body: {} }),
   // `status` is 'pending' or 'earlier' (everything no longer pending).
   mine: (status, cursor) => {
     const params = new URLSearchParams({ status });

@@ -550,6 +550,50 @@ function renderApp(me) {
     group.section.hidden = group === earlierGroup && none && !group.cursor;
   };
 
+  // Withdraws a request that is still pending and that nobody else asked
+  // for. The server decides; a refusal just reloads the list.
+  const cancelButton = (r, li) => {
+    const button = el('button', {
+      class: 'btn btn-small',
+      type: 'button',
+      text: 'Cancel',
+      'data-cancel': '',
+      'aria-label': `Cancel request: ${r.title}`,
+    });
+    button.addEventListener('click', async () => {
+      if (!window.confirm(`Cancel your request for “${r.title}”?`)) return;
+      button.disabled = true;
+      const res = await api.cancel(r.id);
+      if (res.status === 401) {
+        renderGate();
+        return;
+      }
+      if (res.ok) {
+        toast(`Cancelled “${r.title}”.`);
+        for (const results of [state.results, ...state.memo.values()]) {
+          for (const item of results) {
+            if (item.tmdb_id === r.tmdb_id && item.type === r.type) item.state = 'none';
+          }
+        }
+        if (!list.hidden) {
+          const active = state.active;
+          renderResults(state.results);
+          setActive(active);
+        }
+      } else {
+        button.disabled = false;
+        toast(
+          res.status === 409 || res.status === 404
+            ? 'That request can no longer be cancelled.'
+            : "Couldn't cancel. Nothing was changed.",
+          { kind: 'bad' },
+        );
+      }
+      refreshMine();
+    });
+    return button;
+  };
+
   const mineItem = (r, group) => {
     const status = chip(r.status, STATUS_LABEL[r.status] || r.status);
     // IMDb once the request has an ID, the TMDB page until then.
@@ -567,6 +611,7 @@ function renderApp(me) {
       ),
       status,
     );
+    if (r.can_cancel) li.append(cancelButton(r, li));
     const node = { id: r.id, li, status, state: r.status, group, key: keyOf(r) };
     mineNodes.set(r.id, node);
     return node;
@@ -660,6 +705,10 @@ function renderApp(me) {
         if (!known) {
           place(group, mineItem(r, group));
         } else {
+          if (!r.can_cancel) {
+            const stale = known.li.querySelector('[data-cancel]');
+            if (stale) stale.remove();
+          }
           if (known.state !== r.status) {
             known.state = r.status;
             const chipNow = chip(r.status, STATUS_LABEL[r.status] || r.status);

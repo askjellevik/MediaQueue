@@ -582,6 +582,62 @@ async fn my_requests_pages_through_own_titles_newest_first() {
     assert_eq!(unknown.status, 400);
 }
 
+#[tokio::test]
+async fn requester_can_cancel_only_a_pending_request_nobody_else_asked_for() {
+    let tmdb = MockServer::start().await;
+    mount_movies(&tmdb).await;
+    let app = spawn_with(&tmdb, |cfg| cfg.rate_limits.requests_per_minute = 100).await;
+    let alice = login_new_member(&app, "Alice").await;
+    let bob = login_new_member(&app, "Bob").await;
+    let delete = |cookie: String, id: i64| {
+        let app = &app;
+        async move {
+            let mut headers = json_post_headers();
+            headers.push(("Cookie", &cookie));
+            app.request("DELETE", &format!("/api/requests/{id}"), &headers, None)
+                .await
+        }
+    };
+    let id_of = |r: &HttpResponse| json_of(r)["request"]["id"].as_i64().unwrap();
+
+    let plain = id_of(&submit_movie(&app, &alice, 1).await);
+    let shared = id_of(&submit_movie(&app, &alice, 2).await);
+    let handled = id_of(&submit_movie(&app, &alice, 3).await);
+    assert_eq!(submit_movie(&app, &bob, 2).await.status, 200);
+    sqlx::query("UPDATE requests SET status = 'added' WHERE id = ?")
+        .bind(handled)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+
+    let mine = app
+        .request("GET", "/api/requests/mine", &[("Cookie", &alice)], None)
+        .await;
+    let flags: Vec<(i64, bool)> = json_of(&mine)["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["id"].as_i64().unwrap(),
+                i["can_cancel"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(flags, [(handled, false), (shared, false), (plain, true)]);
+
+    // Someone else's duplicate, a handled request and a stranger all refuse.
+    assert_eq!(delete(alice.clone(), shared).await.status, 409);
+    assert_eq!(delete(alice.clone(), handled).await.status, 409);
+    assert_eq!(delete(bob.clone(), plain).await.status, 404);
+
+    assert_eq!(delete(alice.clone(), plain).await.status, 200);
+    assert_eq!(delete(alice.clone(), plain).await.status, 404);
+    assert_eq!(count(&app, "requests").await, 2);
+    // The title can be requested again.
+    assert_eq!(submit_movie(&app, &bob, 1).await.status, 201);
+}
+
 // ---------------------------------------------------------------------
 // Notifications
 // ---------------------------------------------------------------------

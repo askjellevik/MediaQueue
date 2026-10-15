@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT r.id AS \"id!\", r.tmdb_id AS \"tmdb_id!\", r.media_type AS \"media_type!\",\n                  r.imdb_id, r.title AS \"title!\", r.year, r.poster_path, r.status AS \"status!\",\n                  r.created_at AS \"created_at!\"\n           FROM requests r\n           WHERE (r.requested_by = ?1\n                  OR EXISTS (SELECT 1 FROM request_events e\n                             WHERE e.request_id = r.id AND e.kind = 'duplicate'\n                               AND e.actor = ?2))\n             AND (r.created_at < ?3 OR (r.created_at = ?3 AND r.id < ?4))\n             AND (?6 = 0 OR (?6 = 1 AND r.status = 'pending')\n                  OR (?6 = 2 AND r.status <> 'pending'))\n           ORDER BY r.created_at DESC, r.id DESC\n           LIMIT ?5",
+  "query": "SELECT r.id AS \"id!\", r.tmdb_id AS \"tmdb_id!\", r.media_type AS \"media_type!\",\n                  r.imdb_id, r.title AS \"title!\", r.year, r.poster_path, r.status AS \"status!\",\n                  r.created_at AS \"created_at!\",\n                  (r.requested_by = ?1 AND r.status = 'pending'\n                   AND NOT EXISTS (SELECT 1 FROM request_events d\n                                   WHERE d.request_id = r.id AND d.kind = 'duplicate'))\n                    AS \"can_cancel!: bool\"\n           FROM requests r\n           WHERE (r.requested_by = ?1\n                  OR EXISTS (SELECT 1 FROM request_events e\n                             WHERE e.request_id = r.id AND e.kind = 'duplicate'\n                               AND e.actor = ?2))\n             AND (r.created_at < ?3 OR (r.created_at = ?3 AND r.id < ?4))\n             AND (?6 = 0 OR (?6 = 1 AND r.status = 'pending')\n                  OR (?6 = 2 AND r.status <> 'pending'))\n           ORDER BY r.created_at DESC, r.id DESC\n           LIMIT ?5",
   "describe": {
     "columns": [
       {
@@ -101,6 +101,12 @@
             "name": "created_at"
           }
         }
+      },
+      {
+        "name": "can_cancel!: bool",
+        "ordinal": 9,
+        "type_info": "Integer",
+        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -115,8 +121,9 @@
       true,
       true,
       false,
+      false,
       false
     ]
   },
-  "hash": "56328ad3ed480e30560c0aa751d1dab82f5b5df76624dba95df42a60434bdf55"
+  "hash": "21c419500bb8764719ea5010d914c81ac078ff461141a6e793c4259cadbbd340"
 }

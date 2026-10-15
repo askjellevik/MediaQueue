@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT status FROM requests WHERE id = ? AND requested_by = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "status",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "status"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d3096c0845406c37c86100bb767d9dc15efdf3d017769071fbc255bdfaee7fc4"
+}

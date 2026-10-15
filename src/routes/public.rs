@@ -12,7 +12,7 @@ use crate::{
     auth::{self, RequireUser},
     clientip::ClientIp,
     config, db,
-    error::{AppError, AppJson, AppQuery},
+    error::{AppError, AppJson, AppPath, AppQuery},
     events::Tick,
     notify::{Message, NewRequestInfo},
     state::AppState,
@@ -457,6 +457,27 @@ pub async fn post_request(
     Ok((status, axum::Json(body)).into_response())
 }
 
+/// `DELETE /api/requests/{id}`: the requester withdraws a request that is
+/// still pending and that nobody else duplicated.
+pub async fn delete_request(
+    State(state): State<AppState>,
+    user: RequireUser,
+    AppPath(id): AppPath<i64>,
+) -> Result<impl IntoResponse, AppError> {
+    match db::cancel_request(&state.pool, id, user.member_id).await? {
+        db::CancelOutcome::Cancelled => {
+            tracing::info!(member = %user.member_name, request_id = id, "request cancelled");
+            state.events.publish(Tick::Admin);
+            state.events.publish(Tick::Members);
+            Ok(axum::Json(serde_json::json!({ "ok": true })))
+        }
+        db::CancelOutcome::NotFound => Err(AppError::NotFound),
+        db::CancelOutcome::Locked => Err(AppError::Conflict(
+            "this request can no longer be cancelled",
+        )),
+    }
+}
+
 #[derive(Deserialize)]
 pub struct PageParams {
     cursor: Option<String>,
@@ -466,8 +487,16 @@ pub struct PageParams {
 }
 
 #[derive(Serialize)]
+struct MineView {
+    #[serde(flatten)]
+    request: RequestView,
+    /// Theirs, still pending, and nobody else asked for it.
+    can_cancel: bool,
+}
+
+#[derive(Serialize)]
 struct MineBody {
-    items: Vec<RequestView>,
+    items: Vec<MineView>,
     next_cursor: Option<String>,
 }
 
@@ -498,7 +527,23 @@ pub async fn get_requests_mine(
     .await?;
     let next_cursor = next_page(&mut rows, limit, |r| (r.created_at, r.id));
     Ok(axum::Json(MineBody {
-        items: rows.into_iter().map(RequestView::from).collect(),
+        items: rows
+            .into_iter()
+            .map(|r| MineView {
+                can_cancel: r.can_cancel,
+                request: RequestView::from(db::RequestRow {
+                    id: r.id,
+                    tmdb_id: r.tmdb_id,
+                    media_type: r.media_type,
+                    imdb_id: r.imdb_id,
+                    title: r.title,
+                    year: r.year,
+                    poster_path: r.poster_path,
+                    status: r.status,
+                    created_at: r.created_at,
+                }),
+            })
+            .collect(),
         next_cursor,
     }))
 }

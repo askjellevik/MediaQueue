@@ -586,6 +586,71 @@ pub async fn create_request(
     })
 }
 
+/// A row of a member's own request list.
+pub struct MineRow {
+    pub id: i64,
+    pub tmdb_id: i64,
+    pub media_type: String,
+    pub imdb_id: Option<String>,
+    pub title: String,
+    pub year: Option<i64>,
+    pub poster_path: Option<String>,
+    pub status: String,
+    pub created_at: i64,
+    pub can_cancel: bool,
+}
+
+pub enum CancelOutcome {
+    Cancelled,
+    /// Not theirs, or no such request.
+    NotFound,
+    /// Already handled by the admin, or someone else asked for it too.
+    Locked,
+}
+
+/// Removes a request its original requester made, while it is still
+/// pending and nobody else has asked for the same title.
+pub async fn cancel_request(
+    pool: &SqlitePool,
+    request_id: i64,
+    member_id: i64,
+) -> Result<CancelOutcome, sqlx::Error> {
+    let mut tx = begin_immediate(pool).await?;
+    let Some(row) = sqlx::query!(
+        "SELECT status FROM requests WHERE id = ? AND requested_by = ?",
+        request_id,
+        member_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    else {
+        tx.rollback().await?;
+        return Ok(CancelOutcome::NotFound);
+    };
+    let duplicated: i64 = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "n!: i64" FROM request_events
+           WHERE request_id = ? AND kind = 'duplicate'"#,
+        request_id
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if row.status != "pending" || duplicated > 0 {
+        tx.rollback().await?;
+        return Ok(CancelOutcome::Locked);
+    }
+    sqlx::query!(
+        "DELETE FROM request_events WHERE request_id = ?",
+        request_id
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query!("DELETE FROM requests WHERE id = ?", request_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(CancelOutcome::Cancelled)
+}
+
 /// Which of a member's requests to list.
 #[derive(Clone, Copy)]
 pub enum MineFilter {
@@ -606,7 +671,7 @@ pub async fn requests_for_member(
     filter: MineFilter,
     before: (i64, i64),
     limit: i64,
-) -> Result<Vec<RequestRow>, sqlx::Error> {
+) -> Result<Vec<MineRow>, sqlx::Error> {
     let (before_created, before_id) = before;
     let filter = match filter {
         MineFilter::All => 0_i64,
@@ -614,10 +679,14 @@ pub async fn requests_for_member(
         MineFilter::Earlier => 2,
     };
     sqlx::query_as!(
-        RequestRow,
+        MineRow,
         r#"SELECT r.id AS "id!", r.tmdb_id AS "tmdb_id!", r.media_type AS "media_type!",
                   r.imdb_id, r.title AS "title!", r.year, r.poster_path, r.status AS "status!",
-                  r.created_at AS "created_at!"
+                  r.created_at AS "created_at!",
+                  (r.requested_by = ?1 AND r.status = 'pending'
+                   AND NOT EXISTS (SELECT 1 FROM request_events d
+                                   WHERE d.request_id = r.id AND d.kind = 'duplicate'))
+                    AS "can_cancel!: bool"
            FROM requests r
            WHERE (r.requested_by = ?1
                   OR EXISTS (SELECT 1 FROM request_events e

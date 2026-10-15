@@ -57,6 +57,7 @@ fn api_router(state: AppState) -> Router<()> {
         .route("/search", get(routes::public::get_search))
         .route("/requests", post(routes::public::post_request))
         .route("/requests/mine", get(routes::public::get_requests_mine))
+        .route("/requests/{id}", delete(routes::public::delete_request))
         .route("/admin/login", post(routes::admin::post_admin_login))
         .route("/admin/logout", post(routes::admin::post_admin_logout))
         .route("/admin/events", get(routes::admin::get_events))

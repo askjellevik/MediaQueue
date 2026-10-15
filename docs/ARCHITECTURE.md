@@ -33,7 +33,7 @@ failed). Every `/api` response has `Cache-Control: no-store`.
 | `POST /auth/code`, `POST /auth/logout` | anyone, member | Log in with an access code; log out. |
 | `GET /me` | member | Name and, if the member has a daily limit, `remaining_today`. |
 | `GET /search?q=` | member | TMDB search, annotated with request state. |
-| `POST /requests`, `GET /requests/mine` | member | Request a title; list one's own requests (cursor paging). |
+| `POST /requests`, `GET /requests/mine`, `DELETE /requests/{id}` | member | Request a title; list one's own requests (cursor paging, `status=pending\|earlier`); withdraw one's own request while it is pending and nobody else asked for it (the row and its events are deleted, which also frees the daily-limit slot). |
 | `GET /events` | member | Server-sent ticks when a request changes. |
 | `POST /admin/login`, `POST /admin/logout` | anyone, admin | Admin session. |
 | `GET /admin/requests`, `PATCH /admin/requests/{id}`, `GET /admin/requests/{id}/events` | admin | Queue with filter and paging; change a status; a request's history. |

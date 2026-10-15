@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM request_events WHERE request_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "1261c75304cae08820e4ff58bb7313564e991121244275f347c2b05a4cbaf813"
+}
