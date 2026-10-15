@@ -108,7 +108,8 @@ pub async fn post_auth_logout(
 #[derive(Serialize)]
 struct MeBody {
     name: String,
-    remaining_today: i64,
+    /// `None` when the member has no daily limit.
+    remaining_today: Option<i64>,
 }
 
 /// `GET /api/me`: identifies the caller, or 401s so the frontend shows the
@@ -225,11 +226,11 @@ const MAX_NOTE_CHARS: usize = 200;
 const SECS_PER_DAY: i64 = 86_400;
 const MINUTE_SECS: i64 = 60;
 
-/// A member's request quota at one instant: the daily cap (their own
-/// override or the global default) and the per-minute cap.
+/// A member's request quota at one instant: the daily cap (only if the admin
+/// set one) and the per-minute cap.
 struct Quota {
     now: i64,
-    daily_limit: i64,
+    daily_limit: Option<i64>,
     per_minute: i64,
     /// Start of the current UTC day; "today" for the daily cap.
     day_start: i64,
@@ -242,20 +243,20 @@ impl Quota {
         let now = i64::try_from(state.clock.unix_secs()).unwrap_or(i64::MAX);
         Self {
             now,
-            daily_limit: user.daily_limit.unwrap_or(state.config.default_daily_limit),
+            daily_limit: user.daily_limit,
             per_minute: i64::from(state.config.rate_limits.requests_per_minute),
             day_start: now - now.rem_euclid(SECS_PER_DAY),
             minute_start: now - MINUTE_SECS,
         }
     }
 
-    fn remaining_today(&self, usage: &db::QuotaUsage) -> i64 {
-        (self.daily_limit - usage.today).max(0)
+    fn remaining_today(&self, usage: &db::QuotaUsage) -> Option<i64> {
+        self.daily_limit.map(|limit| (limit - usage.today).max(0))
     }
 
     /// `None` if another request is allowed now, else seconds to wait.
     fn retry_after(&self, usage: &db::QuotaUsage) -> Option<u64> {
-        let over_day = usage.today >= self.daily_limit;
+        let over_day = self.daily_limit.is_some_and(|limit| usage.today >= limit);
         let over_minute = usage.last_minute >= self.per_minute;
         if !over_day && !over_minute {
             return None;
@@ -338,7 +339,7 @@ struct CreatedBody {
     /// event was logged.
     created: bool,
     request: RequestView,
-    remaining_today: i64,
+    remaining_today: Option<i64>,
 }
 
 /// `POST /api/requests`: queues a title, or logs a duplicate if someone
@@ -428,7 +429,7 @@ pub async fn post_request(
     let body = CreatedBody {
         created,
         request: row.into(),
-        remaining_today: (quota.daily_limit - today).max(0),
+        remaining_today: quota.daily_limit.map(|limit| (limit - today).max(0)),
     };
     Ok((status, axum::Json(body)).into_response())
 }
@@ -477,7 +478,7 @@ mod tests {
     fn quota(now: i64) -> Quota {
         Quota {
             now,
-            daily_limit: 10,
+            daily_limit: Some(10),
             per_minute: 3,
             day_start: now - now.rem_euclid(SECS_PER_DAY),
             minute_start: now - MINUTE_SECS,
@@ -510,8 +511,18 @@ mod tests {
         let now = 86_400 * 100 + 86_000;
         let q = quota(now);
         assert_eq!(q.retry_after(&usage(10, 0, None)), Some(400));
-        assert_eq!(q.remaining_today(&usage(10, 0, None)), 0);
-        assert_eq!(q.remaining_today(&usage(12, 0, None)), 0);
+        assert_eq!(q.remaining_today(&usage(10, 0, None)), Some(0));
+        assert_eq!(q.remaining_today(&usage(12, 0, None)), Some(0));
+    }
+
+    #[test]
+    fn no_daily_limit_never_caps_or_counts_down() {
+        let mut q = quota(1_000_000);
+        q.daily_limit = None;
+        assert_eq!(q.retry_after(&usage(500, 0, None)), None);
+        assert_eq!(q.remaining_today(&usage(500, 0, None)), None);
+        // The per-minute cap still applies.
+        assert_eq!(q.retry_after(&usage(500, 3, Some(999_950))), Some(10));
     }
 
     #[test]

@@ -16,6 +16,10 @@ const MIN_PEPPER_BYTES: usize = 32;
 /// code has only a million values, which a distributed attacker could cover."
 const MIN_CODE_LENGTH: usize = 8;
 
+/// Devices a new member may be logged in on at once. It only bounds session
+/// rows; the admin can change it per member.
+pub const DEFAULT_MAX_SESSIONS: i64 = 10;
+
 const DEFAULT_TMDB_BASE_URL: &str = "https://api.themoviedb.org/3";
 const DEFAULT_DMM_BASE_URL: &str = "https://debridmediamanager.com";
 
@@ -36,8 +40,6 @@ pub struct Config {
     pub code_pepper: Vec<u8>,
     pub cookie_dev_insecure: bool,
     pub code_length: usize,
-    pub default_max_sessions: i64,
-    pub default_daily_limit: i64,
     pub admin_user: String,
     /// Argon2id PHC hash string from `mediaqueue hash-password`. Not a
     /// secret itself (it's a salted hash), but never logged regardless.
@@ -109,7 +111,7 @@ pub struct RateLimitConfig {
     /// Global cap on outbound TMDB calls.
     pub tmdb_per_second: u32,
     /// New requests (and duplicates) per member per minute. The daily cap is
-    /// `DEFAULT_DAILY_LIMIT` or the member's own override.
+    /// the member's own limit, if the admin set one.
     pub requests_per_minute: u32,
     /// Hard cap on tracked keys per limiter; new keys beyond it are limited.
     pub key_cap: usize,
@@ -166,8 +168,6 @@ impl std::fmt::Debug for Config {
             .field("code_pepper", &"<redacted>")
             .field("cookie_dev_insecure", &self.cookie_dev_insecure)
             .field("code_length", &self.code_length)
-            .field("default_max_sessions", &self.default_max_sessions)
-            .field("default_daily_limit", &self.default_daily_limit)
             .field("admin_user", &self.admin_user)
             .field("admin_password_hash", &"<redacted>")
             .field("trusted_proxy_cidrs", &self.trusted_proxy_cidrs)
@@ -375,22 +375,6 @@ impl Config {
         }
         let code_length = code_length_raw as usize;
 
-        let default_max_sessions = int_with_default(env, "DEFAULT_MAX_SESSIONS", 3)?;
-        if default_max_sessions < 1 {
-            return Err(ConfigError::Invalid {
-                name: "DEFAULT_MAX_SESSIONS",
-                reason: "must be at least 1".into(),
-            });
-        }
-
-        let default_daily_limit = int_with_default(env, "DEFAULT_DAILY_LIMIT", 10)?;
-        if default_daily_limit < 0 {
-            return Err(ConfigError::Invalid {
-                name: "DEFAULT_DAILY_LIMIT",
-                reason: "must not be negative".into(),
-            });
-        }
-
         let admin_user = required(env, "ADMIN_USER")?;
         let admin_password_hash = required(env, "ADMIN_PASSWORD_HASH")?;
         // Fail fast on a malformed hash rather than discovering it on the
@@ -450,8 +434,6 @@ impl Config {
             code_pepper,
             cookie_dev_insecure,
             code_length,
-            default_max_sessions,
-            default_daily_limit,
             admin_user,
             admin_password_hash,
             trusted_proxy_cidrs,
@@ -593,8 +575,6 @@ mod tests {
         assert_eq!(cfg.bind_addr.to_string(), "127.0.0.1:9000");
         assert_eq!(cfg.public_origin, "https://example.com");
         assert_eq!(cfg.code_length, 8);
-        assert_eq!(cfg.default_max_sessions, 3);
-        assert_eq!(cfg.default_daily_limit, 10);
         assert_eq!(cfg.trusted_proxy_cidrs.len(), 3);
     }
 

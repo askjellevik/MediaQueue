@@ -429,8 +429,6 @@ pub async fn get_members(
         .collect();
     Ok(Json(json!({
         "members": members,
-        "default_daily_limit": state.config.default_daily_limit,
-        "default_max_sessions": state.config.default_max_sessions,
     })))
 }
 
@@ -458,7 +456,7 @@ pub async fn post_member(
     let name = clean_name(&body.name)?;
     let daily_limit = check_daily_limit(body.daily_limit)?;
     let max_sessions =
-        check_max_sessions(body.max_sessions)?.unwrap_or(state.config.default_max_sessions);
+        check_max_sessions(body.max_sessions)?.unwrap_or(crate::config::DEFAULT_MAX_SESSIONS);
     let now = now(&state);
 
     if let Some(hash) = chosen_code_hash(&state, body.code.as_deref())? {
@@ -515,7 +513,7 @@ where
 pub struct PatchMemberBody {
     #[serde(default)]
     name: Option<String>,
-    /// `null` resets to the global default.
+    /// `null` removes the member's daily limit.
     #[serde(default, deserialize_with = "present")]
     daily_limit: Option<Option<i64>>,
     #[serde(default)]

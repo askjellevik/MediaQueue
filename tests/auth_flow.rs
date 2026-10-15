@@ -262,7 +262,7 @@ async fn me_requires_session_and_reports_remaining_today() {
         .await;
     assert_eq!(me.status, 200);
     assert!(me.body.contains("\"name\":\"Alice\""));
-    assert!(me.body.contains("\"remaining_today\":10"));
+    assert!(me.body.contains("\"remaining_today\":null"));
 }
 
 #[tokio::test]

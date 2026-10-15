@@ -133,14 +133,15 @@ function renderApp(me) {
   const remainingText = el('span');
   const updateRemaining = () => {
     const n = state.remaining;
-    remainingText.textContent = `${n} request${n === 1 ? '' : 's'} left today`;
+    // Only members with an admin-set limit see a count.
+    remainingText.textContent = typeof n === 'number' ? ` · ${n} request${n === 1 ? '' : 's'} left today` : '';
   };
   updateRemaining();
   const header = el(
     'header',
     { class: 'top' },
     el('h1', { text: APP_NAME }),
-    el('p', { class: 'muted' }, `Hi ${me.name} · `, remainingText),
+    el('p', { class: 'muted' }, `Hi ${me.name}`, remainingText),
   );
 
   // ----- Search combobox -----
@@ -448,7 +449,7 @@ function renderApp(me) {
       cancel.disabled = false;
       add.replaceChildren('Add to queue');
       if (res.status === 201 || res.status === 200) {
-        state.remaining = res.data.remaining_today;
+        state.remaining = res.data.remaining_today ?? null;
         updateRemaining();
         markRequested(item);
         sheet.close();
@@ -466,7 +467,11 @@ function renderApp(me) {
           updateRemaining();
         }
         message.className = 'status status-bad';
-        message.textContent = `You've reached your request limit. You can request again in ${formatWait(res.retryAfter || 60)}.`;
+        const wait = formatWait(res.retryAfter || 60);
+        message.textContent =
+          res.data && res.data.remaining_today === 0
+            ? `You've reached your daily limit. You can request again in ${wait}.`
+            : `You're requesting too fast. Try again in ${wait}.`;
       } else {
         add.disabled = false;
         message.className = 'status status-bad';

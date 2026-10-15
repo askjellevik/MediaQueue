@@ -43,6 +43,9 @@ const EVENT_TEXT = {
 };
 
 const get = (path) => call('GET', path);
+// What the server gives a new member; only a different value is worth showing.
+const DEFAULT_DEVICES = 10;
+
 const send = (method, path, body = {}) => call(method, path, { body });
 
 // ---------------------------------------------------------------------
@@ -424,8 +427,8 @@ function renderMembers(panel, { say, expired }) {
   const tbody = el('tbody');
 
   const name = el('input', { id: 'm-name', class: 'field', maxlength: 40, required: true });
-  const daily = el('input', { id: 'm-daily', class: 'field', type: 'number', min: 0, max: 1000, inputmode: 'numeric' });
-  const devices = el('input', { id: 'm-devices', class: 'field', type: 'number', min: 1, max: 20, inputmode: 'numeric' });
+  const daily = el('input', { id: 'm-daily', class: 'field', type: 'number', min: 0, max: 1000, inputmode: 'numeric', placeholder: 'No limit' });
+  const devices = el('input', { id: 'm-devices', class: 'field', type: 'number', min: 1, max: 20, inputmode: 'numeric', placeholder: String(DEFAULT_DEVICES) });
   const code = el('input', { id: 'm-code', class: 'field', maxlength: 64, autocomplete: 'off', spellcheck: false });
   const add = el('button', { class: 'btn btn-primary', type: 'submit', text: 'Add member' });
   const form = el(
@@ -469,10 +472,10 @@ function renderMembers(panel, { say, expired }) {
   const head = el(
     'tr',
     {},
-    ['Name', 'Last seen', 'Devices', 'Requests', 'Limits', 'Actions'].map((h) => el('th', { scope: 'col', text: h })),
+    ['Name', 'Last seen', 'Logged in', 'Requests', 'Limits', 'Actions'].map((h) => el('th', { scope: 'col', text: h })),
   );
 
-  const memberRow = (m, defaults) => {
+  const memberRow = (m) => {
     const deviceList = el('ul', { class: 'events' });
     for (const d of m.devices) {
       const kill = el('button', {
@@ -522,7 +525,14 @@ function renderMembers(panel, { say, expired }) {
       say(res.ok ? `${m.name} is revoked.` : "Couldn't revoke.", res.ok ? 'status-ok' : 'status-bad');
       load();
     });
-    const limits = `${m.daily_limit ?? defaults.daily} a day, ${m.max_sessions} device${m.max_sessions === 1 ? '' : 's'}`;
+    const edit = el('button', { class: 'btn btn-small', type: 'button', text: 'Edit', 'aria-label': `Edit ${m.name}` });
+    edit.addEventListener('click', () => editMember(m, edit));
+    const limits = el(
+      'td',
+      {},
+      m.daily_limit === null ? el('span', { class: 'muted', text: 'No limit' }) : `${m.daily_limit} a day`,
+      m.max_sessions !== DEFAULT_DEVICES ? el('p', { class: 'muted', text: `max ${m.max_sessions} device${m.max_sessions === 1 ? '' : 's'}` }) : null,
+    );
     return el(
       'tr',
       {},
@@ -530,9 +540,86 @@ function renderMembers(panel, { say, expired }) {
       el('td', { text: m.last_seen_at ? formatDateTime(m.last_seen_at) : 'Never' }),
       el('td', {}, m.devices.length ? deviceList : el('span', { class: 'muted', text: 'None' })),
       el('td', { text: String(m.request_count) }),
-      el('td', { text: limits }),
-      el('td', {}, el('div', { class: 'row-actions' }, rotate, revoke)),
+      limits,
+      el('td', {}, el('div', { class: 'row-actions' }, edit, rotate, revoke)),
     );
+  };
+
+  // Name, daily limit (blank = none) and device cap in a dialog.
+  const editMember = (m, opener) => {
+    const dialog = el('dialog', { class: 'sheet', 'aria-labelledby': 'edit-title' });
+    const eName = el('input', { id: 'e-name', class: 'field', maxlength: 40, required: true, value: m.name });
+    const eDaily = el('input', {
+      id: 'e-daily',
+      class: 'field',
+      type: 'number',
+      min: 0,
+      max: 1000,
+      inputmode: 'numeric',
+      placeholder: 'No limit',
+      value: m.daily_limit === null ? null : String(m.daily_limit),
+    });
+    const eDevices = el('input', {
+      id: 'e-devices',
+      class: 'field',
+      type: 'number',
+      min: 1,
+      max: 20,
+      inputmode: 'numeric',
+      required: true,
+      value: String(m.max_sessions),
+    });
+    const message = el('p', { class: 'status', role: 'status' });
+    const cancel = el('button', { class: 'btn', type: 'button', text: 'Cancel', onclick: () => dialog.close() });
+    const save = el('button', { class: 'btn btn-primary', type: 'submit', text: 'Save' });
+    const form = el(
+      'form',
+      { method: 'dialog', class: 'form-grid' },
+      el('h2', { id: 'edit-title', text: `Edit ${m.name}` }),
+      el('label', { for: 'e-name' }, 'Name', eName),
+      el('p', { class: 'muted', text: 'Renaming a member can hide older duplicate requests from their list.' }),
+      el('label', { for: 'e-daily' }, 'Daily limit (blank for no limit)', eDaily),
+      el('label', { for: 'e-devices' }, 'Devices at once', eDevices),
+      message,
+      el('div', { class: 'actions' }, cancel, save),
+    );
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      save.disabled = true;
+      message.className = 'status';
+      message.textContent = '';
+      const res = await send('PATCH', `/api/admin/members/${m.id}`, {
+        name: eName.value.trim(),
+        daily_limit: numberOrNull(eDaily.value),
+        max_sessions: Number(eDevices.value),
+      });
+      save.disabled = false;
+      if (expired(res)) {
+        dialog.close();
+        return;
+      }
+      if (res.ok) {
+        dialog.close();
+        say(`Saved ${eName.value.trim()}.`, 'status-ok');
+        load();
+      } else {
+        message.className = 'status status-bad';
+        message.textContent =
+          res.status === 409
+            ? 'A member with that name already exists.'
+            : res.status === 400
+              ? 'Check the name (1 to 40 characters) and the limits.'
+              : "Couldn't save. Nothing was changed.";
+      }
+    });
+    dialog.addEventListener('close', () => {
+      dialog.remove();
+      opener.focus();
+    });
+    dialog.append(form);
+    document.body.append(dialog);
+    dialog.showModal();
+    eName.focus();
   };
 
   const load = async () => {
@@ -543,8 +630,7 @@ function renderMembers(panel, { say, expired }) {
       return;
     }
     clear(tbody);
-    const defaults = { daily: res.data.default_daily_limit };
-    for (const m of res.data.members) tbody.append(memberRow(m, defaults));
+    for (const m of res.data.members) tbody.append(memberRow(m));
   };
 
   clear(panel);

@@ -180,8 +180,6 @@ fn test_config() -> Config {
         code_pepper: b"integration-test-pepper-at-least-32-bytes!!".to_vec(),
         cookie_dev_insecure: false,
         code_length: 8,
-        default_max_sessions: 3,
-        default_daily_limit: 10,
         admin_user: TEST_ADMIN_USER.to_string(),
         admin_password_hash: test_admin_password_hash().to_string(),
         trusted_proxy_cidrs: mediaqueue::clientip::parse_cidr_list(
@@ -227,7 +225,7 @@ pub async fn spawn_app() -> TestApp {
 }
 
 /// Like [`spawn_app`], but lets the caller tweak the config first (e.g. a
-/// smaller `default_max_sessions`, or `cookie_dev_insecure = true`).
+/// different rate limits, or `cookie_dev_insecure = true`).
 pub async fn spawn_app_with(customize: impl FnOnce(&mut Config)) -> TestApp {
     let mut config = test_config();
     customize(&mut config);
@@ -266,7 +264,7 @@ pub async fn spawn_app_with(customize: impl FnOnce(&mut Config)) -> TestApp {
 /// Creates a member directly in the database (bypassing HTTP) and returns
 /// `(member_id, raw_code)`. Mirrors what the `add-member` CLI does.
 pub async fn create_member(pool: &SqlitePool, config: &Config, name: &str) -> (i64, String) {
-    create_member_with_sessions(pool, config, name, config.default_max_sessions).await
+    create_member_with_sessions(pool, config, name, mediaqueue::config::DEFAULT_MAX_SESSIONS).await
 }
 
 pub async fn create_member_with_sessions(

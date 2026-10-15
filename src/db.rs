@@ -944,7 +944,7 @@ pub async fn create_member(
 }
 
 /// Fields a member PATCH may change; `None` leaves a field alone, and
-/// `daily_limit: Some(None)` resets it to the global default.
+/// `daily_limit: Some(None)` removes the member's daily limit.
 pub struct MemberUpdate<'a> {
     pub name: Option<&'a str>,
     pub daily_limit: Option<Option<i64>>,

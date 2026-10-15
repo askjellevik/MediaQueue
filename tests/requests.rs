@@ -41,6 +41,16 @@ async fn spawn_with(tmdb: &MockServer, customize: impl FnOnce(&mut Config)) -> T
     .await
 }
 
+/// Members have no daily limit unless the admin sets one.
+async fn set_daily_limit(app: &TestApp, name: &str, limit: i64) {
+    sqlx::query("UPDATE members SET daily_limit = ? WHERE name = ?")
+        .bind(limit)
+        .bind(name)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+}
+
 async fn submit(app: &TestApp, cookie: &str, body: &str) -> HttpResponse {
     let mut headers = json_post_headers();
     headers.push(("Cookie", cookie));
@@ -82,6 +92,8 @@ async fn two_members_requesting_one_title_make_one_row_and_two_events() {
     let app = spawn_with(&tmdb, |_| {}).await;
     let alice = login_new_member(&app, "Alice").await;
     let bob = login_new_member(&app, "Bob").await;
+    set_daily_limit(&app, "Alice", 10).await;
+    set_daily_limit(&app, "Bob", 10).await;
 
     let first = submit_movie(&app, &alice, 438631).await;
     assert_eq!(first.status, 201, "{}", first.body);
@@ -161,6 +173,7 @@ async fn eleventh_request_in_a_day_is_429_and_writes_nothing() {
     mount_movies(&tmdb).await;
     let app = spawn_with(&tmdb, |_| {}).await;
     let alice = login_new_member(&app, "Alice").await;
+    set_daily_limit(&app, "Alice", 10).await;
 
     for id in 1..=10 {
         let response = submit_movie(&app, &alice, id).await;
@@ -208,15 +221,64 @@ async fn eleventh_request_in_a_day_is_429_and_writes_nothing() {
 }
 
 #[tokio::test]
-async fn member_daily_limit_overrides_the_default() {
+async fn member_without_a_daily_limit_is_never_daily_capped() {
     let tmdb = MockServer::start().await;
     mount_movies(&tmdb).await;
     let app = spawn_with(&tmdb, |_| {}).await;
     let alice = login_new_member(&app, "Alice").await;
-    sqlx::query("UPDATE members SET daily_limit = 1 WHERE name = 'Alice'")
-        .execute(&app.pool)
-        .await
-        .unwrap();
+
+    for id in 1..=15 {
+        let response = submit_movie(&app, &alice, id).await;
+        assert_eq!(response.status, 201, "request {id}: {}", response.body);
+        assert!(json_of(&response)["remaining_today"].is_null());
+        app.clock.advance(Duration::from_secs(30));
+    }
+    let me = app
+        .request("GET", "/api/me", &[("Cookie", &alice)], None)
+        .await;
+    assert!(json_of(&me)["remaining_today"].is_null());
+}
+
+#[tokio::test]
+async fn unlimited_member_still_hits_the_minute_cap_without_a_remaining_count() {
+    let tmdb = MockServer::start().await;
+    mount_movies(&tmdb).await;
+    let app = spawn_with(&tmdb, |cfg| cfg.rate_limits.requests_per_minute = 2).await;
+    let alice = login_new_member(&app, "Alice").await;
+
+    assert_eq!(submit_movie(&app, &alice, 1).await.status, 201);
+    assert_eq!(submit_movie(&app, &alice, 2).await.status, 201);
+    let over = submit_movie(&app, &alice, 3).await;
+    assert_eq!(over.status, 429);
+    assert!(json_of(&over).get("remaining_today").is_none());
+}
+
+#[tokio::test]
+async fn limited_member_sees_the_count_go_down() {
+    let tmdb = MockServer::start().await;
+    mount_movies(&tmdb).await;
+    let app = spawn_with(&tmdb, |_| {}).await;
+    let alice = login_new_member(&app, "Alice").await;
+    set_daily_limit(&app, "Alice", 5).await;
+
+    let me = app
+        .request("GET", "/api/me", &[("Cookie", &alice)], None)
+        .await;
+    assert_eq!(json_of(&me)["remaining_today"], 5);
+    assert_eq!(submit_movie(&app, &alice, 1).await.status, 201);
+    let me = app
+        .request("GET", "/api/me", &[("Cookie", &alice)], None)
+        .await;
+    assert_eq!(json_of(&me)["remaining_today"], 4);
+}
+
+#[tokio::test]
+async fn member_daily_limit_caps_requests() {
+    let tmdb = MockServer::start().await;
+    mount_movies(&tmdb).await;
+    let app = spawn_with(&tmdb, |_| {}).await;
+    let alice = login_new_member(&app, "Alice").await;
+    set_daily_limit(&app, "Alice", 1).await;
 
     assert_eq!(submit_movie(&app, &alice, 1).await.status, 201);
     app.clock.advance(Duration::from_secs(61));
@@ -229,6 +291,7 @@ async fn fourth_request_in_a_minute_is_429_until_the_oldest_ages_out() {
     mount_movies(&tmdb).await;
     let app = spawn_with(&tmdb, |cfg| cfg.rate_limits.requests_per_minute = 3).await;
     let alice = login_new_member(&app, "Alice").await;
+    set_daily_limit(&app, "Alice", 10).await;
 
     assert_eq!(submit_movie(&app, &alice, 1).await.status, 201);
     app.clock.advance(Duration::from_secs(10));

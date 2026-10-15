@@ -34,7 +34,7 @@ pub enum AppError {
     #[error("request quota exceeded")]
     QuotaExceeded {
         retry_after_secs: u64,
-        remaining_today: i64,
+        remaining_today: Option<i64>,
     },
     #[error("malformed request")]
     BadRequest,
@@ -140,7 +140,7 @@ impl IntoResponse for AppError {
             remaining_today: match self {
                 AppError::QuotaExceeded {
                     remaining_today, ..
-                } => Some(remaining_today),
+                } => remaining_today,
                 _ => None,
             },
         };

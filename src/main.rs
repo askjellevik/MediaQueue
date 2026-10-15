@@ -263,7 +263,7 @@ async fn add_member_async(
         }
     };
 
-    let max_sessions = max_sessions.unwrap_or(config.default_max_sessions);
+    let max_sessions = max_sessions.unwrap_or(mediaqueue::config::DEFAULT_MAX_SESSIONS);
     // A chosen code is validated and hashed; otherwise one is generated and
     // printed once.
     let (shown, normalised) = match chosen {
