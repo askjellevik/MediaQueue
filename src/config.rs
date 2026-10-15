@@ -12,9 +12,10 @@ use crate::clientip::{Cidr, parse_cidr_list};
 /// trivially reversible for short codes.
 const MIN_PEPPER_BYTES: usize = 32;
 
-/// Devices a new member may be logged in on at once. It only bounds session
-/// rows; the admin can change it per member.
-pub const DEFAULT_MAX_SESSIONS: i64 = 10;
+/// Devices a member may be logged in on at once. A device is just a login
+/// session, so this only bounds session rows; it is not an anti-sharing
+/// control.
+pub const MAX_SESSIONS_PER_MEMBER: i64 = 10;
 
 const DEFAULT_TMDB_BASE_URL: &str = "https://api.themoviedb.org/3";
 const DEFAULT_DMM_BASE_URL: &str = "https://debridmediamanager.com";

@@ -643,7 +643,7 @@ async fn member_lifecycle_create_devices_rotate_revoke() {
         Some(&admin),
         "POST",
         "/api/admin/members",
-        Some(r#"{"name":" Carol ","max_sessions":2}"#),
+        Some(r#"{"name":" Carol "}"#),
     )
     .await;
     assert_eq!(created.status, 201, "{}", created.body);
@@ -671,7 +671,6 @@ async fn member_lifecycle_create_devices_rotate_revoke() {
     let members = json_of(&call(&app, Some(&admin), "GET", "/api/admin/members", None).await);
     let carol = &members["members"][0];
     assert_eq!(carol["name"], "Carol");
-    assert_eq!(carol["max_sessions"], 2);
     assert_eq!(carol["daily_limit"], Value::Null);
     let devices = carol["devices"].as_array().unwrap();
     assert_eq!(devices.len(), 2);
@@ -745,12 +744,7 @@ async fn member_lifecycle_create_devices_rotate_revoke() {
         .await
         .unwrap();
     assert_eq!(limit, None);
-    for bad in [
-        r#"{"max_sessions":0}"#,
-        r#"{"daily_limit":-1}"#,
-        r#"{"name":""}"#,
-        r#"{"code":"X"}"#,
-    ] {
+    for bad in [r#"{"daily_limit":-1}"#, r#"{"name":""}"#, r#"{"code":"X"}"#] {
         assert_eq!(
             call(&app, Some(&admin), "PATCH", &path, Some(bad))
                 .await

@@ -112,7 +112,6 @@ pub struct Member {
     pub id: i64,
     pub name: String,
     pub code_hash: Vec<u8>,
-    pub max_sessions: i64,
     pub daily_limit: Option<i64>,
     pub revoked_at: Option<i64>,
 }
@@ -128,7 +127,7 @@ pub async fn find_member_by_code_hash(
     sqlx::query_as!(
         Member,
         r#"SELECT id AS "id!", name AS "name!", code_hash AS "code_hash!",
-                  max_sessions AS "max_sessions!", daily_limit, revoked_at
+                  daily_limit, revoked_at
            FROM members WHERE code_hash = ?"#,
         code_hash
     )
@@ -142,17 +141,15 @@ pub async fn insert_member(
     pool: &SqlitePool,
     name: &str,
     code_hash: &[u8],
-    max_sessions: i64,
     daily_limit: Option<i64>,
     now: i64,
 ) -> Result<i64, sqlx::Error> {
     let rec = sqlx::query!(
-        r#"INSERT INTO members (name, code_hash, max_sessions, daily_limit, created_at)
-           VALUES (?, ?, ?, ?, ?)
+        r#"INSERT INTO members (name, code_hash, daily_limit, created_at)
+           VALUES (?, ?, ?, ?)
            RETURNING id AS "id!""#,
         name,
         code_hash,
-        max_sessions,
         daily_limit,
         now
     )
@@ -872,7 +869,6 @@ pub fn export_csv(pool: &'static SqlitePool) -> axum::body::Body {
 pub struct MemberRow {
     pub id: i64,
     pub name: String,
-    pub max_sessions: i64,
     pub daily_limit: Option<i64>,
     pub created_at: i64,
     pub rotated_at: Option<i64>,
@@ -885,7 +881,7 @@ pub struct MemberRow {
 pub async fn list_members(pool: &SqlitePool) -> Result<Vec<MemberRow>, sqlx::Error> {
     sqlx::query_as!(
         MemberRow,
-        r#"SELECT m.id AS "id!", m.name AS "name!", m.max_sessions AS "max_sessions!",
+        r#"SELECT m.id AS "id!", m.name AS "name!",
                   m.daily_limit, m.created_at AS "created_at!", m.rotated_at, m.revoked_at,
                   m.last_seen_at,
                   (SELECT COUNT(*) FROM requests r WHERE r.requested_by = m.id)
@@ -950,7 +946,6 @@ pub async fn create_member(
     pool: &SqlitePool,
     name: &str,
     code_hash: &[u8],
-    max_sessions: i64,
     daily_limit: Option<i64>,
     now: i64,
 ) -> Result<MemberWrite, sqlx::Error> {
@@ -960,12 +955,11 @@ pub async fn create_member(
         return Ok(MemberWrite::NameTaken);
     }
     let id = sqlx::query_scalar!(
-        r#"INSERT INTO members (name, code_hash, max_sessions, daily_limit, created_at)
-           VALUES (?, ?, ?, ?, ?)
+        r#"INSERT INTO members (name, code_hash, daily_limit, created_at)
+           VALUES (?, ?, ?, ?)
            RETURNING id AS "id!""#,
         name,
         code_hash,
-        max_sessions,
         daily_limit,
         now
     )
@@ -980,7 +974,6 @@ pub async fn create_member(
 pub struct MemberUpdate<'a> {
     pub name: Option<&'a str>,
     pub daily_limit: Option<Option<i64>>,
-    pub max_sessions: Option<i64>,
 }
 
 pub async fn update_member(
@@ -1000,11 +993,9 @@ pub async fn update_member(
     let result = sqlx::query!(
         "UPDATE members
          SET name = COALESCE(?, name),
-             max_sessions = COALESCE(?, max_sessions),
              daily_limit = CASE WHEN ? THEN ? ELSE daily_limit END
          WHERE id = ?",
         update.name,
-        update.max_sessions,
         set_limit,
         new_limit,
         member_id
@@ -1159,7 +1150,7 @@ mod tests {
     #[tokio::test]
     async fn delete_expired_sessions_removes_only_expired_rows() {
         let pool = test_pool().await;
-        let member_id = insert_member(&pool, "Alice", b"hash", 3, None, 0)
+        let member_id = insert_member(&pool, "Alice", b"hash", None, 0)
             .await
             .expect("insert member");
 

@@ -106,6 +106,15 @@ export function formatDate(unixSeconds) {
   });
 }
 
+// "just now", "5 min ago", "2 h ago", "3 d ago".
+export function formatAgo(unixSeconds) {
+  const secs = Math.max(0, Math.floor(Date.now() / 1000) - unixSeconds);
+  if (secs < 60) return 'just now';
+  if (secs < 3600) return `${Math.floor(secs / 60)} min ago`;
+  if (secs < 86400) return `${Math.floor(secs / 3600)} h ago`;
+  return `${Math.floor(secs / 86400)} d ago`;
+}
+
 export function formatDateTime(unixSeconds) {
   return new Date(unixSeconds * 1000).toLocaleString(undefined, {
     year: 'numeric',

@@ -12,7 +12,7 @@ Defined in `migrations/`; times are unix seconds in UTC.
 
 | Table | Holds |
 | --- | --- |
-| `members` | One row per person: unique name, `code_hash` (HMAC of the access code), `max_sessions`, optional `daily_limit` (`NULL` means no limit), and `rotated_at`, `revoked_at`, `last_seen_at`. |
+| `members` | One row per person: unique name, `code_hash` (HMAC of the access code), optional `daily_limit` (`NULL` means no limit), and `rotated_at`, `revoked_at`, `last_seen_at`. (An unused `max_sessions` column remains from the first schema.) |
 | `sessions` | Logged-in devices. `token_hash` is the SHA-256 of the cookie token. `kind` is `user` (with a `member_id`) or `admin`. |
 | `requests` | One row per title (`UNIQUE (tmdb_id, media_type)`). `status` is `pending`, `added`, `already_had` or `refused`. Also the IMDb ID, title, year, poster path, an optional note of up to 200 characters, and who asked first. |
 | `request_events` | Append-only history: `submitted`, `duplicate` and `status` events with the actor's name. It is the audit trail, the CSV export source and the source of the request quotas. |
@@ -52,7 +52,7 @@ Anything else is served from the embedded `web/` directory.
   hyphens removed) and only `HMAC-SHA256(CODE_PEPPER, code)` is stored.
 - **Member sessions.** A login creates a session (one device) with a random
   token in a `__Host-` cookie; the database keeps its hash. Sessions last 90
-  days, sliding. At `max_sessions` the oldest session is dropped. Rotating
+  days, sliding. At 10 sessions (`MAX_SESSIONS_PER_MEMBER`) the oldest is dropped; the cap only bounds session rows. Rotating
   or revoking a member deletes their sessions.
 - **Admin.** `ADMIN_USER` plus an Argon2id password hash from the
   environment. Sessions last 8 hours, or 2 hours idle. Hashing runs one at a

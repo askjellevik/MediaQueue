@@ -32,7 +32,7 @@ the same source file. For the overall design, see
 | Global throttle: 1 s delay above 60 failures an hour, 3 s above 300; correct code still logs in | `ratelimit::GlobalThrottle`, `LoginLimiter::before_attempt` | `rate_limit::global_throttle_delays_attempts_but_correct_code_still_logs_in` |
 | Delayed attempts hold one of 32 permits; none free gives 429 with `Retry-After` | `ratelimit::LoginLimiter` | `rate_limit::full_or_closed_delay_semaphore_returns_429_never_a_bypass` |
 | Throttle on or off: one warning and one ntfy alert, at most one an hour | `ratelimit::LoginLimiter::alert` | `throttle_alert::throttle_turning_on_logs_a_warning_and_sends_exactly_one_alert` |
-| `max_sessions` (default 10 for new members): a new login evicts the oldest, logged | `db::create_user_session`, `post_auth_code` | `auth_flow::fourth_login_evicts_oldest_session_for_max_sessions_three` |
+| At most 10 sessions per member (`MAX_SESSIONS_PER_MEMBER`, a cap on rows, not an anti-sharing control): a new login evicts the oldest, logged | `db::create_user_session`, `post_auth_code` | `auth_flow::login_over_the_device_cap_evicts_oldest_session` |
 | Admin page shows devices per member, with a kill button per device | `routes::admin::get_members`, `delete_session`, `web/js/admin.js` | `admin::member_lifecycle_create_devices_rotate_revoke`, `browser::admin_queue_archive_and_members_work_end_to_end` |
 
 ### Admin login

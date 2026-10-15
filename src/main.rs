@@ -38,8 +38,6 @@ enum Command {
         code: Option<String>,
         #[arg(long)]
         daily_limit: Option<i64>,
-        #[arg(long)]
-        max_sessions: Option<i64>,
     },
     /// Write a consistent snapshot of the database to the backups directory
     /// next to it (e.g. `/data/backups`), keeping the newest 14.
@@ -56,8 +54,7 @@ fn main() -> ExitCode {
             name,
             code,
             daily_limit,
-            max_sessions,
-        } => run_add_member(name, code, daily_limit, max_sessions),
+        } => run_add_member(name, code, daily_limit),
         Command::Backup => run_backup(),
     }
 }
@@ -218,12 +215,7 @@ fn run_hash_password() -> ExitCode {
     }
 }
 
-fn run_add_member(
-    name: String,
-    code: Option<String>,
-    daily_limit: Option<i64>,
-    max_sessions: Option<i64>,
-) -> ExitCode {
+fn run_add_member(name: String, code: Option<String>, daily_limit: Option<i64>) -> ExitCode {
     let config = match Config::from_env() {
         Ok(c) => c,
         Err(e) => {
@@ -243,13 +235,7 @@ fn run_add_member(
         }
     };
 
-    runtime.block_on(add_member_async(
-        config,
-        name,
-        code,
-        daily_limit,
-        max_sessions,
-    ))
+    runtime.block_on(add_member_async(config, name, code, daily_limit))
 }
 
 async fn add_member_async(
@@ -257,7 +243,6 @@ async fn add_member_async(
     name: String,
     chosen: Option<String>,
     daily_limit: Option<i64>,
-    max_sessions: Option<i64>,
 ) -> ExitCode {
     let pool = match db::connect(&config).await {
         Ok(p) => p,
@@ -267,7 +252,6 @@ async fn add_member_async(
         }
     };
 
-    let max_sessions = max_sessions.unwrap_or(mediaqueue::config::DEFAULT_MAX_SESSIONS);
     // A chosen code is validated and hashed; otherwise one is generated and
     // printed once.
     let (shown, normalised) = match chosen {
@@ -296,7 +280,7 @@ async fn add_member_async(
     let code_hash = auth::hmac_code(&config.code_pepper, &normalised);
     let now = db::now_unix();
 
-    match db::insert_member(&pool, &name, &code_hash, max_sessions, daily_limit, now).await {
+    match db::insert_member(&pool, &name, &code_hash, daily_limit, now).await {
         Ok(id) => {
             println!("Member #{id} ({name}) created.");
             if let Some(code) = shown {

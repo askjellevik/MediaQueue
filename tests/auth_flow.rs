@@ -3,10 +3,7 @@
 
 mod common;
 
-use common::{
-    HttpResponse, TestApp, cookie_pair, create_member, create_member_with_sessions,
-    json_post_headers,
-};
+use common::{HttpResponse, TestApp, cookie_pair, create_member, json_post_headers};
 
 fn assert_json_error(resp: &HttpResponse, status: u16) {
     assert_eq!(resp.status, status, "body was: {}", resp.body);
@@ -140,19 +137,20 @@ async fn wrong_rotated_and_revoked_codes_return_identical_response() {
 }
 
 // ---------------------------------------------------------------------
-// max_sessions eviction
+// Device cap eviction
 // ---------------------------------------------------------------------
 
 #[tokio::test]
-async fn fourth_login_evicts_oldest_session_for_max_sessions_three() {
+async fn login_over_the_device_cap_evicts_oldest_session() {
+    let cap = mediaqueue::config::MAX_SESSIONS_PER_MEMBER;
     let app = common::spawn_app().await;
-    let (_, code) = create_member_with_sessions(&app.pool, &app.config, "Alice", 3).await;
+    let (_, code) = create_member(&app.pool, &app.config, "Alice").await;
 
     let first = login_with_code(&app, &code).await;
     assert_eq!(first.status, 200);
     let first_cookie = cookie_pair(first.header("set-cookie").unwrap()).to_string();
 
-    for _ in 0..2 {
+    for _ in 1..cap {
         let resp = login_with_code(&app, &code).await;
         assert_eq!(resp.status, 200);
     }
@@ -161,20 +159,17 @@ async fn fourth_login_evicts_oldest_session_for_max_sessions_three() {
         .fetch_one(&app.pool)
         .await
         .unwrap();
-    assert_eq!(count, 3);
+    assert_eq!(count, cap);
 
-    // Fourth login evicts the oldest (the first device's) session.
-    let fourth = login_with_code(&app, &code).await;
-    assert_eq!(fourth.status, 200);
+    // One more login evicts the oldest (the first device's) session.
+    let extra = login_with_code(&app, &code).await;
+    assert_eq!(extra.status, 200);
 
     let count_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE kind = 'user'")
         .fetch_one(&app.pool)
         .await
         .unwrap();
-    assert_eq!(
-        count_after, 3,
-        "total session count must stay at max_sessions"
-    );
+    assert_eq!(count_after, cap, "total session count must stay at the cap");
 
     // The first device's session cookie must now be rejected.
     let me = app

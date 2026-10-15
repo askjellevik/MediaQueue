@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "INSERT INTO members (name, code_hash, max_sessions, daily_limit, created_at)\n           VALUES (?, ?, ?, ?, ?)\n           RETURNING id AS \"id!\"",
+  "query": "INSERT INTO members (name, code_hash, daily_limit, created_at)\n           VALUES (?, ?, ?, ?)\n           RETURNING id AS \"id!\"",
   "describe": {
     "columns": [
       {
@@ -16,11 +16,11 @@
       }
     ],
     "parameters": {
-      "Right": 5
+      "Right": 4
     },
     "nullable": [
       false
     ]
   },
-  "hash": "0155eeea946016307c7813f88dd98a6db5c7aea21787eb2d5dc40d9653430158"
+  "hash": "a00cc4aa856429e0a56d89bfb4c0643e56f79f15d5195dc3c02c7c480acc3a62"
 }

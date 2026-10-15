@@ -273,21 +273,12 @@ pub async fn spawn_app_custom(
 /// Creates a member directly in the database (bypassing HTTP) and returns
 /// `(member_id, raw_code)`. Mirrors what the `add-member` CLI does.
 pub async fn create_member(pool: &SqlitePool, config: &Config, name: &str) -> (i64, String) {
-    create_member_with_sessions(pool, config, name, mediaqueue::config::DEFAULT_MAX_SESSIONS).await
-}
-
-pub async fn create_member_with_sessions(
-    pool: &SqlitePool,
-    config: &Config,
-    name: &str,
-    max_sessions: i64,
-) -> (i64, String) {
     let code = mediaqueue::auth::generate_code(mediaqueue::auth::GENERATED_CODE_LENGTH)
         .expect("os random source");
     let normalised = mediaqueue::auth::normalise_code(&code);
     let code_hash = mediaqueue::auth::hmac_code(&config.code_pepper, &normalised);
     let now = db::now_unix();
-    let id = db::insert_member(pool, name, &code_hash, max_sessions, None, now)
+    let id = db::insert_member(pool, name, &code_hash, None, now)
         .await
         .expect("insert test member");
     (id, code)

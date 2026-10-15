@@ -360,7 +360,6 @@ pub async fn get_export(State(state): State<AppState>, _admin: RequireAdmin) -> 
 
 const MAX_NAME_CHARS: usize = 40;
 const MAX_DAILY_LIMIT: i64 = 1000;
-const MAX_MAX_SESSIONS: i64 = 20;
 /// Attempts at a fresh code if one collides with an existing code's hash.
 const CODE_ATTEMPTS: usize = 3;
 
@@ -376,13 +375,6 @@ fn clean_name(name: &str) -> Result<String, AppError> {
 fn check_daily_limit(limit: Option<i64>) -> Result<Option<i64>, AppError> {
     match limit {
         Some(n) if !(0..=MAX_DAILY_LIMIT).contains(&n) => Err(AppError::BadRequest),
-        other => Ok(other),
-    }
-}
-
-fn check_max_sessions(max: Option<i64>) -> Result<Option<i64>, AppError> {
-    match max {
-        Some(n) if !(1..=MAX_MAX_SESSIONS).contains(&n) => Err(AppError::BadRequest),
         other => Ok(other),
     }
 }
@@ -425,7 +417,6 @@ struct MemberView {
     id: i64,
     name: String,
     daily_limit: Option<i64>,
-    max_sessions: i64,
     created_at: i64,
     rotated_at: Option<i64>,
     revoked_at: Option<i64>,
@@ -459,7 +450,6 @@ pub async fn get_members(
                 id: m.id,
                 name: m.name,
                 daily_limit: m.daily_limit,
-                max_sessions: m.max_sessions,
                 created_at: m.created_at,
                 rotated_at: m.rotated_at,
                 revoked_at: m.revoked_at,
@@ -480,8 +470,6 @@ pub struct CreateMemberBody {
     name: String,
     #[serde(default)]
     daily_limit: Option<i64>,
-    #[serde(default)]
-    max_sessions: Option<i64>,
     /// An admin-chosen code; blank or absent means "generate one".
     #[serde(default)]
     code: Option<String>,
@@ -497,14 +485,10 @@ pub async fn post_member(
 ) -> Result<Response, AppError> {
     let name = clean_name(&body.name)?;
     let daily_limit = check_daily_limit(body.daily_limit)?;
-    let max_sessions =
-        check_max_sessions(body.max_sessions)?.unwrap_or(crate::config::DEFAULT_MAX_SESSIONS);
     let now = now(&state);
 
     if let Some(hash) = chosen_code_hash(&state, body.code.as_deref())? {
-        return match db::create_member(&state.pool, &name, &hash, max_sessions, daily_limit, now)
-            .await
-        {
+        return match db::create_member(&state.pool, &name, &hash, daily_limit, now).await {
             Ok(db::MemberWrite::Done(id)) => {
                 tracing::info!(member_id = id, member = %name, "member created with chosen code");
                 let body = json!({ "id": id, "name": name, "code": null });
@@ -520,7 +504,7 @@ pub async fn post_member(
 
     for _ in 0..CODE_ATTEMPTS {
         let (code, hash) = new_code(&state)?;
-        match db::create_member(&state.pool, &name, &hash, max_sessions, daily_limit, now).await {
+        match db::create_member(&state.pool, &name, &hash, daily_limit, now).await {
             Ok(db::MemberWrite::Done(id)) => {
                 tracing::info!(member_id = id, member = %name, "member created");
                 let body = json!({
@@ -558,8 +542,6 @@ pub struct PatchMemberBody {
     /// `null` removes the member's daily limit.
     #[serde(default, deserialize_with = "present")]
     daily_limit: Option<Option<i64>>,
-    #[serde(default)]
-    max_sessions: Option<i64>,
 }
 
 /// `PATCH /api/admin/members/{id}`
@@ -571,11 +553,9 @@ pub async fn patch_member(
 ) -> Result<impl IntoResponse, AppError> {
     let name = body.name.as_deref().map(clean_name).transpose()?;
     let daily_limit = body.daily_limit.map(check_daily_limit).transpose()?;
-    let max_sessions = check_max_sessions(body.max_sessions)?;
     let update = db::MemberUpdate {
         name: name.as_deref(),
         daily_limit,
-        max_sessions,
     };
     match db::update_member(&state.pool, id, &update).await? {
         db::MemberWrite::Done(_) => {
@@ -702,7 +682,5 @@ mod tests {
         assert!(clean_name("a\nb").is_err());
         assert!(check_daily_limit(Some(-1)).is_err());
         assert!(check_daily_limit(Some(0)).is_ok());
-        assert!(check_max_sessions(Some(0)).is_err());
-        assert!(check_max_sessions(None).unwrap().is_none());
     }
 }

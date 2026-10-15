@@ -14,6 +14,7 @@ import {
   el,
   extLink,
   footer,
+  formatAgo,
   formatDateTime,
   formatWait,
   imdbUrl,
@@ -49,7 +50,6 @@ const EVENT_TEXT = {
 
 const get = (path) => call('GET', path);
 // What the server gives a new member; only a different value is worth showing.
-const DEFAULT_DEVICES = 10;
 
 // Stops the live updates of the signed-in page when it goes away.
 let stopLive = null;
@@ -601,13 +601,25 @@ function numberOrNull(value) {
   return v === '' ? null : Number(v);
 }
 
+// "3 devices, last seen 2 h ago", with the list behind a disclosure.
+function devicesCell(m, deviceList) {
+  if (!m.devices.length) return el('span', { class: 'muted', text: 'None' });
+  const n = m.devices.length;
+  const lastSeen = Math.max(...m.devices.map((d) => d.last_seen_at));
+  return el(
+    'details',
+    {},
+    el('summary', { text: `${n} device${n === 1 ? '' : 's'}, last seen ${formatAgo(lastSeen)}` }),
+    deviceList,
+  );
+}
+
 function renderMembers(panel, { say, expired }) {
   const codeSlot = el('div');
   const tbody = el('tbody');
 
   const name = el('input', { id: 'm-name', class: 'field', maxlength: 40, required: true });
   const daily = el('input', { id: 'm-daily', class: 'field', type: 'number', min: 0, max: 1000, inputmode: 'numeric', placeholder: 'No limit' });
-  const devices = el('input', { id: 'm-devices', class: 'field', type: 'number', min: 1, max: 20, inputmode: 'numeric', placeholder: String(DEFAULT_DEVICES) });
   const code = el('input', { id: 'm-code', class: 'field', maxlength: 64, autocomplete: 'off', spellcheck: false });
   // Advice, not a block: the server accepts anything from 3 characters.
   const codeWarning = el('span', { class: 'muted', id: 'm-code-note' });
@@ -622,7 +634,6 @@ function renderMembers(panel, { say, expired }) {
     { class: 'form-grid', 'aria-label': 'Add a member' },
     el('label', { for: 'm-name' }, 'Name', name),
     el('label', { for: 'm-daily' }, 'Daily limit (optional)', daily),
-    el('label', { for: 'm-devices' }, 'Device limit (optional)', devices),
     el('label', { for: 'm-code' }, 'Access code (optional, 3+ characters; blank generates one)', code),
     codeWarning,
     add,
@@ -631,7 +642,6 @@ function renderMembers(panel, { say, expired }) {
     event.preventDefault();
     const body = { name: name.value.trim() };
     if (numberOrNull(daily.value) !== null) body.daily_limit = numberOrNull(daily.value);
-    if (numberOrNull(devices.value) !== null) body.max_sessions = numberOrNull(devices.value);
     if (code.value.trim() !== '') body.code = code.value;
     add.disabled = true;
     const res = await send('POST', '/api/admin/members', body);
@@ -719,21 +729,20 @@ function renderMembers(panel, { say, expired }) {
       'td',
       {},
       m.daily_limit === null ? el('span', { class: 'muted', text: 'No limit' }) : `${m.daily_limit} a day`,
-      m.max_sessions !== DEFAULT_DEVICES ? el('p', { class: 'muted', text: `max ${m.max_sessions} device${m.max_sessions === 1 ? '' : 's'}` }) : null,
     );
     return el(
       'tr',
       {},
       el('td', {}, el('strong', { text: m.name }), revoked ? el('p', {}, chip('refused', 'Revoked')) : null),
       el('td', { text: m.last_seen_at ? formatDateTime(m.last_seen_at) : 'Never' }),
-      el('td', {}, m.devices.length ? deviceList : el('span', { class: 'muted', text: 'None' })),
+      el('td', {}, devicesCell(m, deviceList)),
       el('td', { text: String(m.request_count) }),
       limits,
       el('td', {}, el('div', { class: 'row-actions' }, edit, rotate, revoke)),
     );
   };
 
-  // Name, daily limit (blank = none) and device cap in a dialog.
+  // Name and daily limit (blank = none) in a dialog.
   const editMember = (m, opener) => {
     const dialog = el('dialog', { class: 'sheet', 'aria-labelledby': 'edit-title' });
     const eName = el('input', { id: 'e-name', class: 'field', maxlength: 40, required: true, value: m.name });
@@ -747,16 +756,6 @@ function renderMembers(panel, { say, expired }) {
       placeholder: 'No limit',
       value: m.daily_limit === null ? null : String(m.daily_limit),
     });
-    const eDevices = el('input', {
-      id: 'e-devices',
-      class: 'field',
-      type: 'number',
-      min: 1,
-      max: 20,
-      inputmode: 'numeric',
-      required: true,
-      value: String(m.max_sessions),
-    });
     const message = el('p', { class: 'status', role: 'status' });
     const cancel = el('button', { class: 'btn', type: 'button', text: 'Cancel', onclick: () => dialog.close() });
     const save = el('button', { class: 'btn btn-primary', type: 'submit', text: 'Save' });
@@ -767,7 +766,6 @@ function renderMembers(panel, { say, expired }) {
       el('label', { for: 'e-name' }, 'Name', eName),
       el('p', { class: 'muted', text: 'Renaming a member can hide older duplicate requests from their list.' }),
       el('label', { for: 'e-daily' }, 'Daily limit (blank for no limit)', eDaily),
-      el('label', { for: 'e-devices' }, 'Devices at once', eDevices),
       message,
       el('div', { class: 'actions' }, cancel, save),
     );
@@ -779,7 +777,6 @@ function renderMembers(panel, { say, expired }) {
       const res = await send('PATCH', `/api/admin/members/${m.id}`, {
         name: eName.value.trim(),
         daily_limit: numberOrNull(eDaily.value),
-        max_sessions: Number(eDevices.value),
       });
       save.disabled = false;
       if (expired(res)) {

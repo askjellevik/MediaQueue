@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT m.id AS \"id!\", m.name AS \"name!\", m.max_sessions AS \"max_sessions!\",\n                  m.daily_limit, m.created_at AS \"created_at!\", m.rotated_at, m.revoked_at,\n                  m.last_seen_at,\n                  (SELECT COUNT(*) FROM requests r WHERE r.requested_by = m.id)\n                    AS \"request_count!: i64\"\n           FROM members m ORDER BY m.id DESC",
+  "query": "SELECT m.id AS \"id!\", m.name AS \"name!\",\n                  m.daily_limit, m.created_at AS \"created_at!\", m.rotated_at, m.revoked_at,\n                  m.last_seen_at,\n                  (SELECT COUNT(*) FROM requests r WHERE r.requested_by = m.id)\n                    AS \"request_count!: i64\"\n           FROM members m ORDER BY m.id DESC",
   "describe": {
     "columns": [
       {
@@ -26,19 +26,8 @@
         }
       },
       {
-        "name": "max_sessions!",
-        "ordinal": 2,
-        "type_info": "Integer",
-        "origin": {
-          "Table": {
-            "table": "members",
-            "name": "max_sessions"
-          }
-        }
-      },
-      {
         "name": "daily_limit",
-        "ordinal": 3,
+        "ordinal": 2,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -49,7 +38,7 @@
       },
       {
         "name": "created_at!",
-        "ordinal": 4,
+        "ordinal": 3,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -60,7 +49,7 @@
       },
       {
         "name": "rotated_at",
-        "ordinal": 5,
+        "ordinal": 4,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -71,7 +60,7 @@
       },
       {
         "name": "revoked_at",
-        "ordinal": 6,
+        "ordinal": 5,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -82,7 +71,7 @@
       },
       {
         "name": "last_seen_at",
-        "ordinal": 7,
+        "ordinal": 6,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -93,7 +82,7 @@
       },
       {
         "name": "request_count!: i64",
-        "ordinal": 8,
+        "ordinal": 7,
         "type_info": "Integer",
         "origin": "Expression"
       }
@@ -104,7 +93,6 @@
     "nullable": [
       false,
       false,
-      false,
       true,
       false,
       true,
@@ -113,5 +101,5 @@
       false
     ]
   },
-  "hash": "19a78af1ab69fa80c22bbfcc1c961c6f571d364a1e1d24c80ac81680f30e3987"
+  "hash": "eea9d3ef9684cdf49bac6c77dfd4ef99b9a6e2545f319c5c21ea0febae746b75"
 }

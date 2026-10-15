@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE members\n         SET name = COALESCE(?, name),\n             daily_limit = CASE WHEN ? THEN ? ELSE daily_limit END\n         WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "3c7d5faa295f1c030b10f5a68af538c71da3ce0bde8308bbb1518ddb5e54d85e"
+}

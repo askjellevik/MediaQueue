@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     auth::{self, RequireUser},
     clientip::ClientIp,
-    db,
+    config, db,
     error::{AppError, AppJson, AppQuery},
     events::Tick,
     notify::{Message, NewRequestInfo},
@@ -73,7 +73,7 @@ pub async fn post_auth_code(
     let result = db::create_user_session(
         &state.pool,
         member.id,
-        member.max_sessions,
+        config::MAX_SESSIONS_PER_MEMBER,
         &token_hash,
         now,
         expires_at,
@@ -84,7 +84,7 @@ pub async fn post_auth_code(
         tracing::warn!(
             member_id = member.id,
             evicted_session_id,
-            "member reached max_sessions; evicted oldest session"
+            "member reached the device cap; evicted oldest session"
         );
     }
 

@@ -353,7 +353,7 @@ async fn admin_queue_archive_and_members_work_end_to_end() {
     .await;
     api_json(&server, "GET", "/api/admin/members", 200, json!({
         "members": [{
-            "id": 2, "name": "Bob", "daily_limit": null, "max_sessions": 3,
+            "id": 2, "name": "Bob", "daily_limit": null,
             "created_at": 1700000000, "rotated_at": null, "revoked_at": null,
             "last_seen_at": 1700000100, "request_count": 4,
             "devices": [{"id": 9, "created_at": 1700000000, "last_seen_at": 1700000100, "expires_at": 1800000000}]
