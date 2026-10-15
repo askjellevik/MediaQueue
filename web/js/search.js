@@ -20,7 +20,7 @@ import {
 } from './ui.js';
 
 const root = document.getElementById('app');
-const APP_NAME = 'Media requests';
+const APP_NAME = 'MediaQueue';
 const DEBOUNCE_MS = 200;
 const MIN_QUERY = 2;
 const MEMO_SIZE = 20;

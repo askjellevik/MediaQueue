@@ -289,7 +289,7 @@ async fn spoofed_x_real_ip_from_untrusted_peer_cannot_dodge_the_limit() {
     let app = common::spawn_app_with(|cfg| {
         cfg.rate_limits.api_per_minute = 3;
         // Loopback (the test client) is not a trusted proxy here.
-        cfg.trusted_proxy_cidrs = media_requests::clientip::parse_cidr_list("10.0.0.0/8").unwrap();
+        cfg.trusted_proxy_cidrs = mediaqueue::clientip::parse_cidr_list("10.0.0.0/8").unwrap();
     })
     .await;
     for n in 0..3 {

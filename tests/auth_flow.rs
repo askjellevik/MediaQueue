@@ -82,7 +82,7 @@ async fn code_normalisation_variants_all_authenticate() {
     let (_, code) = create_member(&app.pool, &app.config, "Alice").await;
 
     let lower = code.to_lowercase();
-    let with_dash = media_requests::auth::format_code_for_display(&code);
+    let with_dash = mediaqueue::auth::format_code_for_display(&code);
     let with_spaces = with_dash.replace('-', " ");
 
     for variant in [
@@ -111,7 +111,7 @@ async fn wrong_rotated_and_revoked_codes_return_identical_response() {
     assert_json_error(&wrong, 401);
 
     // Rotated: replace the stored hash so the original code no longer matches.
-    let new_hash = media_requests::auth::hmac_code(&app.config.code_pepper, "ROTATEDXX");
+    let new_hash = mediaqueue::auth::hmac_code(&app.config.code_pepper, "ROTATEDXX");
     sqlx::query("UPDATE members SET code_hash = ? WHERE id = ?")
         .bind(&new_hash)
         .bind(member_id)
@@ -125,7 +125,7 @@ async fn wrong_rotated_and_revoked_codes_return_identical_response() {
     // to the stored value.
     let (member2_id, code2) = create_member(&app.pool, &app.config, "Bob").await;
     sqlx::query("UPDATE members SET revoked_at = ? WHERE id = ?")
-        .bind(media_requests::db::now_unix())
+        .bind(mediaqueue::db::now_unix())
         .bind(member2_id)
         .execute(&app.pool)
         .await
@@ -318,7 +318,7 @@ async fn database_holds_no_raw_code_or_token() {
     assert_ne!(stored_code_hash, code.as_bytes());
     assert_ne!(
         stored_code_hash,
-        media_requests::auth::normalise_code(&code).as_bytes()
+        mediaqueue::auth::normalise_code(&code).as_bytes()
     );
 
     let stored_token_hash: Vec<u8> =

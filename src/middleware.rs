@@ -128,7 +128,7 @@ pub async fn request_log(ClientIp(ip): ClientIp, req: Request, next: Next) -> Re
     let response = next.run(req).await;
     if path != "/healthz" {
         tracing::info!(
-            target: "media_requests::request",
+            target: "mediaqueue::request",
             %ip,
             %method,
             %path,

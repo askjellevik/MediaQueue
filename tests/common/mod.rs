@@ -16,7 +16,7 @@ use std::{
     time::Duration,
 };
 
-use media_requests::{build_router, clock::Clock, config::Config, db, state::AppState};
+use mediaqueue::{build_router, clock::Clock, config::Config, db, state::AppState};
 use sqlx::SqlitePool;
 
 static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -171,7 +171,7 @@ fn test_config() -> Config {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system clock before unix epoch")
         .as_nanos();
-    let db_path = std::env::temp_dir().join(format!("media-requests-test-{nanos}-{n}.sqlite3"));
+    let db_path = std::env::temp_dir().join(format!("mediaqueue-test-{nanos}-{n}.sqlite3"));
 
     Config {
         public_origin: "https://example.com".into(),
@@ -184,7 +184,7 @@ fn test_config() -> Config {
         default_daily_limit: 10,
         admin_user: TEST_ADMIN_USER.to_string(),
         admin_password_hash: test_admin_password_hash().to_string(),
-        trusted_proxy_cidrs: media_requests::clientip::parse_cidr_list(
+        trusted_proxy_cidrs: mediaqueue::clientip::parse_cidr_list(
             "127.0.0.1/32,::1/128,172.16.0.0/12",
         )
         .expect("valid default trusted proxy cidrs"),
@@ -275,9 +275,9 @@ pub async fn create_member_with_sessions(
     name: &str,
     max_sessions: i64,
 ) -> (i64, String) {
-    let code = media_requests::auth::generate_code(config.code_length).expect("os random source");
-    let normalised = media_requests::auth::normalise_code(&code);
-    let code_hash = media_requests::auth::hmac_code(&config.code_pepper, &normalised);
+    let code = mediaqueue::auth::generate_code(config.code_length).expect("os random source");
+    let normalised = mediaqueue::auth::normalise_code(&code);
+    let code_hash = mediaqueue::auth::hmac_code(&config.code_pepper, &normalised);
     let now = db::now_unix();
     let id = db::insert_member(pool, name, &code_hash, max_sessions, None, now)
         .await

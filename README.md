@@ -14,7 +14,7 @@ distroless container for a Raspberry Pi behind Caddy. The full spec is in
 ## First run
 
 Everything below happens in one directory on the Pi, for example
-`~/media-requests`, holding `compose.yaml`, `.env` and `data/`.
+`~/mediaqueue`, holding `compose.yaml`, `.env` and `data/`.
 
 1. **Get the image** onto the Pi (see "Build and deploy" below).
 
@@ -71,8 +71,8 @@ Everything below happens in one directory on the Pi, for example
    yourself, add `--code` (8 to 64 characters; the code is not printed back).
 
    ```sh
-   docker compose exec portal /app/media-requests add-member --name Alice
-   docker compose exec portal /app/media-requests add-member --name Bob --code "movie night"
+   docker compose exec portal /app/mediaqueue add-member --name Alice
+   docker compose exec portal /app/mediaqueue add-member --name Bob --code "movie night"
    ```
 
    After that, add members on the admin page at `/admin` (Members tab).
@@ -134,13 +134,13 @@ A background task writes a consistent snapshot (`VACUUM INTO`) to
 To take one on demand:
 
 ```sh
-docker compose exec portal /app/media-requests backup
+docker compose exec portal /app/mediaqueue backup
 ```
 
 Copy them off the Pi regularly:
 
 ```sh
-rsync -av pi:media-requests/data/backups/ ~/backups/media-requests/
+rsync -av pi:mediaqueue/data/backups/ ~/backups/mediaqueue/
 ```
 
 To restore:
@@ -162,8 +162,10 @@ Keep a copy of `.env` with the backups.
 Push to `main`, wait for the `image` workflow to finish, then on the Pi:
 
 ```sh
-cd media-requests && docker compose pull && docker compose up -d
+cd mediaqueue && docker compose pull && docker compose up -d
 ```
+
+The healthcheck path changed with the rename to `mediaqueue`, so deploy the new `compose.yaml` and the new image together.
 
 To go back, set the image in `compose.yaml` to a `sha-<commit>` tag.
 
@@ -173,11 +175,11 @@ image picks up Debian security fixes; pull after it runs.
 To build by hand instead (for example with `--build-arg FEATURES=cf-access`):
 
 ```sh
-docker buildx build --platform linux/arm64 -t media-requests:latest --load .
-docker save media-requests:latest | gzip | ssh pi 'gunzip | docker load'
+docker buildx build --platform linux/arm64 -t mediaqueue:latest --load .
+docker save mediaqueue:latest | gzip | ssh pi 'gunzip | docker load'
 ```
 
-and point `image:` in `compose.yaml` at `media-requests:latest`.
+and point `image:` in `compose.yaml` at `mediaqueue:latest`.
 
 ## Troubleshooting
 

@@ -965,7 +965,7 @@ async fn no_endpoint_returns_a_code_except_create_and_rotate() {
     let hash_hex: String = sqlx::query_scalar::<_, Vec<u8>>("SELECT code_hash FROM members")
         .fetch_one(&app.pool)
         .await
-        .map(|h| media_requests::auth::hex_encode(&h))
+        .map(|h| mediaqueue::auth::hex_encode(&h))
         .unwrap();
     for (cookie, path) in reads {
         let response = call(&app, cookie, "GET", path, None).await;

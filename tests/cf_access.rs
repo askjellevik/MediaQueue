@@ -10,7 +10,7 @@ use common::{
     HttpResponse, TEST_ADMIN_PASSWORD, TEST_ADMIN_USER, TestApp, cookie_pair, json_post_headers,
 };
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
-use media_requests::config::CfAccessConfig;
+use mediaqueue::config::CfAccessConfig;
 use serde_json::json;
 use wiremock::{
     Mock, MockServer, ResponseTemplate,

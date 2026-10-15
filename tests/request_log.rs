@@ -71,7 +71,7 @@ async fn requests_are_logged_without_secrets() {
     let text = String::from_utf8_lossy(&logs.0.lock().unwrap()).into_owned();
     let lines: Vec<&str> = text
         .lines()
-        .filter(|l| l.contains(r#""target":"media_requests::request""#))
+        .filter(|l| l.contains(r#""target":"mediaqueue::request""#))
         .collect();
     let login_line = lines
         .iter()

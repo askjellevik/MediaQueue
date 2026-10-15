@@ -7,7 +7,7 @@ mod common;
 use std::{collections::BTreeSet, time::Duration};
 
 use common::{HttpResponse, TEST_TMDB_TOKEN, TestApp, insert_request, login_new_member};
-use media_requests::tmdb::{MediaType, TmdbError};
+use mediaqueue::tmdb::{MediaType, TmdbError};
 use serde_json::{Value, json};
 use wiremock::{
     Mock, MockServer, ResponseTemplate,

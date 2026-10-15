@@ -13,7 +13,7 @@ mod common;
 
 use std::{path::PathBuf, process::Command};
 
-use media_requests::routes::static_files::asset_version;
+use mediaqueue::routes::static_files::asset_version;
 use serde_json::json;
 use wiremock::{
     Mock, MockServer, ResponseTemplate,

@@ -13,7 +13,7 @@ use std::{
 };
 
 use common::{HttpResponse, TestApp, create_member, json_post_headers};
-use media_requests::config::NtfyConfig;
+use mediaqueue::config::NtfyConfig;
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{body_partial_json, header, method, path},

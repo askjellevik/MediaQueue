@@ -40,7 +40,7 @@ pub struct Config {
     pub default_max_sessions: i64,
     pub default_daily_limit: i64,
     pub admin_user: String,
-    /// Argon2id PHC hash string from `media-requests hash-password`. Not a
+    /// Argon2id PHC hash string from `mediaqueue hash-password`. Not a
     /// secret itself (it's a salted hash), but never logged regardless.
     pub admin_password_hash: String,
     pub trusted_proxy_cidrs: Vec<Cidr>,

@@ -9,11 +9,11 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
-use media_requests::{auth, build_router, config::Config, db, state::AppState, tasks};
+use mediaqueue::{auth, build_router, config::Config, db, state::AppState, tasks};
 use tokio::signal::unix::{SignalKind, signal};
 
 #[derive(Parser)]
-#[command(name = "media-requests", version)]
+#[command(name = "mediaqueue", version)]
 struct Cli {
     #[command(subcommand)]
     command: Command,

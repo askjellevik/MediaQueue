@@ -7,7 +7,7 @@ mod common;
 use std::time::{Duration, Instant};
 
 use common::{HttpResponse, TestApp, json_post_headers, login_new_member};
-use media_requests::config::{Config, NtfyConfig};
+use mediaqueue::config::{Config, NtfyConfig};
 use serde_json::{Value, json};
 use wiremock::{
     Mock, MockServer, Request, ResponseTemplate,

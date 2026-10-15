@@ -6,7 +6,7 @@
 mod common;
 
 use common::TestApp;
-use media_requests::routes::static_files::asset_version;
+use mediaqueue::routes::static_files::asset_version;
 
 const PAGE_ASSETS: [&str; 6] = [
     "css/app.css",

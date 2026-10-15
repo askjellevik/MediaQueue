@@ -306,7 +306,7 @@ pub async fn get_export(State(state): State<AppState>, _admin: RequireAdmin) -> 
     );
     headers.insert(
         header::CONTENT_DISPOSITION,
-        HeaderValue::from_static("attachment; filename=\"media-requests.csv\""),
+        HeaderValue::from_static("attachment; filename=\"mediaqueue.csv\""),
     );
     response
 }

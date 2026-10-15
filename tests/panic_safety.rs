@@ -6,7 +6,7 @@
 mod common;
 
 use axum::{Router, routing::get};
-use media_requests::middleware::catch_panic_layer;
+use mediaqueue::middleware::catch_panic_layer;
 
 async fn boom() -> &'static str {
     panic!("deliberate test panic")

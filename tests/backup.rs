@@ -4,7 +4,7 @@
 mod common;
 
 use common::{cookie_pair, json_post_headers, login_new_member};
-use media_requests::tasks;
+use mediaqueue::tasks;
 use serde_json::Value;
 use wiremock::{
     Mock, MockServer, ResponseTemplate,

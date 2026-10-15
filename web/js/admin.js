@@ -17,7 +17,7 @@ import {
 } from './ui.js';
 
 const root = document.getElementById('app');
-const TITLE = 'Requests admin';
+const TITLE = 'MediaQueue admin';
 
 const TABS = [
   { id: 'pending', label: 'Pending', status: 'pending' },
@@ -205,7 +205,7 @@ function renderQueue(panel, tab, { say, expired }) {
     { class: 'toolbar' },
     el('label', { class: 'vh', for: 'filter', text: 'Filter' }),
     filter,
-    archive ? el('a', { class: 'btn btn-small', href: '/api/admin/export.csv', download: 'media-requests.csv', text: 'Export CSV' }) : null,
+    archive ? el('a', { class: 'btn btn-small', href: '/api/admin/export.csv', download: 'mediaqueue.csv', text: 'Export CSV' }) : null,
   );
   const head = el(
     'tr',

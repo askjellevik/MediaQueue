@@ -1439,7 +1439,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "media-requests"
+name = "mediaqueue"
 version = "0.1.0"
 dependencies = [
  "anyhow",

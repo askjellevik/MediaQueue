@@ -15,7 +15,7 @@ services:
     pids_limit: 64
     logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
     healthcheck:
-      test: ["CMD", "/app/media-requests", "healthcheck"]
+      test: ["CMD", "/app/mediaqueue", "healthcheck"]
       interval: 30s
       timeout: 3s
       retries: 3

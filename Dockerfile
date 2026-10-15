@@ -11,7 +11,7 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target,id=target-$TARGETARCH \
     cargo build --release --locked --features "$FEATURES" \
- && cp target/release/media-requests /media-requests
+ && cp target/release/mediaqueue /mediaqueue
 
 FROM gcr.io/distroless/cc-debian12:nonroot
 # Large allocations (each Argon2 login takes 19 MiB) go straight to mmap and
@@ -19,7 +19,7 @@ FROM gcr.io/distroless/cc-debian12:nonroot
 # them in per-thread arenas, RSS ratchets up with every blocking thread that
 # ever hashed, and the container hits its memory limit under login load.
 ENV GLIBC_TUNABLES=glibc.malloc.mmap_threshold=131072
-COPY --from=build /media-requests /app/media-requests
+COPY --from=build /mediaqueue /app/mediaqueue
 USER 65532:65532
-ENTRYPOINT ["/app/media-requests"]
+ENTRYPOINT ["/app/mediaqueue"]
 CMD ["serve"]
