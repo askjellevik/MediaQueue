@@ -48,15 +48,15 @@ export const TYPE_LABEL = { movie: 'Movie', tv: 'Series' };
 export const STATE_LABEL = {
   requested: 'Requested',
   added: 'Added',
-  have: 'Already available',
-  unavailable: 'Not available',
+  have: 'In library',
+  unavailable: 'Declined',
 };
 
 export const STATUS_LABEL = {
   pending: 'Pending',
   added: 'Added',
-  already_had: 'Already available',
-  refused: 'Not available',
+  already_had: 'In library',
+  refused: 'Declined',
 };
 
 export function chip(key, label) {

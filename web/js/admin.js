@@ -20,19 +20,19 @@ const root = document.getElementById('app');
 const TITLE = 'MediaQueue admin';
 
 const TABS = [
-  { id: 'pending', label: 'Pending', status: 'pending' },
-  { id: 'added', label: 'Added', status: 'added' },
-  { id: 'refused', label: 'Refused', status: 'refused' },
-  { id: 'already_had', label: 'Already had', status: 'already_had' },
-  { id: 'archive', label: 'Archive', status: 'all' },
+  { id: 'pending', label: STATUS_LABEL.pending, status: 'pending' },
+  { id: 'added', label: STATUS_LABEL.added, status: 'added' },
+  { id: 'refused', label: STATUS_LABEL.refused, status: 'refused' },
+  { id: 'already_had', label: STATUS_LABEL.already_had, status: 'already_had' },
+  { id: 'archive', label: 'All requests', status: 'all' },
   { id: 'members', label: 'Members' },
 ];
 
 // Status buttons: every status but the current one.
 const ACTIONS = [
-  { status: 'added', label: 'Added' },
-  { status: 'refused', label: 'Refused' },
-  { status: 'already_had', label: 'Already had' },
+  { status: 'added', label: 'Mark added' },
+  { status: 'refused', label: 'Decline' },
+  { status: 'already_had', label: 'Already in library' },
   { status: 'pending', label: 'Reopen' },
 ];
 

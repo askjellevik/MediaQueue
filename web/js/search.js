@@ -453,7 +453,7 @@ function renderApp(me) {
         markRequested(item);
         sheet.close();
         setStatus(
-          res.status === 201 ? `Added “${item.title}” to the queue.` : `“${item.title}” was already requested. You're on the list too.`,
+          res.status === 201 ? `Requested “${item.title}”.` : `“${item.title}” was already requested. You're on the list too.`,
           'status-ok',
         );
         loadMine(true);

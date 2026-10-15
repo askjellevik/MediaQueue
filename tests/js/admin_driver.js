@@ -38,12 +38,12 @@ async function run() {
   check(!row.querySelector('button[aria-label^="Reopen"]'), 'pending row offers Reopen');
 
   // First PATCH fails (mock answers 500): the row comes back.
-  row.querySelector('button[aria-label^="Added"]').click();
+  row.querySelector('button[aria-label^="Mark added"]').click();
   await waitFor(() => document.querySelector('.status-bad'));
   check(!row.hidden && row.isConnected, 'row not restored after a failed update');
   check(row.textContent.includes('Pending'), 'status not rolled back');
   // Second PATCH succeeds: the row leaves the Pending tab.
-  row.querySelector('button[aria-label^="Added"]').click();
+  row.querySelector('button[aria-label^="Mark added"]').click();
   await waitFor(() => !row.isConnected);
   check(!row.isConnected, 'row stayed after a successful update');
   check(document.querySelector('.status-ok')?.textContent.includes('Added'), 'no success notice');

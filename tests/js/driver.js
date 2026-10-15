@@ -111,7 +111,7 @@ async function e2e() {
   await waitFor(() => !document.querySelector('dialog[open]'));
   check(!document.querySelector('dialog[open]'), 'sheet stayed open after submit');
   const status = document.querySelector('.status-ok');
-  check(status && status.textContent.includes('Added “Dune”'), `status was ${status && status.textContent}`);
+  check(status && status.textContent.includes('Requested “Dune”'), `status was ${status && status.textContent}`);
   check(document.activeElement === input, 'focus did not return to the search input');
   const mine = await waitFor(() => document.querySelector('.mine-item'));
   check(mine && mine.textContent.includes('Pending'), 'my requests not refreshed');
