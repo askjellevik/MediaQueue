@@ -42,6 +42,27 @@ export function poster(path, size, cls, width, height) {
 export const posterSmall = (path) => poster(path, 'w92', 'poster-sm', 46, 69);
 export const posterLarge = (path) => poster(path, 'w185', 'poster-lg', 123, 185);
 
+export const imdbUrl = (id) => `https://www.imdb.com/title/${encodeURIComponent(id)}/`;
+export const tmdbUrl = (type, id) => `https://www.themoviedb.org/${type === 'tv' ? 'tv' : 'movie'}/${id}`;
+
+// A link to an outside site. With `plain` it is a second route to the same
+// place as a text link next to it, so it stays out of the tab order.
+export function extLink(href, label, children, plain = false) {
+  return el(
+    'a',
+    {
+      class: 'ext-link',
+      href,
+      target: '_blank',
+      rel: 'noopener noreferrer',
+      'aria-label': plain ? null : label,
+      'aria-hidden': plain ? 'true' : null,
+      tabindex: plain ? '-1' : null,
+    },
+    children,
+  );
+}
+
 export const TYPE_LABEL = { movie: 'Movie', tv: 'Series' };
 
 // Search result states and request statuses, as shown to users.

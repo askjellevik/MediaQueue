@@ -11,12 +11,15 @@ import {
   clear,
   countdown,
   el,
+  extLink,
   footer,
   formatDate,
   formatWait,
+  imdbUrl,
   posterLarge,
   posterSmall,
   spinner,
+  tmdbUrl,
   toast,
 } from './ui.js';
 
@@ -428,11 +431,11 @@ function renderApp(me) {
       el(
         'div',
         { class: 'sheet-body' },
-        posterLarge(item.poster),
+        extLink(tmdbUrl(item.type, item.tmdb_id), `${item.title} on TMDB`, posterLarge(item.poster), true),
         el(
           'div',
           {},
-          el('h2', { id: 'sheet-title', text: item.title }),
+          el('h2', { id: 'sheet-title' }, extLink(tmdbUrl(item.type, item.tmdb_id), `${item.title} on TMDB`, item.title)),
           el('p', { class: 'opt-meta' }, item.year ? String(item.year) : null, badge(item.type)),
           overview ? el('p', { class: 'overview', text: overview }) : null,
         ),
@@ -516,14 +519,17 @@ function renderApp(me) {
 
   const mineItem = (r) => {
     const status = chip(r.status, STATUS_LABEL[r.status] || r.status);
+    // IMDb once the request has an ID, the TMDB page until then.
+    const href = r.imdb_id ? imdbUrl(r.imdb_id) : tmdbUrl(r.type, r.tmdb_id);
+    const site = r.imdb_id ? 'IMDb' : 'TMDB';
     const li = el(
       'li',
       { class: 'mine-item' },
-      posterSmall(r.poster),
+      extLink(href, `${r.title} on ${site}`, posterSmall(r.poster), true),
       el(
         'div',
         { class: 'opt-text' },
-        el('p', { class: 'opt-title', text: r.title }),
+        el('p', { class: 'opt-title' }, extLink(href, `${r.title} on ${site}`, r.title)),
         el('p', { class: 'opt-meta' }, r.year ? String(r.year) : null, badge(r.type), `Requested ${formatDate(r.created_at)}`),
       ),
       status,

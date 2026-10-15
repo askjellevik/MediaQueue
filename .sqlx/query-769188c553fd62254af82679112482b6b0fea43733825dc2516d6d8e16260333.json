@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", tmdb_id AS \"tmdb_id!\", media_type AS \"media_type!\",\n                  title AS \"title!\", year, poster_path, status AS \"status!\",\n                  created_at AS \"created_at!\"\n           FROM requests WHERE tmdb_id = ? AND media_type = ?",
+  "query": "SELECT id AS \"id!\", tmdb_id AS \"tmdb_id!\", media_type AS \"media_type!\",\n                  imdb_id, title AS \"title!\", year, poster_path, status AS \"status!\",\n                  created_at AS \"created_at!\"\n           FROM requests WHERE tmdb_id = ? AND media_type = ?",
   "describe": {
     "columns": [
       {
@@ -37,8 +37,19 @@
         }
       },
       {
-        "name": "title!",
+        "name": "imdb_id",
         "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "imdb_id"
+          }
+        }
+      },
+      {
+        "name": "title!",
+        "ordinal": 4,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -49,7 +60,7 @@
       },
       {
         "name": "year",
-        "ordinal": 4,
+        "ordinal": 5,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -60,7 +71,7 @@
       },
       {
         "name": "poster_path",
-        "ordinal": 5,
+        "ordinal": 6,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -71,7 +82,7 @@
       },
       {
         "name": "status!",
-        "ordinal": 6,
+        "ordinal": 7,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -82,7 +93,7 @@
       },
       {
         "name": "created_at!",
-        "ordinal": 7,
+        "ordinal": 8,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -99,6 +110,7 @@
       false,
       false,
       false,
+      true,
       false,
       true,
       true,
@@ -106,5 +118,5 @@
       false
     ]
   },
-  "hash": "183f92e232dca1f13dfe28b7546082c6c5019b659817b5a4dc432a81e6d9dce2"
+  "hash": "769188c553fd62254af82679112482b6b0fea43733825dc2516d6d8e16260333"
 }

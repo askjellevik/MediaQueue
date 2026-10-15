@@ -12,9 +12,11 @@ import {
   copyOnClick,
   countdown,
   el,
+  extLink,
   footer,
   formatDateTime,
   formatWait,
+  imdbUrl,
   posterSmall,
   toast,
 } from './ui.js';
@@ -333,7 +335,7 @@ function renderQueue(panel, tab, { say, expired }) {
       el(
         'td',
         {},
-        el('strong', { text: item.title }),
+        el('strong', {}, item.imdb_id ? extLink(imdbUrl(item.imdb_id), `${item.title} on IMDb`, item.title) : item.title),
         item.year ? ` (${item.year})` : null,
         item.note ? el('p', { class: 'muted', text: `Note: ${item.note}` }) : null,
       ),

@@ -699,3 +699,13 @@ select {
 .wide {
   width: min(100%, 72rem);
 }
+
+.ext-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.ext-link:hover,
+.ext-link:focus-visible {
+  text-decoration: underline;
+}

@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT r.id AS \"id!\", r.tmdb_id AS \"tmdb_id!\", r.media_type AS \"media_type!\",\n                  r.title AS \"title!\", r.year, r.poster_path, r.status AS \"status!\",\n                  r.created_at AS \"created_at!\"\n           FROM requests r\n           WHERE (r.requested_by = ?1\n                  OR EXISTS (SELECT 1 FROM request_events e\n                             WHERE e.request_id = r.id AND e.kind = 'duplicate'\n                               AND e.actor = ?2))\n             AND (r.created_at < ?3 OR (r.created_at = ?3 AND r.id < ?4))\n           ORDER BY r.created_at DESC, r.id DESC\n           LIMIT ?5",
+  "query": "SELECT r.id AS \"id!\", r.tmdb_id AS \"tmdb_id!\", r.media_type AS \"media_type!\",\n                  r.imdb_id, r.title AS \"title!\", r.year, r.poster_path, r.status AS \"status!\",\n                  r.created_at AS \"created_at!\"\n           FROM requests r\n           WHERE (r.requested_by = ?1\n                  OR EXISTS (SELECT 1 FROM request_events e\n                             WHERE e.request_id = r.id AND e.kind = 'duplicate'\n                               AND e.actor = ?2))\n             AND (r.created_at < ?3 OR (r.created_at = ?3 AND r.id < ?4))\n           ORDER BY r.created_at DESC, r.id DESC\n           LIMIT ?5",
   "describe": {
     "columns": [
       {
@@ -37,8 +37,19 @@
         }
       },
       {
-        "name": "title!",
+        "name": "imdb_id",
         "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "imdb_id"
+          }
+        }
+      },
+      {
+        "name": "title!",
+        "ordinal": 4,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -49,7 +60,7 @@
       },
       {
         "name": "year",
-        "ordinal": 4,
+        "ordinal": 5,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -60,7 +71,7 @@
       },
       {
         "name": "poster_path",
-        "ordinal": 5,
+        "ordinal": 6,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -71,7 +82,7 @@
       },
       {
         "name": "status!",
-        "ordinal": 6,
+        "ordinal": 7,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -82,7 +93,7 @@
       },
       {
         "name": "created_at!",
-        "ordinal": 7,
+        "ordinal": 8,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -99,6 +110,7 @@
       false,
       false,
       false,
+      true,
       false,
       true,
       true,
@@ -106,5 +118,5 @@
       false
     ]
   },
-  "hash": "8d9e136b48b341d28fe0ac4f454d423207bb8c4b8cd36eab4a7332892d5241b4"
+  "hash": "3f3f40e56dfa6b45cbadb9a68eb1bd75320516b3595cdd81ffb3a808dcd98cbf"
 }

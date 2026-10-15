@@ -491,6 +491,7 @@ pub struct RequestRow {
     pub id: i64,
     pub tmdb_id: i64,
     pub media_type: String,
+    pub imdb_id: Option<String>,
     pub title: String,
     pub year: Option<i64>,
     pub poster_path: Option<String>,
@@ -559,7 +560,7 @@ pub async fn create_request(
     let row = sqlx::query_as!(
         RequestRow,
         r#"SELECT id AS "id!", tmdb_id AS "tmdb_id!", media_type AS "media_type!",
-                  title AS "title!", year, poster_path, status AS "status!",
+                  imdb_id, title AS "title!", year, poster_path, status AS "status!",
                   created_at AS "created_at!"
            FROM requests WHERE tmdb_id = ? AND media_type = ?"#,
         new.tmdb_id,
@@ -603,7 +604,7 @@ pub async fn requests_for_member(
     sqlx::query_as!(
         RequestRow,
         r#"SELECT r.id AS "id!", r.tmdb_id AS "tmdb_id!", r.media_type AS "media_type!",
-                  r.title AS "title!", r.year, r.poster_path, r.status AS "status!",
+                  r.imdb_id, r.title AS "title!", r.year, r.poster_path, r.status AS "status!",
                   r.created_at AS "created_at!"
            FROM requests r
            WHERE (r.requested_by = ?1

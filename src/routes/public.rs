@@ -330,6 +330,7 @@ struct RequestView {
     tmdb_id: i64,
     #[serde(rename = "type")]
     media_type: String,
+    imdb_id: Option<String>,
     title: String,
     year: Option<i64>,
     poster: Option<String>,
@@ -343,6 +344,7 @@ impl From<db::RequestRow> for RequestView {
             id: row.id,
             tmdb_id: row.tmdb_id,
             media_type: row.media_type,
+            imdb_id: row.imdb_id,
             title: row.title,
             year: row.year,
             poster: row.poster_path,
