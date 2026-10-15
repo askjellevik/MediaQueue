@@ -12,7 +12,6 @@ import {
   countdown,
   el,
   footer,
-  formatCode,
   formatDate,
   formatWait,
   posterLarge,
@@ -51,18 +50,14 @@ function renderGate() {
     autocomplete: 'one-time-code',
     autocorrect: 'off',
     spellcheck: 'false',
-    maxlength: 20,
+    maxlength: 64,
     required: true,
-    placeholder: 'ABCD-EFGH',
+    placeholder: 'Access code',
     'aria-describedby': 'code-error',
   });
   const button = el('button', { class: 'btn btn-primary', type: 'submit', text: 'Continue' });
   const error = el('p', { id: 'code-error', class: 'error', role: 'alert' });
   let stopCountdown = null;
-
-  input.addEventListener('input', () => {
-    input.value = formatCode(input.value);
-  });
 
   const lock = (seconds) => {
     input.disabled = true;
@@ -93,8 +88,8 @@ function renderGate() {
   );
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
-    const code = input.value.replace(/-/g, '');
-    if (code.length < 8) {
+    const code = input.value.trim();
+    if (!code) {
       error.textContent = "That code didn't work";
       return;
     }

@@ -229,11 +229,3 @@ export function footer(onLogout) {
     onLogout ? el('button', { class: 'btn-link', type: 'button', text: 'Log out', onclick: onLogout }) : null,
   );
 }
-
-// Access code input: uppercases, keeps letters and digits only, and shows
-// a dash after the fourth character, so pasted codes with or without
-// dashes and spaces all work.
-export function formatCode(raw) {
-  const clean = raw.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 16);
-  return clean.length > 4 ? `${clean.slice(0, 4)}-${clean.slice(4)}` : clean;
-}

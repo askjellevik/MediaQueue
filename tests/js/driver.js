@@ -3,7 +3,7 @@
 // presses keys and records what the page renders, then writes PASS or the
 // failures into #e2e-result for the test to read from the dumped DOM.
 
-import { formatCode, formatWait } from './js/ui.js';
+import { formatWait } from './js/ui.js';
 import { latestOnly } from './js/api.js';
 
 const failures = [];
@@ -29,9 +29,6 @@ async function waitFor(find, ms = 3000) {
 }
 
 async function unitTests() {
-  check(formatCode('abcdefgh') === 'ABCD-EFGH', 'formatCode lowercase');
-  check(formatCode(' ab cd-ef gh ') === 'ABCD-EFGH', 'formatCode spaces and dashes');
-  check(formatCode('abc') === 'ABC', 'formatCode short');
   check(formatWait(45) === '45s' && formatWait(899) === '14:59' && formatWait(3700) === '1h 1m', 'formatWait');
 
   // A slow first run and a fast second run: only the second is current,
