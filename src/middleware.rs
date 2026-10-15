@@ -76,26 +76,45 @@ fn is_state_changing(method: &Method) -> bool {
 /// before any handler's `Json`/`AppJson` extractor does.
 pub async fn csrf_guard(State(state): State<AppState>, req: Request, next: Next) -> Response {
     if is_state_changing(req.method()) {
-        let origin_ok = req
+        let origin = req
             .headers()
             .get(header::ORIGIN)
-            .and_then(|v| v.to_str().ok())
-            .map(|v| v == state.config.public_origin)
-            .unwrap_or(false);
+            .and_then(|v| v.to_str().ok());
+        let origin_ok = origin.is_some_and(|v| v == state.config.public_origin);
         let xrw_ok = req
             .headers()
             .get("x-requested-with")
             .and_then(|v| v.to_str().ok())
-            .map(|v| v == "mp")
-            .unwrap_or(false);
+            .is_some_and(|v| v == "mp");
         let content_type_ok = req
             .headers()
             .get(header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
-            .map(|v| v.starts_with("application/json"))
-            .unwrap_or(false);
+            .is_some_and(|v| v.starts_with("application/json"));
 
         if !origin_ok || !xrw_ok || !content_type_ok {
+            // The most common cause is a PUBLIC_ORIGIN that differs from what
+            // the browser sends, so say which check failed and what arrived.
+            // The Origin header is not a secret; cap it in case it is junk.
+            let mut reasons = Vec::new();
+            if !origin_ok {
+                reasons.push("origin_mismatch");
+            }
+            if !xrw_ok {
+                reasons.push("missing_x_requested_with");
+            }
+            if !content_type_ok {
+                reasons.push("bad_content_type");
+            }
+            let shown: String = origin.unwrap_or("(none)").chars().take(200).collect();
+            tracing::warn!(
+                reasons = reasons.join(","),
+                origin = shown,
+                expected_origin = %state.config.public_origin,
+                method = %req.method(),
+                path = req.uri().path(),
+                "request rejected by the csrf guard"
+            );
             return AppError::Forbidden.into_response();
         }
     }
