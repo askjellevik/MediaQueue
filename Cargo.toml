@@ -46,6 +46,9 @@ rust-embed = { version = "8", default-features = false, features = [
     "mime-guess",
     "debug-embed",
 ] }
+futures-util = { version = "0.3", default-features = false, features = [
+    "std",
+] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 clap = { version = "4", features = ["derive"] }

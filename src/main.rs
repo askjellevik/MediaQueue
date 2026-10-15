@@ -127,6 +127,7 @@ async fn serve_async(config: Config) -> anyhow::Result<()> {
     tasks::spawn_session_cleanup(pool.clone());
     tasks::spawn_daily_backup(pool.clone(), config.database_path.clone());
     let state = AppState::new(pool.clone(), config)?;
+    let events = state.events.clone();
     tasks::spawn_rate_limit_maintenance(state.limits.clone());
     let app = build_router(state);
 
@@ -137,7 +138,7 @@ async fn serve_async(config: Config) -> anyhow::Result<()> {
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
+    .with_graceful_shutdown(shutdown_signal(events))
     .await?;
 
     tracing::info!("shutting down, checkpointing WAL");
@@ -147,7 +148,7 @@ async fn serve_async(config: Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn shutdown_signal() {
+async fn shutdown_signal(events: mediaqueue::events::Hub) {
     let ctrl_c = async {
         let _ = tokio::signal::ctrl_c().await;
     };
@@ -167,6 +168,9 @@ async fn shutdown_signal() {
         _ = ctrl_c => {},
         _ = terminate => {},
     }
+    // Open event streams never finish on their own; graceful shutdown would
+    // wait for them forever.
+    events.shutdown();
 }
 
 /// Plain stdlib HTTP GET to the local server's `/healthz`, for use as the

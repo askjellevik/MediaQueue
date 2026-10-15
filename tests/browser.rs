@@ -125,6 +125,16 @@ async fn api_json(
         .await;
 }
 
+/// An event stream that opens and says nothing, so the page's live-update
+/// connection works without errors in the console.
+async fn quiet_event_stream(server: &MockServer, url_path: &str) {
+    Mock::given(method("GET"))
+        .and(path(url_path))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(": ok\n\n", "text/event-stream"))
+        .mount(server)
+        .await;
+}
+
 fn result(title: &str, id: u32, state: &str) -> serde_json::Value {
     json!({
         "tmdb_id": id, "type": "movie", "title": title, "year": 2021,
@@ -151,6 +161,7 @@ async fn typing_race_and_keyboard_flow_work_end_to_end() {
     for (rel, content_type) in [
         ("js/search.js", "text/javascript"),
         ("js/api.js", "text/javascript"),
+        ("js/live.js", "text/javascript"),
         ("js/ui.js", "text/javascript"),
         ("css/app.css", "text/css"),
         ("img/tmdb.svg", "image/svg+xml"),
@@ -221,6 +232,7 @@ async fn typing_race_and_keyboard_flow_work_end_to_end() {
         .up_to_n_times(1)
         .mount(&server)
         .await;
+    quiet_event_stream(&server, "/api/events").await;
     api_json(
         &server,
         "GET",
@@ -302,6 +314,7 @@ async fn admin_queue_archive_and_members_work_end_to_end() {
     for (rel, content_type) in [
         ("js/admin.js", "text/javascript"),
         ("js/api.js", "text/javascript"),
+        ("js/live.js", "text/javascript"),
         ("js/ui.js", "text/javascript"),
         ("css/app.css", "text/css"),
         ("img/tmdb.svg", "image/svg+xml"),
@@ -329,6 +342,15 @@ async fn admin_queue_archive_and_members_work_end_to_end() {
         "note": "the 2021 one", "status": "pending", "requester": "Alice", "times_requested": 2,
         "created_at": 1700000000, "status_changed_at": 1700000000
     });
+    quiet_event_stream(&server, "/api/admin/events").await;
+    api_json(
+        &server,
+        "GET",
+        "/api/admin/counts",
+        200,
+        json!({"pending": 1, "added": 0, "already_had": 0, "refused": 0}),
+    )
+    .await;
     api_json(&server, "GET", "/api/admin/members", 200, json!({
         "members": [{
             "id": 2, "name": "Bob", "daily_limit": null, "max_sessions": 3,

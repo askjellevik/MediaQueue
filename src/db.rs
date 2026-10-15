@@ -282,6 +282,38 @@ pub async fn create_user_session(
     Ok(SessionCreated { evicted_session_id })
 }
 
+/// Whether a session still exists and has not run out. `idle_secs` is the
+/// idle timeout for sessions that have one (admin). Read-only, so a stream
+/// holding a session open never extends it.
+pub async fn session_alive(
+    pool: &SqlitePool,
+    session_id: i64,
+    now: i64,
+    idle_secs: Option<i64>,
+) -> Result<bool, sqlx::Error> {
+    let row = sqlx::query!(
+        r#"SELECT expires_at AS "expires_at!", last_seen_at AS "last_seen_at!"
+           FROM sessions WHERE id = ?"#,
+        session_id
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.is_some_and(|r| {
+        now < r.expires_at && idle_secs.is_none_or(|idle| now - r.last_seen_at < idle)
+    }))
+}
+
+/// Requests per status, for the admin tab badges. Statuses with no
+/// requests are absent.
+pub async fn status_counts(pool: &SqlitePool) -> Result<Vec<(String, i64)>, sqlx::Error> {
+    let rows = sqlx::query!(
+        r#"SELECT status AS "status!", COUNT(*) AS "n!: i64" FROM requests GROUP BY status"#
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|r| (r.status, r.n)).collect())
+}
+
 /// Creates a new admin session. Admin logins aren't capped by `max_sessions`
 /// (that column only applies to members); each login is independent.
 pub async fn create_admin_session(

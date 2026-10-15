@@ -6,7 +6,9 @@ use std::{sync::Arc, time::Duration};
 use sqlx::SqlitePool;
 use tokio::sync::Semaphore;
 
-use crate::{clock::Clock, config::Config, notify::Notifier, ratelimit::RateLimits, tmdb::Tmdb};
+use crate::{
+    clock::Clock, config::Config, events::Hub, notify::Notifier, ratelimit::RateLimits, tmdb::Tmdb,
+};
 
 /// Upstream calls (TMDB, ntfy) must never hold a request open for long.
 const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(3);
@@ -21,6 +23,8 @@ pub struct AppState {
     pub notifier: Notifier,
     pub limits: Arc<RateLimits>,
     pub tmdb: Arc<Tmdb>,
+    /// Live-update ticks for open event streams.
+    pub events: Hub,
     /// The same pool as `pool`, leaked once per state so the streamed CSV
     /// export can borrow it for `'static` (its row stream outlives the
     /// handler). Costs one pointer for the life of the process.
@@ -65,6 +69,7 @@ impl AppState {
             notifier,
             limits: Arc::new(limits),
             tmdb: Arc::new(tmdb),
+            events: Hub::new(),
             export_pool,
             #[cfg(feature = "cf-access")]
             cf_access,

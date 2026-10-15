@@ -520,6 +520,23 @@ select {
   font-weight: 600;
 }
 
+.count {
+  display: inline-block;
+  min-width: 1.4em;
+  margin-left: 0.4rem;
+  padding: 0 0.4em;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 0.8rem;
+  line-height: 1.4rem;
+  text-align: center;
+}
+
+.count[hidden] {
+  display: none;
+}
+
 .toolbar {
   display: flex;
   flex-wrap: wrap;

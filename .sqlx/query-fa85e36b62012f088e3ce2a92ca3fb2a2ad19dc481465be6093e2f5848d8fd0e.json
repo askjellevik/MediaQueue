@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT expires_at AS \"expires_at!\", last_seen_at AS \"last_seen_at!\"\n           FROM sessions WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "expires_at!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "expires_at"
+          }
+        }
+      },
+      {
+        "name": "last_seen_at!",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "last_seen_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "fa85e36b62012f088e3ce2a92ca3fb2a2ad19dc481465be6093e2f5848d8fd0e"
+}

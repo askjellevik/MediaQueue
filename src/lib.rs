@@ -11,6 +11,7 @@ pub mod clock;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod events;
 pub mod middleware;
 pub mod notify;
 pub mod ratelimit;
@@ -52,11 +53,14 @@ fn api_router(state: AppState) -> Router<()> {
         .route("/auth/code", post(routes::public::post_auth_code))
         .route("/auth/logout", post(routes::public::post_auth_logout))
         .route("/me", get(routes::public::get_me))
+        .route("/events", get(routes::public::get_events))
         .route("/search", get(routes::public::get_search))
         .route("/requests", post(routes::public::post_request))
         .route("/requests/mine", get(routes::public::get_requests_mine))
         .route("/admin/login", post(routes::admin::post_admin_login))
         .route("/admin/logout", post(routes::admin::post_admin_logout))
+        .route("/admin/events", get(routes::admin::get_events))
+        .route("/admin/counts", get(routes::admin::get_counts))
         .route("/admin/requests", get(routes::admin::get_requests))
         .route("/admin/requests/{id}", patch(routes::admin::patch_request))
         .route(

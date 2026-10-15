@@ -2,6 +2,7 @@
 // Nothing but the gate is rendered until /api/me says a session exists.
 
 import { api, latestOnly } from './api.js';
+import { watch } from './live.js';
 import {
   STATE_LABEL,
   STATUS_LABEL,
@@ -17,6 +18,7 @@ import {
   posterLarge,
   posterSmall,
   spinner,
+  toast,
 } from './ui.js';
 
 const root = document.getElementById('app');
@@ -26,11 +28,19 @@ const MIN_QUERY = 2;
 const MEMO_SIZE = 20;
 const NOTE_MAX = 200;
 
+// Which search-result state each request status shows as.
+const STATE_OF_STATUS = { pending: 'requested', added: 'added', already_had: 'have', refused: 'unavailable' };
+
+// Stops the live updates of the signed-in page when it goes away.
+let stopLive = null;
+
 // ---------------------------------------------------------------------
 // Access gate
 // ---------------------------------------------------------------------
 
 function renderGate() {
+  if (stopLive) stopLive();
+  stopLive = null;
   document.title = APP_NAME;
   const input = el('input', {
     id: 'code',
@@ -457,7 +467,7 @@ function renderApp(me) {
           res.status === 201 ? `Requested “${item.title}”.` : `“${item.title}” was already requested. You're on the list too.`,
           'status-ok',
         );
-        loadMine(true);
+        refreshMine();
       } else if (res.status === 401) {
         sheet.close();
         renderGate();
@@ -506,8 +516,12 @@ function renderApp(me) {
   const more = el('button', { class: 'btn btn-small', type: 'button', text: 'Load more', hidden: true });
   more.addEventListener('click', () => loadMine(false));
 
-  const mineItem = (r) =>
-    el(
+  // Rendered items by request id, so an update changes a row in place.
+  const mineNodes = new Map();
+
+  const mineItem = (r) => {
+    const status = chip(r.status, STATUS_LABEL[r.status] || r.status);
+    const li = el(
       'li',
       { class: 'mine-item' },
       posterSmall(r.poster),
@@ -517,8 +531,11 @@ function renderApp(me) {
         el('p', { class: 'opt-title', text: r.title }),
         el('p', { class: 'opt-meta' }, r.year ? String(r.year) : null, badge(r.type), `Requested ${formatDate(r.created_at)}`),
       ),
-      chip(r.status, STATUS_LABEL[r.status] || r.status),
+      status,
     );
+    mineNodes.set(r.id, { li, status, state: r.status });
+    return li;
+  };
 
   const loadMine = async (reset) => {
     more.disabled = true;
@@ -534,11 +551,72 @@ function renderApp(me) {
       return;
     }
     mineStatus.textContent = '';
-    if (reset) clear(mineList);
+    if (reset) {
+      clear(mineList);
+      mineNodes.clear();
+    }
     for (const r of res.data.items) mineList.append(mineItem(r));
     state.mineCursor = res.data.next_cursor;
     more.hidden = !state.mineCursor;
     mineEmpty.hidden = mineList.children.length > 0;
+  };
+
+  // Search results learn a request's new status too.
+  const syncResults = (r) => {
+    const next = STATE_OF_STATUS[r.status];
+    let changed = false;
+    for (const results of [state.results, ...state.memo.values()]) {
+      for (const item of results) {
+        if (item.tmdb_id === r.tmdb_id && item.type === r.type && item.state !== next) {
+          item.state = next;
+          changed = true;
+        }
+      }
+    }
+    return changed;
+  };
+
+  // Re-reads the first page and updates rows in place: no clearing, no
+  // scroll jump. A status that changed gets a toast.
+  const refreshMine = async () => {
+    const res = await api.mine(null);
+    if (res.status === 401) {
+      renderGate();
+      return;
+    }
+    if (!res.ok || !res.data) return;
+    const wasEmpty = mineNodes.size === 0;
+    let previous = null;
+    let resultsChanged = false;
+    for (const r of res.data.items) {
+      const known = mineNodes.get(r.id);
+      if (known) {
+        if (known.state !== r.status) {
+          known.state = r.status;
+          const fresh = chip(r.status, STATUS_LABEL[r.status] || r.status);
+          known.status.replaceWith(fresh);
+          known.status = fresh;
+          toast(`“${r.title}” is now ${STATUS_LABEL[r.status] || r.status}.`);
+        }
+        previous = known.li;
+      } else {
+        const li = mineItem(r);
+        if (previous) previous.after(li);
+        else mineList.prepend(li);
+        previous = li;
+      }
+      if (syncResults(r)) resultsChanged = true;
+    }
+    if (wasEmpty) {
+      state.mineCursor = res.data.next_cursor;
+      more.hidden = !state.mineCursor;
+    }
+    mineEmpty.hidden = mineList.children.length > 0;
+    if (resultsChanged && !list.hidden) {
+      const active = state.active;
+      renderResults(state.results);
+      setActive(active);
+    }
   };
 
   const mine = el(
@@ -569,6 +647,8 @@ function renderApp(me) {
   );
   input.focus();
   loadMine(true);
+  if (stopLive) stopLive();
+  stopLive = watch('/api/events', refreshMine);
 }
 
 // ---------------------------------------------------------------------

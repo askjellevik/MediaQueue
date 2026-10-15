@@ -3,6 +3,7 @@
 // admin API; text goes into the page through textContent only.
 
 import { call } from './api.js';
+import { watch } from './live.js';
 import {
   STATUS_LABEL,
   TYPE_LABEL,
@@ -48,6 +49,9 @@ const get = (path) => call('GET', path);
 // What the server gives a new member; only a different value is worth showing.
 const DEFAULT_DEVICES = 10;
 
+// Stops the live updates of the signed-in page when it goes away.
+let stopLive = null;
+
 const send = (method, path, body = {}) => call(method, path, { body });
 
 // ---------------------------------------------------------------------
@@ -55,6 +59,8 @@ const send = (method, path, body = {}) => call(method, path, { body });
 // ---------------------------------------------------------------------
 
 function renderLogin() {
+  if (stopLive) stopLive();
+  stopLive = null;
   document.title = TITLE;
   const user = el('input', { id: 'user', class: 'field', autocomplete: 'username', required: true });
   const pass = el('input', { id: 'pass', class: 'field', type: 'password', autocomplete: 'current-password', required: true });
@@ -125,17 +131,31 @@ function renderAdmin() {
     return false;
   };
 
+  // The section on show; its refresh() merges in what changed on the server.
+  let current = null;
+  const pendingCount = el('span', { class: 'count', hidden: true });
   const tabButtons = TABS.map((tab) =>
-    el('button', {
-      id: `tab-${tab.id}`,
-      class: 'tab',
-      type: 'button',
-      role: 'tab',
-      'aria-selected': 'false',
-      'aria-controls': 'panel',
-      text: tab.label,
-    }),
+    el(
+      'button',
+      {
+        id: `tab-${tab.id}`,
+        class: 'tab',
+        type: 'button',
+        role: 'tab',
+        'aria-selected': 'false',
+        'aria-controls': 'panel',
+      },
+      tab.label,
+      tab.id === 'pending' ? pendingCount : null,
+    ),
   );
+
+  const refreshCounts = async () => {
+    const res = await get('/api/admin/counts');
+    if (expired(res) || !res.ok) return;
+    pendingCount.textContent = String(res.data.pending);
+    pendingCount.hidden = res.data.pending === 0;
+  };
   const tablist = el('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Sections' }, tabButtons);
 
   const select = (index) => {
@@ -146,8 +166,8 @@ function renderAdmin() {
     panel.setAttribute('aria-labelledby', tabButtons[index].id);
     say('');
     const tab = TABS[index];
-    if (tab.id === 'members') renderMembers(panel, { say, expired });
-    else renderQueue(panel, tab, { say, expired });
+    if (tab.id === 'members') current = renderMembers(panel, { say, expired });
+    else current = renderQueue(panel, tab, { say, expired });
     if (location.hash !== `#${tab.id}`) history.replaceState(null, '', `#${tab.id}`);
   };
   tabButtons.forEach((button, i) => {
@@ -171,6 +191,10 @@ function renderAdmin() {
     renderLogin();
   };
 
+  // Every tick refetches the current section and the counts. A 401 from
+  // either sends the page back to the login.
+  const onTick = () => Promise.all([refreshCounts(), current ? current.refresh() : null]);
+
   clear(root);
   root.append(
     el(
@@ -183,6 +207,9 @@ function renderAdmin() {
   );
   const fromHash = TABS.findIndex((t) => `#${t.id}` === location.hash);
   select(fromHash >= 0 ? fromHash : 0);
+  refreshCounts();
+  if (stopLive) stopLive();
+  stopLive = watch('/api/admin/events', onTick);
 }
 
 // ---------------------------------------------------------------------
@@ -246,8 +273,15 @@ function renderQueue(panel, tab, { say, expired }) {
   );
   const table = el('table', { class: 'table' }, el('thead', {}, head), tbody);
 
+  // Rows on show, by request id, so a refresh can update them in place.
+  const known = new Map();
+  // Loads in flight; a refresh waits for the page to settle first.
+  let loading = 0;
+  let loaded = false;
+
   const load = async (reset) => {
     const mine = ++generation;
+    loading++;
     const params = new URLSearchParams({ status: tab.status });
     const q = filter.value.trim();
     if (q) params.set('q', q);
@@ -255,6 +289,7 @@ function renderQueue(panel, tab, { say, expired }) {
     more.disabled = true;
     refresh.disabled = true;
     const res = await get(`/api/admin/requests?${params}`);
+    loading--;
     more.disabled = false;
     refresh.disabled = false;
     if (mine !== generation || expired(res)) return;
@@ -262,8 +297,16 @@ function renderQueue(panel, tab, { say, expired }) {
       say("Couldn't load requests.", 'status-bad');
       return;
     }
-    if (reset) clear(tbody);
-    for (const item of res.data.items) tbody.append(...rowFor(item));
+    if (reset) {
+      clear(tbody);
+      known.clear();
+    }
+    for (const item of res.data.items) {
+      const shown = known.get(item.id);
+      if (shown && shown.row.isConnected) continue;
+      tbody.append(...rowFor(item).nodes);
+    }
+    loaded = true;
     cursor = res.data.next_cursor;
     more.hidden = !cursor;
     empty.textContent = q ? 'No requests match.' : tab.empty;
@@ -272,6 +315,15 @@ function renderQueue(panel, tab, { say, expired }) {
 
   // A request's table row, plus (in the archive) a hidden history row.
   const rowFor = (item) => {
+    const requesterCell = el('td');
+    const paintRequester = () => {
+      clear(requesterCell);
+      requesterCell.append(
+        item.requester,
+        item.times_requested > 1 ? el('span', { class: 'muted', text: ` +${item.times_requested - 1}` }) : null,
+      );
+    };
+    paintRequester();
     const statusCell = el('td', {}, chip(item.status, STATUS_LABEL[item.status] || item.status));
     const actions = el('div', { class: 'row-actions' });
     const row = el(
@@ -286,7 +338,7 @@ function renderQueue(panel, tab, { say, expired }) {
         item.note ? el('p', { class: 'muted', text: `Note: ${item.note}` }) : null,
       ),
       el('td', { text: TYPE_LABEL[item.type] || item.type }),
-      el('td', {}, item.requester, item.times_requested > 1 ? el('span', { class: 'muted', text: ` +${item.times_requested - 1}` }) : null),
+      requesterCell,
       el('td', { text: formatDateTime(item.created_at) }),
       el('td', {}, imdbCell(item)),
       statusCell,
@@ -419,8 +471,79 @@ function renderQueue(panel, tab, { say, expired }) {
       loadHistory();
     });
 
+    // A newer copy of this request from the server. A change in flight wins.
+    const update = (fresh) => {
+      if (fresh.times_requested !== item.times_requested) {
+        item.times_requested = fresh.times_requested;
+        paintRequester();
+      }
+      if (!busy && fresh.status !== item.status) {
+        item.status = fresh.status;
+        paint();
+      }
+    };
+
     paint();
-    return archive ? [row, historyRow] : [row];
+    const entry = { item, row, nodes: archive ? [row, historyRow] : [row], update };
+    known.set(item.id, entry);
+    return entry;
+  };
+
+  // Is `item` at or before `last` in the list's order (newest first)?
+  const withinPage = (item, last) =>
+    item.created_at > last.created_at || (item.created_at === last.created_at && item.id >= last.id);
+
+  // Merges the first page of the server's list into what is on show:
+  // rows update where they are (open history stays open), new ones appear,
+  // and ones that no longer belong here go. Older pages are left alone.
+  const merge = async () => {
+    if (loading > 0 || !loaded) return;
+    const mine = generation;
+    const params = new URLSearchParams({ status: tab.status });
+    const q = filter.value.trim();
+    if (q) params.set('q', q);
+    const res = await get(`/api/admin/requests?${params}`);
+    if (expired(res) || !res.ok || mine !== generation) return;
+
+    const items = res.data.items;
+    const fresh = new Set(items.map((i) => i.id));
+    if (items.length > 0) {
+      const last = items[items.length - 1];
+      for (const [id, entry] of known) {
+        if (!entry.row.isConnected || fresh.has(id)) continue;
+        if (!res.data.next_cursor || withinPage(entry.item, last)) {
+          for (const node of entry.nodes) node.remove();
+          known.delete(id);
+        }
+      }
+    } else {
+      for (const [id, entry] of known) {
+        if (!entry.row.isConnected) continue;
+        for (const node of entry.nodes) node.remove();
+        known.delete(id);
+      }
+    }
+
+    let previous = null;
+    for (const item of items) {
+      const entry = known.get(item.id);
+      if (entry && entry.row.isConnected) {
+        entry.update(item);
+        previous = entry.nodes[entry.nodes.length - 1];
+        continue;
+      }
+      const added = rowFor(item);
+      if (previous) previous.after(...added.nodes);
+      else tbody.prepend(...added.nodes);
+      previous = added.nodes[added.nodes.length - 1];
+      if (tab.id === 'pending') toast(`New request: ${item.title}`);
+    }
+    if (!cursor && res.data.next_cursor && tbody.children.length === items.length) {
+      cursor = res.data.next_cursor;
+    }
+    more.hidden = !cursor;
+    empty.textContent = q ? 'No requests match.' : tab.empty;
+    empty.hidden = tbody.children.length > 0;
   };
 
   filter.addEventListener('input', () => {
@@ -433,6 +556,7 @@ function renderQueue(panel, tab, { say, expired }) {
   clear(panel);
   panel.append(toolbar, el('div', { class: 'table-wrap' }, table), empty, more);
   load(true);
+  return { refresh: merge };
 }
 
 function imdbCell(item) {
@@ -703,6 +827,7 @@ function renderMembers(panel, { say, expired }) {
     el('div', { class: 'table-wrap' }, el('table', { class: 'table' }, el('thead', {}, head), tbody)),
   );
   load();
+  return { refresh: load };
 }
 
 // ---------------------------------------------------------------------

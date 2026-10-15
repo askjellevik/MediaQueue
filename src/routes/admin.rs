@@ -17,6 +17,7 @@ use crate::{
     clientip::ClientIp,
     db,
     error::{AppError, AppJson, AppPath, AppQuery},
+    events::Tick,
     state::AppState,
 };
 
@@ -258,7 +259,49 @@ pub async fn patch_request(
             true
         }
     };
+    if changed {
+        state.events.publish(Tick::Members);
+        state.events.publish(Tick::Admin);
+    }
     Ok(Json(json!({ "id": id, "status": to, "changed": changed })))
+}
+
+/// `GET /api/admin/events`: a server-sent tick whenever requests change.
+pub async fn get_events(
+    State(state): State<AppState>,
+    admin: RequireAdmin,
+) -> Result<impl IntoResponse, AppError> {
+    let pool = state.pool.clone();
+    let session_id = admin.session_id;
+    state.events.open(Tick::Admin, move || {
+        let pool = pool.clone();
+        async move {
+            // A database hiccup is not a reason to drop everyone.
+            db::session_alive(
+                &pool,
+                session_id,
+                db::now_unix(),
+                Some(auth::ADMIN_SESSION_IDLE_SECS),
+            )
+            .await
+            .unwrap_or(true)
+        }
+    })
+}
+
+/// `GET /api/admin/counts`: requests per status, for the tab badges.
+pub async fn get_counts(
+    State(state): State<AppState>,
+    _admin: RequireAdmin,
+) -> Result<impl IntoResponse, AppError> {
+    let mut counts = serde_json::Map::new();
+    for status in ["pending", "added", "already_had", "refused"] {
+        counts.insert(status.to_string(), json!(0));
+    }
+    for (status, n) in db::status_counts(&state.pool).await? {
+        counts.insert(status, json!(n));
+    }
+    Ok(Json(counts))
 }
 
 #[derive(Serialize)]

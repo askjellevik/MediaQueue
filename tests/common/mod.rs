@@ -226,6 +226,15 @@ pub async fn spawn_app() -> TestApp {
 /// Like [`spawn_app`], but lets the caller tweak the config first (e.g. a
 /// different rate limits, or `cookie_dev_insecure = true`).
 pub async fn spawn_app_with(customize: impl FnOnce(&mut Config)) -> TestApp {
+    spawn_app_custom(customize, |_| {}).await
+}
+
+/// Like [`spawn_app_with`], and also lets the caller adjust the app state
+/// (for example a quicker event-stream heartbeat) before the router is built.
+pub async fn spawn_app_custom(
+    customize: impl FnOnce(&mut Config),
+    customize_state: impl FnOnce(&mut AppState),
+) -> TestApp {
     let mut config = test_config();
     customize(&mut config);
 
@@ -233,8 +242,9 @@ pub async fn spawn_app_with(customize: impl FnOnce(&mut Config)) -> TestApp {
         .await
         .expect("connect and migrate test database");
     let clock = Clock::fake(1_700_000_000);
-    let state =
+    let mut state =
         AppState::with_clock(pool.clone(), config.clone(), clock.clone()).expect("build app state");
+    customize_state(&mut state);
     let app = build_router(state.clone());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -316,4 +326,147 @@ pub async fn insert_request(
     .execute(pool)
     .await
     .expect("insert test request");
+}
+
+/// Logs in as the admin and returns the `name=value` session cookie.
+pub async fn login_admin_cookie(app: &TestApp) -> String {
+    let body = format!(r#"{{"username":"{TEST_ADMIN_USER}","password":"{TEST_ADMIN_PASSWORD}"}}"#);
+    let response = app
+        .request(
+            "POST",
+            "/api/admin/login",
+            &json_post_headers(),
+            Some(&body),
+        )
+        .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    cookie_pair(response.header("set-cookie").expect("admin cookie")).to_string()
+}
+
+/// A long-lived GET (server-sent events). Body lines arrive on a channel
+/// from a background thread, so a test can wait for one with a timeout,
+/// and can tell when the server ended the stream. Dropping it closes the
+/// connection.
+pub struct EventStream {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    lines: tokio::sync::mpsc::UnboundedReceiver<String>,
+    _socket: TcpStream,
+}
+
+impl EventStream {
+    pub async fn open(addr: SocketAddr, path: &str, cookie: Option<&str>) -> EventStream {
+        let path = path.to_string();
+        let cookie = cookie.map(str::to_string);
+        tokio::task::spawn_blocking(move || {
+            use std::io::{BufRead, BufReader};
+            let socket = TcpStream::connect(addr).expect("connect to test server");
+            socket
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .expect("set read timeout");
+            let mut request =
+                format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nAccept: text/event-stream\r\n");
+            if let Some(cookie) = &cookie {
+                request.push_str(&format!("Cookie: {cookie}\r\n"));
+            }
+            request.push_str("\r\n");
+            (&socket)
+                .write_all(request.as_bytes())
+                .expect("write request");
+
+            let mut reader = BufReader::new(socket.try_clone().expect("clone socket"));
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("status line");
+            let status = line
+                .split_whitespace()
+                .nth(1)
+                .and_then(|s| s.parse().ok())
+                .expect("status code");
+            let mut headers = Vec::new();
+            loop {
+                line.clear();
+                reader.read_line(&mut line).expect("header line");
+                let trimmed = line.trim_end();
+                if trimmed.is_empty() {
+                    break;
+                }
+                if let Some((k, v)) = trimmed.split_once(':') {
+                    headers.push((k.trim().to_ascii_lowercase(), v.trim().to_string()));
+                }
+            }
+
+            let (tx, lines) = tokio::sync::mpsc::unbounded_channel();
+            std::thread::spawn(move || {
+                // Read timeouts are not an end; only EOF or an error is.
+                socket_lines(reader, tx);
+            });
+            EventStream {
+                status,
+                headers,
+                lines,
+                _socket: socket,
+            }
+        })
+        .await
+        .expect("open task panicked")
+    }
+
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// Waits up to `wait` for a body line containing `needle`.
+    pub async fn saw(&mut self, needle: &str, wait: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            match tokio::time::timeout_at(deadline, self.lines.recv()).await {
+                Ok(Some(line)) if line.contains(needle) => return true,
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => return false,
+            }
+        }
+    }
+
+    /// Whether the server ended the stream within `wait`.
+    pub async fn ended(&mut self, wait: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            match tokio::time::timeout_at(deadline, self.lines.recv()).await {
+                // "0" is the last chunk of the body; the connection itself may
+                // stay open for reuse.
+                Ok(Some(line)) if line == "0" => return true,
+                Ok(Some(_)) => {}
+                Ok(None) => return true,
+                Err(_) => return false,
+            }
+        }
+    }
+}
+
+fn socket_lines(
+    mut reader: std::io::BufReader<TcpStream>,
+    tx: tokio::sync::mpsc::UnboundedSender<String>,
+) {
+    use std::io::BufRead;
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => return,
+            Ok(_) => {
+                if tx.send(line.trim_end().to_string()).is_err() {
+                    return;
+                }
+            }
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(_) => return,
+        }
+    }
 }

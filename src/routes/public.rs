@@ -13,6 +13,7 @@ use crate::{
     clientip::ClientIp,
     db,
     error::{AppError, AppJson, AppQuery},
+    events::Tick,
     notify::{Message, NewRequestInfo},
     state::AppState,
     tmdb::{self, MediaType, SearchItem, SearchType},
@@ -110,6 +111,24 @@ struct MeBody {
     name: String,
     /// `None` when the member has no daily limit.
     remaining_today: Option<i64>,
+}
+
+/// `GET /api/events`: a server-sent tick whenever a request's status changes.
+pub async fn get_events(
+    State(state): State<AppState>,
+    user: RequireUser,
+) -> Result<impl IntoResponse, AppError> {
+    let pool = state.pool.clone();
+    let session_id = user.session_id;
+    state.events.open(Tick::Members, move || {
+        let pool = pool.clone();
+        async move {
+            // A database hiccup is not a reason to drop everyone.
+            db::session_alive(&pool, session_id, db::now_unix(), None)
+                .await
+                .unwrap_or(true)
+        }
+    })
 }
 
 /// `GET /api/me`: identifies the caller, or 401s so the frontend shows the
@@ -423,6 +442,8 @@ pub async fn post_request(
             .notifier
             .send(Message::new_request(&info, &state.config.public_origin));
     }
+
+    state.events.publish(Tick::Admin);
 
     // Counted after the write, so a new request shows one fewer.
     let today = usage.today + i64::from(created);

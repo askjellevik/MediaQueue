@@ -8,10 +8,11 @@ mod common;
 use common::TestApp;
 use mediaqueue::routes::static_files::asset_version;
 
-const PAGE_ASSETS: [&str; 6] = [
+const PAGE_ASSETS: [&str; 7] = [
     "css/app.css",
     "js/search.js",
     "js/api.js",
+    "js/live.js",
     "js/ui.js",
     "img/tmdb.svg",
     "img/icon.svg",
@@ -95,7 +96,13 @@ async fn index_references_assets_by_current_version_and_has_no_inline_code() {
 #[tokio::test]
 async fn scripts_never_write_html() {
     let app = common::spawn_app().await;
-    for asset in ["js/search.js", "js/api.js", "js/ui.js", "js/admin.js"] {
+    for asset in [
+        "js/search.js",
+        "js/api.js",
+        "js/live.js",
+        "js/ui.js",
+        "js/admin.js",
+    ] {
         let js = get(&app, &versioned(asset)).await.body;
         assert!(!js.is_empty(), "{asset} missing");
         for banned in [
@@ -115,7 +122,13 @@ async fn scripts_never_write_html() {
 #[tokio::test]
 async fn module_imports_resolve() {
     let app = common::spawn_app().await;
-    for asset in ["js/search.js", "js/api.js", "js/ui.js", "js/admin.js"] {
+    for asset in [
+        "js/search.js",
+        "js/api.js",
+        "js/live.js",
+        "js/ui.js",
+        "js/admin.js",
+    ] {
         let js = get(&app, &versioned(asset)).await.body;
         for line in js.lines().filter(|l| l.contains(" from './")) {
             let target = line
