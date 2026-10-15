@@ -38,7 +38,7 @@ failed). Every `/api` response has `Cache-Control: no-store`.
 | `POST /admin/login`, `POST /admin/logout` | anyone, admin | Admin session. |
 | `GET /admin/requests`, `PATCH /admin/requests/{id}`, `GET /admin/requests/{id}/events` | admin | Queue with filter and paging; change a status; a request's history. |
 | `GET /admin/counts`, `GET /admin/events`, `GET /admin/export.csv` | admin | Per-status counts; live ticks; CSV of everything. |
-| `GET/POST /admin/members`, `PATCH /admin/members/{id}`, `POST /admin/members/{id}/rotate`, `POST /admin/members/{id}/revoke`, `DELETE /admin/sessions/{id}` | admin | Manage members and devices. |
+| `GET/POST /admin/members`, `PATCH` and `DELETE /admin/members/{id}` (delete only for a revoked member with no requests), `POST /admin/members/{id}/rotate`, `POST /admin/members/{id}/revoke`, `DELETE /admin/sessions/{id}` | admin | Manage members and devices. |
 | `GET /healthz` | anyone | Database check, for the container healthcheck. |
 
 Anything else is served from the embedded `web/` directory.

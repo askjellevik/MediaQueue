@@ -1092,6 +1092,55 @@ pub async fn revoke_member(
     Ok(MemberWrite::Done(member_id))
 }
 
+pub enum MemberDelete {
+    Deleted,
+    NotFound,
+    NotRevoked,
+    /// The member has requests or event history under their name; deleting
+    /// them would orphan it, and a new member could inherit it by reusing
+    /// the name.
+    HasHistory,
+}
+
+/// Deletes a revoked member who never requested or duplicated anything.
+pub async fn delete_member(pool: &SqlitePool, member_id: i64) -> Result<MemberDelete, sqlx::Error> {
+    let mut tx = begin_immediate(pool).await?;
+    let Some(member) = sqlx::query!(
+        "SELECT name, revoked_at FROM members WHERE id = ?",
+        member_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    else {
+        tx.rollback().await?;
+        return Ok(MemberDelete::NotFound);
+    };
+    if member.revoked_at.is_none() {
+        tx.rollback().await?;
+        return Ok(MemberDelete::NotRevoked);
+    }
+    let history: i64 = sqlx::query_scalar!(
+        r#"SELECT (SELECT COUNT(*) FROM requests WHERE requested_by = ?1)
+                + (SELECT COUNT(*) FROM request_events WHERE actor = ?2) AS "n!: i64""#,
+        member_id,
+        member.name
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if history > 0 {
+        tx.rollback().await?;
+        return Ok(MemberDelete::HasHistory);
+    }
+    sqlx::query!("DELETE FROM sessions WHERE member_id = ?", member_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query!("DELETE FROM members WHERE id = ?", member_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(MemberDelete::Deleted)
+}
+
 /// Kills one member device. Admin sessions are not touched here.
 pub async fn delete_user_session(pool: &SqlitePool, session_id: i64) -> Result<bool, sqlx::Error> {
     let result = sqlx::query!(

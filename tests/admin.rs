@@ -5,8 +5,8 @@ mod common;
 use std::collections::HashSet;
 
 use common::{
-    HttpResponse, TEST_ADMIN_PASSWORD, TEST_ADMIN_USER, TestApp, cookie_pair, json_post_headers,
-    login_new_member,
+    HttpResponse, TEST_ADMIN_PASSWORD, TEST_ADMIN_USER, TestApp, cookie_pair, create_member,
+    json_post_headers, login_new_member,
 };
 use serde_json::{Value, json};
 use sqlx::SqlitePool;
@@ -993,4 +993,44 @@ async fn no_endpoint_returns_a_code_except_create_and_rotate() {
             "{path} leaked the code hash"
         );
     }
+}
+
+#[tokio::test]
+async fn only_a_revoked_member_without_history_can_be_deleted() {
+    let app = common::spawn_app().await;
+    let admin = login_admin(&app).await;
+    let (idle, _) = create_member(&app.pool, &app.config, "Idle").await;
+    let (asked, _) = create_member(&app.pool, &app.config, "Asked").await;
+    let delete = |id: i64| format!("/api/admin/members/{id}");
+
+    // Active members are never deleted.
+    let resp = call(&app, Some(&admin), "DELETE", &delete(idle), None).await;
+    assert_eq!(resp.status, 409);
+
+    // A revoked member with a request is kept.
+    sqlx::query(
+        "INSERT INTO requests (tmdb_id, media_type, title, requested_by, status, created_at,
+                               status_changed_at)
+         VALUES (1, 'movie', 'Dune', ?, 'pending', 0, 0)",
+    )
+    .bind(asked)
+    .execute(&app.pool)
+    .await
+    .unwrap();
+    for id in [idle, asked] {
+        let path = format!("/api/admin/members/{id}/revoke");
+        assert_eq!(
+            call(&app, Some(&admin), "POST", &path, Some("{}"))
+                .await
+                .status,
+            200
+        );
+    }
+    let resp = call(&app, Some(&admin), "DELETE", &delete(asked), None).await;
+    assert_eq!(resp.status, 409);
+
+    let resp = call(&app, Some(&admin), "DELETE", &delete(idle), None).await;
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    let resp = call(&app, Some(&admin), "DELETE", &delete(idle), None).await;
+    assert_eq!(resp.status, 404);
 }

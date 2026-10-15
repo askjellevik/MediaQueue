@@ -723,6 +723,18 @@ function renderMembers(panel, { say, expired }) {
       toast(res.ok ? `${m.name} is revoked.` : "Couldn't revoke.", { kind: res.ok ? 'ok' : 'bad' });
       load();
     });
+    // Only a revoked member with no requests can go; the server decides.
+    const remove = el('button', { class: 'btn btn-small', type: 'button', text: 'Delete' });
+    remove.addEventListener('click', async () => {
+      if (!window.confirm(`Delete ${m.name} for good?`)) return;
+      const res = await send('DELETE', `/api/admin/members/${m.id}`);
+      if (expired(res)) return;
+      toast(
+        res.ok ? `${m.name} is deleted.` : res.status === 409 ? `${m.name} has requests, so they are kept.` : "Couldn't delete.",
+        { kind: res.ok ? 'ok' : 'bad' },
+      );
+      load();
+    });
     const edit = el('button', { class: 'btn btn-small', type: 'button', text: 'Edit', 'aria-label': `Edit ${m.name}` });
     edit.addEventListener('click', () => editMember(m, edit));
     const limits = el(
@@ -738,7 +750,7 @@ function renderMembers(panel, { say, expired }) {
       el('td', {}, devicesCell(m, deviceList)),
       el('td', { text: String(m.request_count) }),
       limits,
-      el('td', {}, el('div', { class: 'row-actions' }, edit, rotate, revoke)),
+      el('td', {}, el('div', { class: 'row-actions' }, edit, rotate, revoke, revoked && m.request_count === 0 ? remove : null)),
     );
   };
 

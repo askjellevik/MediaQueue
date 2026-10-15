@@ -72,7 +72,10 @@ fn api_router(state: AppState) -> Router<()> {
             "/admin/members",
             get(routes::admin::get_members).post(routes::admin::post_member),
         )
-        .route("/admin/members/{id}", patch(routes::admin::patch_member))
+        .route(
+            "/admin/members/{id}",
+            patch(routes::admin::patch_member).delete(routes::admin::delete_member),
+        )
         .route(
             "/admin/members/{id}/rotate",
             post(routes::admin::post_rotate),

@@ -637,6 +637,26 @@ pub async fn post_revoke(
     }
 }
 
+/// `DELETE /api/admin/members/{id}`: removes a revoked member who has no
+/// requests or history.
+pub async fn delete_member(
+    State(state): State<AppState>,
+    _admin: RequireAdmin,
+    AppPath(id): AppPath<i64>,
+) -> Result<impl IntoResponse, AppError> {
+    match db::delete_member(&state.pool, id).await? {
+        db::MemberDelete::Deleted => {
+            tracing::info!(member_id = id, "member deleted");
+            Ok(Json(json!({ "ok": true })))
+        }
+        db::MemberDelete::NotFound => Err(AppError::NotFound),
+        db::MemberDelete::NotRevoked => Err(AppError::Conflict("revoke the member first")),
+        db::MemberDelete::HasHistory => {
+            Err(AppError::Conflict("the member has requests, so it is kept"))
+        }
+    }
+}
+
 /// `DELETE /api/admin/sessions/{id}`: logs one member device out.
 pub async fn delete_session(
     State(state): State<AppState>,
