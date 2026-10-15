@@ -1,4 +1,4 @@
-//! Rate limiting, per docs/SPEC.md "Rate limiting and TMDB caching":
+//! Rate limiting:
 //!
 //! - [`KeyedLimiter`]: governor's keyed GCRA limiter for request rates
 //!   (every `/api` call per IP, searches per member), with a hard key cap.
@@ -570,11 +570,10 @@ impl LoginLimiter {
 /// Every limiter the app uses, built once from config and shared through
 /// `AppState`.
 ///
-/// Hook points for later phases: Phase 3's search handler calls
-/// [`RateLimits::check_search`] before any TMDB or database work. Phase 4's
-/// create-request quota (3 per minute, daily limit) is counted from
-/// `request_events` in the database so it survives restarts, and so needs
-/// no in-memory limiter here.
+/// The search handler calls [`RateLimits::check_search`] before any TMDB or
+/// database work. The create-request quota (per minute, plus an optional
+/// daily limit) is counted from `request_events` in the database so it
+/// survives restarts, and so needs no in-memory limiter here.
 pub struct RateLimits {
     api: KeyedLimiter<IpAddr>,
     search: KeyedLimiter<i64>,
@@ -606,7 +605,7 @@ impl RateLimits {
         self.api.check(&bucket_key(ip))
     }
 
-    /// Per-member search limit (Phase 3).
+    /// Per-member search limit.
     pub fn check_search(&self, member_id: i64) -> Result<(), RetryAfter> {
         self.search.check(&member_id)
     }

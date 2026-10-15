@@ -141,7 +141,7 @@ pub async fn http_request(
     .expect("blocking http_request task panicked")
 }
 
-/// Convenience GET, used by the Phase 0 healthz/static-file tests.
+/// Convenience GET, used by the healthz and static-file tests.
 pub async fn http_get(addr: SocketAddr, path: &str) -> String {
     let response = http_request(addr, "GET", path, &[], None).await;
     let mut raw = format!("HTTP/1.1 {} \r\n", response.status);
@@ -307,7 +307,7 @@ pub async fn login_new_member(app: &TestApp, name: &str) -> String {
 }
 
 /// Inserts a request row straight into the database, for tests that need
-/// existing requests before Phase 4's endpoint exists.
+/// existing requests without going through the endpoint.
 pub async fn insert_request(
     pool: &SqlitePool,
     member_id: i64,

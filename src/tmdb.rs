@@ -1,5 +1,4 @@
-//! TMDB client with the epoch caches from docs/SPEC.md "TMDB caching and
-//! speed".
+//! TMDB client with epoch-keyed caches.
 //!
 //! Each cache is keyed by `(key, epoch)` with `epoch = clock.now / period`.
 //! A lookup is in one of three states:

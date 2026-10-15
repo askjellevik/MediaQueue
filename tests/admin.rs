@@ -1,4 +1,4 @@
-//! Phase 6 acceptance tests: the admin API, against the real app.
+//! Tests for the admin API, against the real app.
 
 mod common;
 

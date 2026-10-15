@@ -1,4 +1,4 @@
-//! Phase 4 acceptance tests: `POST /api/requests`, quotas, `GET
+//! Tests for `POST /api/requests`, quotas, `GET
 //! /api/requests/mine` and the new-request ntfy push, against the real app
 //! with wiremock TMDB and ntfy servers.
 

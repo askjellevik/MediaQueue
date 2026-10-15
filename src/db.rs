@@ -1,6 +1,6 @@
 //! SQLite pool setup, pragmas and the single place migrations are run from.
-//! All SQL in the app lives in this module (or modules it grows into per
-//! phase); handlers call functions here, never `sqlx::query!` directly.
+//! All SQL in the app lives in this module; handlers call functions here,
+//! never `sqlx::query!` directly.
 
 use std::time::Duration;
 
@@ -96,8 +96,7 @@ pub async fn compact_utc(pool: &SqlitePool, unix: i64) -> Result<String, sqlx::E
 }
 
 /// Current unix time in seconds. The one place request handlers get "now"
-/// from in this phase; a later phase may swap this for an injectable clock
-/// the way `tmdb.rs` does for cache freshness.
+/// from; `tmdb.rs` and the rate limiters use the injectable `Clock` instead.
 pub fn now_unix() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

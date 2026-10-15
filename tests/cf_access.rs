@@ -1,4 +1,4 @@
-//! Cloudflare Access check (Phase 7). Only built with the feature:
+//! Cloudflare Access check Only built with the feature:
 //! `cargo test --features cf-access --test cf_access`.
 #![cfg(feature = "cf-access")]
 

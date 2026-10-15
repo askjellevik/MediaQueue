@@ -9,7 +9,7 @@ use thiserror::Error;
 use crate::clientip::{Cidr, parse_cidr_list};
 
 /// Below this, a leaked pepper plus a leaked database would make the HMAC
-/// trivially reversible for short codes; see docs/SPEC.md "Access codes".
+/// trivially reversible for short codes.
 const MIN_PEPPER_BYTES: usize = 32;
 
 /// Devices a new member may be logged in on at once. It only bounds session

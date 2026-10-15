@@ -1,245 +1,127 @@
 # MediaQueue
 
-A small self-hosted request portal. Friends type an access code, search
-TMDB and add titles to a queue. You work through the queue on an admin
-page and get a push notification for every new title. The app never talks
-to Real-Debrid or any debrid service. You still pick torrents yourself in
-Debrid Media Manager.
+A small self-hosted request portal. People you give an access code to can
+search TMDB and request movies and series. You work through the queue on an
+admin page and can get a push notification for every new request.
 
 One Rust binary (Axum, SQLite) with the frontend embedded, shipped as a
-distroless container for a Raspberry Pi behind Caddy. The full spec is in
-[docs/SPEC.md](docs/SPEC.md), and the security review is in
+distroless container that runs in 64 MB. Design notes are in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and the security review is in
 [docs/SECURITY.md](docs/SECURITY.md).
 
-## First run
+## Quickstart
 
-Everything below happens in one directory on the Pi, for example
-`~/mediaqueue`, holding `compose.yaml`, `.env` and `data/`.
+1. Clone this repository on your server (or copy just `compose.yaml` and
+   `.env.example`) and copy the example to `.env`.
+2. Generate the access-code key and paste it as `CODE_PEPPER`:
+   `openssl rand -base64 48`
+3. Hash your admin password and paste it as `ADMIN_PASSWORD_HASH`, keeping the
+   single quotes (Compose expands `$` otherwise):
+   `docker run --rm -it ghcr.io/askjellevik/mediaqueue:latest hash-password`
+4. Create a TMDB "API Read Access Token" (themoviedb.org > Settings > API)
+   and set it as `TMDB_TOKEN`.
+5. Set `PUBLIC_ORIGIN` to the exact address people will open, for example
+   `https://requests.example.com`.
+6. Create the data directory for the container's user, then start it:
+   `mkdir -p data && sudo chown 65532:65532 data && docker compose up -d`
+7. Add a member. A generated code is printed once; to pick one yourself add
+   `--code "movie night"` (3 to 64 characters; short codes are easy to guess).
+   `docker compose exec portal /app/mediaqueue add-member --name Alice`
+8. Open `/admin`, sign in, and manage members, limits and requests there.
 
-1. **Get the image** onto the Pi (see "Build and deploy" below).
+## Configuration
 
-2. **Generate the secrets.**
+Everything is set in `.env`; see the
+[configuration table](docs/ARCHITECTURE.md#configuration) for every variable.
+Rate limits are built in. Members have no daily request limit unless you set
+one on the Members tab. `NTFY_URL` and `NTFY_TOPIC` turn on push
+notifications (use a long random topic on public ntfy.sh).
 
-   ```sh
-   # 48 random bytes for the access-code HMAC key.
-   openssl rand -base64 48
+## Deploy and update
 
-   # Argon2id hash of your admin password (prompts, no echo).
-   docker run --rm -it ghcr.io/askjellevik/mediaqueue:latest hash-password
-   ```
+GitHub Actions builds the arm64 image on pushes that change code, monthly
+(for base image fixes) and on demand, and publishes it to
+`ghcr.io/askjellevik/mediaqueue` as `latest` and `sha-<commit>`.
 
-3. **Create a TMDB token.** Sign in at themoviedb.org, open Settings > API,
-   and copy the "API Read Access Token" (the long v4 token, not the short
-   API key).
+Update with `docker compose pull && docker compose up -d`. To roll back,
+set `image:` in `compose.yaml` to a `sha-<commit>` tag. If the package is
+private, run `docker login ghcr.io` once with a token that has
+`read:packages`. Migrations run at startup. When an update changes
+`compose.yaml` (for example the healthcheck path), deploy both together.
 
-4. **Write `.env`** from `.env.example`. Every variable is documented
-   there. The required ones are:
+To build by hand instead (for example with `--build-arg FEATURES=cf-access`),
+run `docker buildx build --platform linux/arm64 -t mediaqueue:latest --load .`,
+load it on the server and point `image:` at `mediaqueue:latest`.
 
-   ```sh
-   PUBLIC_ORIGIN=https://requests.example.com
-   CODE_PEPPER=<the openssl output>
-   ADMIN_USER=admin
-   ADMIN_PASSWORD_HASH='$argon2id$v=19$m=19456,t=2,p=1$...'
-   TMDB_TOKEN=<the read access token>
-   ```
+## Reverse proxy
 
-   Keep the single quotes around `ADMIN_PASSWORD_HASH`. Docker Compose
-   expands `$` in env files, which would mangle the hash, and the app
-   would refuse to start.
-
-   For push notifications, also set `NTFY_URL` and `NTFY_TOPIC` (and
-   `NTFY_TOKEN` for a protected self-hosted ntfy). On public ntfy.sh, use
-   a long random topic, since anyone who knows it can read it.
-
-5. **Create the data directory**, owned by the container's user:
-
-   ```sh
-   mkdir -p data
-   sudo chown -R 65532:65532 data
-   ```
-
-6. **Start it.**
-
-   ```sh
-   docker compose up -d
-   docker compose ps          # wait for "(healthy)"
-   docker compose logs -f
-   ```
-
-7. **Add the first member.** A generated code is printed once and cannot be
-   shown again. If it is lost, rotate it on the admin page. To pick the code
-   yourself, add `--code` (8 to 64 characters; the code is not printed back).
-
-   ```sh
-   docker compose exec portal /app/mediaqueue add-member --name Alice
-   docker compose exec portal /app/mediaqueue add-member --name Bob --code "movie night"
-   ```
-
-   After that, add members on the admin page at `/admin` (Members tab).
-
-## Build and deploy
-
-Compiling on the Pi is slow and can run out of memory while linking, so
-GitHub Actions builds the arm64 image (`.github/workflows/image.yml`) on
-every push to `main`, monthly, and on demand, and publishes it to
-`ghcr.io/askjellevik/mediaqueue` as `latest` and `sha-<commit>`. If the
-package is private, run `docker login ghcr.io` once on the Pi with a token
-that has `read:packages`.
-
-Copy `compose.yaml` and `.env` to the Pi, if you haven't yet, then run
-`docker compose pull && docker compose up -d` there. The container listens only on
-`127.0.0.1:8088`. Docker's published ports bypass UFW, so binding to
-loopback keeps Caddy as the only way in.
-
-## Caddy
-
-Add a site block next to the existing media one:
+The container listens on `127.0.0.1:8088` only. With Caddy in front:
 
 ```text
-requests.example.com:8443 {
-    encode zstd gzip
-    request_body {
-        max_size 64KB
-    }
+requests.example.com {
     reverse_proxy 127.0.0.1:8088 {
         header_up X-Real-IP {client_ip}
     }
 }
 ```
 
-The app trusts `X-Real-IP` only from `TRUSTED_PROXY_CIDRS` (loopback and
-the Docker bridge range by default), and never trusts `X-Forwarded-For`.
-Caddy's `trusted_proxies` must list Cloudflare's ranges so that
-`{client_ip}` is the visitor, not Cloudflare. Otherwise every visitor
-shares one rate-limit bucket.
+The app uses `X-Real-IP` for its per-visitor lockouts and rate limits, and
+trusts it only from `TRUSTED_PROXY_CIDRS` (loopback and Docker's bridge range
+by default). It must carry the real visitor address. If the site sits behind
+Cloudflare, Caddy would otherwise see only Cloudflare's addresses, and every
+visitor would share one bucket. Tell Caddy to trust Cloudflare and read its
+header in the global options block (Caddy 2.7 or newer):
 
-## UFW, router and Cloudflare
-
-- Open `8443/tcp` in UFW and forward it on the router, if the media host
-  has not done that already. Port 8088 stays closed: it is loopback only.
-- The DNS record can be proxied through Cloudflare (orange cloud, SSL
-  mode Full (strict)), since the portal only serves small JSON responses.
-- An optional free Cloudflare rate-limit rule on `/api/auth/*` and
-  `/api/admin/login` adds another layer. The app does not depend on it.
-- **Cloudflare Access** (optional): protect `/admin*` and `/api/admin*`
-  with an Access application, build the image with
-  `--build-arg FEATURES=cf-access`, and set `CF_ACCESS_ENABLED=1`,
-  `CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD` in `.env`. The app then
-  checks the `Cf-Access-Jwt-Assertion` header on top of the admin password.
+```text
+{
+    servers {
+        trusted_proxies static <ranges from https://www.cloudflare.com/ips/>
+        client_ip_headers CF-Connecting-IP
+    }
+}
+```
 
 ## Backups and restore
 
-A background task writes a consistent snapshot (`VACUUM INTO`) to
-`data/backups/db-<UTC time>.sqlite3` once a day and keeps the newest 14.
-To take one on demand:
-
-```sh
-docker compose exec portal /app/mediaqueue backup
-```
-
-Copy them off the Pi regularly:
-
-```sh
-rsync -av pi:mediaqueue/data/backups/ ~/backups/mediaqueue/
-```
-
-To restore:
-
-```sh
-docker compose down
-mv data/db.sqlite3 data/db.sqlite3.broken
-rm -f data/db.sqlite3-wal data/db.sqlite3-shm
-cp data/backups/db-20260101T031500Z.sqlite3 data/db.sqlite3
-sudo chown 65532:65532 data/db.sqlite3
-docker compose up -d
-```
-
-Use the same `CODE_PEPPER` as before, or every access code stops working.
-Keep a copy of `.env` with the backups.
-
-## Updates
-
-Push to `main`, wait for the `image` workflow to finish, then on the Pi:
-
-```sh
-cd mediaqueue && docker compose pull && docker compose up -d
-```
-
-The healthcheck path changed with the rename to `mediaqueue`, so deploy the new `compose.yaml` and the new image together.
-
-To go back, set the image in `compose.yaml` to a `sha-<commit>` tag.
-
-Migrations run at startup. The workflow also rebuilds monthly, so the base
-image picks up Debian security fixes; pull after it runs.
-
-To build by hand instead (for example with `--build-arg FEATURES=cf-access`):
-
-```sh
-docker buildx build --platform linux/arm64 -t mediaqueue:latest --load .
-docker save mediaqueue:latest | gzip | ssh pi 'gunzip | docker load'
-```
-
-and point `image:` in `compose.yaml` at `mediaqueue:latest`.
+A snapshot is written to `data/backups/` daily and the newest 14 are kept.
+Take one now with `docker compose exec portal /app/mediaqueue backup`, and
+copy the folder off the machine. To restore, stop the container, replace
+`data/db.sqlite3` with a backup (delete `db.sqlite3-wal` and `-shm`), run
+`chown 65532:65532` on it and start again. Keep the same `CODE_PEPPER` (back
+up `.env` too), or every access code stops working.
 
 ## Troubleshooting
 
 | Symptom | Cause and fix |
 | --- | --- |
-| Container restarts at once; `docker compose logs` shows `configuration error` | A required variable is missing or invalid. The message names it. A mangled `ADMIN_PASSWORD_HASH` means the single quotes are missing. |
-| `unable to open database file` | `data/` is not owned by 65532: `sudo chown -R 65532:65532 data`. |
-| Every POST returns 403 | `PUBLIC_ORIGIN` does not match the address in the browser (scheme, host and port must match exactly). |
-| Everyone gets locked out together | All visitors look like one IP. Check `header_up X-Real-IP {client_ip}` in Caddy, Caddy's `trusted_proxies`, and `TRUSTED_PROXY_CIDRS`. |
-| Search says the movie database is not answering | TMDB is down or the token is wrong (`tmdb rejected the token` in the logs). Cached results keep working for up to an hour. |
-| "Too many attempts" on the code page | Five wrong codes from one network lock it for 15 minutes, then longer. It ends on its own, or restart the container to clear all limits. |
-| No push notifications | `NTFY_URL` empty means notifications are off. Failures are logged as `ntfy notification failed`. |
-| Lost access code | Admin page, Members tab, **Rotate code** (type a new code, or leave it blank to generate one). |
-| Running outside Docker uses more memory | Set `GLIBC_TUNABLES=glibc.malloc.mmap_threshold=131072` as the Dockerfile does, so Argon2's memory goes back to the OS. |
+| Login or any button fails with 403 | `PUBLIC_ORIGIN` must equal the address in the browser exactly, including the port. The log line "request rejected by the csrf guard" shows what arrived. |
+| `docker compose pull` says `denied` | Run `docker login ghcr.io`, or make the package public. |
+| Container exits with `configuration error` | The message names the variable; check the quotes around `ADMIN_PASSWORD_HASH`. |
+| `unable to open database file` | `data/` must be owned by UID 65532. |
+| Everyone is locked out together | The app sees one IP for all visitors; see Reverse proxy. |
+| Lost access code | Members tab, **Rotate code**. |
 
 ## Development
 
 ```sh
-cp .env.example .env    # set PUBLIC_ORIGIN=http://localhost:8000
-cargo test                                   # unit and integration tests
-cargo test --features cf-access              # plus the Cloudflare Access tests
-cargo test --test browser -- --ignored       # headless Chrome; CHROME=/path/to/chrome
-cargo clippy --all-targets --all-features -- -D warnings
-cargo fmt --check
+cargo test                       # unit and integration tests
+cargo clippy --all-targets && cargo fmt --check
+cargo test --features cf-access  # also the Cloudflare Access tests
 cargo audit && cargo deny check
 ```
 
-SQL is checked at compile time against `.sqlx/`. After changing a query,
-regenerate it against a migrated scratch database:
+The `web/` directory is embedded in the binary, so changes there need a
+rebuild. SQL is checked at compile time against `.sqlx/`; after changing a
+query run `cargo sqlx prepare -- --all-targets --all-features` against a
+migrated scratch database (`DATABASE_URL=sqlite://$PWD/dev.sqlite3`, then
+`sqlx database create && sqlx migrate run`).
 
-```sh
-export DATABASE_URL=sqlite://$PWD/dev.sqlite3
-sqlx database create && sqlx migrate run
-cargo sqlx prepare -- --all-targets --all-features
-```
+**Browser tests.** `tests/browser.rs` drives headless Chrome (the gate under
+the real CSP, search races, the keyboard flow, the admin page) and is ignored
+by default: `CHROME=/usr/bin/google-chrome cargo test --test browser --
+--ignored`. Without Chrome, `node --check web/js/*.js` catches syntax errors.
 
-### Load test
-
-`scripts/loadtest.sh` fires 200 mixed requests: searches, `/api/me`, new
-requests, and admin logins with right and wrong passwords. It reports
-status codes, p50/p95 latency, sampled peak RSS and the database writes
-the run caused. Run it against a mock TMDB, never the real one:
-
-```sh
-cargo run --release --example mock_tmdb -- 0.0.0.0:9099
-# in .env: TMDB_BASE_URL=http://host.docker.internal:9099
-#          RUST_LOG=info,sqlx::query=debug   (for the write count)
-ADMIN_PASSWORD=... ORIGIN=$PUBLIC_ORIGIN CONTAINER=<container name> scripts/loadtest.sh
-```
-
-On shutdown the app logs exact peak RSS and CPU time as `process totals`.
-
-Last measured (amd64 container at the compose limits, 0.5 CPU and 64 MB,
-mock TMDB with 120 ms latency):
-
-| Measure | Result | Target |
-| --- | --- | --- |
-| Idle RSS | 9.4 MB | under 25 MB |
-| Peak RSS during the load test (30 Argon2 logins queued) | 32.0 MiB (highest of three runs) | under 50 MB |
-| Image size | 33.5 MB unpacked, 14.2 MB compressed | under 50 MB |
-| Warm search | 2.7 ms round trip | under 10 ms |
-| Cold search | 136 ms (120 ms of it is the mock) | under 800 ms |
-| Database writes in 200 requests | 70: 30 requests, 30 events, 10 admin sessions; none from reads | logins, requests and status changes only |
+**Load test.** `scripts/loadtest.sh` sends 200 mixed requests and reports
+latency, peak memory and database writes. Run it against the mock TMDB
+(`cargo run --release --example mock_tmdb -- 0.0.0.0:9099`, with
+`TMDB_BASE_URL` pointing at it), never the real one.

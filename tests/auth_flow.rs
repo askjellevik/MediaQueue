@@ -1,4 +1,4 @@
-//! Phase 1 acceptance tests: access codes, sessions, cookies, CSRF guard
+//! Tests for access codes, sessions, cookies, CSRF guard
 //! and admin login, against the real app on a random port.
 
 mod common;

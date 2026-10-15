@@ -1,0 +1,125 @@
+# Architecture
+
+MediaQueue is a small request portal. People with an access code search
+TMDB and request movies and series. An admin works through the queue,
+marks each request, and can get a push notification for every new one.
+It is one Rust binary (Axum on Tokio, SQLite through sqlx) with the
+frontend (vanilla JavaScript modules, no build step) embedded in it.
+
+## Data model
+
+Defined in `migrations/`; times are unix seconds in UTC.
+
+| Table | Holds |
+| --- | --- |
+| `members` | One row per person: unique name, `code_hash` (HMAC of the access code), `max_sessions`, optional `daily_limit` (`NULL` means no limit), and `rotated_at`, `revoked_at`, `last_seen_at`. |
+| `sessions` | Logged-in devices. `token_hash` is the SHA-256 of the cookie token. `kind` is `user` (with a `member_id`) or `admin`. |
+| `requests` | One row per title (`UNIQUE (tmdb_id, media_type)`). `status` is `pending`, `added`, `already_had` or `refused`. Also the IMDb ID, title, year, poster path, an optional note of up to 200 characters, and who asked first. |
+| `request_events` | Append-only history: `submitted`, `duplicate` and `status` events with the actor's name. It is the audit trail, the CSV export source and the source of the request quotas. |
+
+A second person asking for a title that already exists adds a `duplicate`
+event instead of a row. Status labels in the UI are "Pending", "Added",
+"In library" and "Declined"; the stored values stay as listed above.
+
+## API
+
+All routes except `/healthz` live under `/api`. State-changing requests need
+`Content-Type: application/json`, `X-Requested-With: mp` and an `Origin`
+equal to `PUBLIC_ORIGIN`, otherwise they get 403 (the log says which check
+failed). Every `/api` response has `Cache-Control: no-store`.
+
+| Route | Who | Purpose |
+| --- | --- | --- |
+| `POST /auth/code`, `POST /auth/logout` | anyone, member | Log in with an access code; log out. |
+| `GET /me` | member | Name and, if the member has a daily limit, `remaining_today`. |
+| `GET /search?q=` | member | TMDB search, annotated with request state. |
+| `POST /requests`, `GET /requests/mine` | member | Request a title; list one's own requests (cursor paging). |
+| `GET /events` | member | Server-sent ticks when a request changes. |
+| `POST /admin/login`, `POST /admin/logout` | anyone, admin | Admin session. |
+| `GET /admin/requests`, `PATCH /admin/requests/{id}`, `GET /admin/requests/{id}/events` | admin | Queue with filter and paging; change a status; a request's history. |
+| `GET /admin/counts`, `GET /admin/events`, `GET /admin/export.csv` | admin | Per-status counts; live ticks; CSV of everything. |
+| `GET/POST /admin/members`, `PATCH /admin/members/{id}`, `POST /admin/members/{id}/rotate`, `POST /admin/members/{id}/revoke`, `DELETE /admin/sessions/{id}` | admin | Manage members and devices. |
+| `GET /healthz` | anyone | Database check, for the container healthcheck. |
+
+Anything else is served from the embedded `web/` directory.
+
+## Authentication
+
+- **Access codes.** Generated codes are 8 characters from a 31-symbol
+  alphabet without look-alikes, shown as `ABCD-EFGH`, drawn from the OS
+  random source. An admin may choose a code of 3 to 64 characters instead;
+  short ones are guessable. Codes are normalised (upper case, spaces and
+  hyphens removed) and only `HMAC-SHA256(CODE_PEPPER, code)` is stored.
+- **Member sessions.** A login creates a session (one device) with a random
+  token in a `__Host-` cookie; the database keeps its hash. Sessions last 90
+  days, sliding. At `max_sessions` the oldest session is dropped. Rotating
+  or revoking a member deletes their sessions.
+- **Admin.** `ADMIN_USER` plus an Argon2id password hash from the
+  environment. Sessions last 8 hours, or 2 hours idle. Hashing runs one at a
+  time. Optionally, a Cloudflare Access token is also required (build with
+  `--features cf-access`).
+- **Client IP.** `X-Real-IP` is trusted only from `TRUSTED_PROXY_CIDRS`.
+
+## Limits
+
+These protect the server and TMDB; normal use does not reach them. They are
+fixed in `RateLimitConfig::default()` (`src/config.rs`).
+
+| Limit | Value |
+| --- | --- |
+| Any `/api` call | 120 a minute per IP (IPv6 by /64) |
+| Search | burst 10, refill 5 a second, per member |
+| Requests (new or duplicate) | 10 a minute per member |
+| Daily requests | only if the admin set a limit for the member |
+| Outbound TMDB calls | 20 a second in total |
+| Wrong codes or admin logins | 5 in 15 minutes locks that IP for 15 minutes, then 1 hour, then 24 hours |
+| Global login throttle | codes: above 60 failures an hour attempts wait 1 s, above 300 wait 3 s; admin: 30 and 150 in 15 minutes. Correct credentials still work. |
+| Live streams | 200 at once |
+| Per request | 10 s timeout, 16 KB body, 64 requests in flight |
+
+## Live updates
+
+`GET /api/events` and `GET /api/admin/events` are server-sent event
+streams carrying content-free `tick` events. Status changes tick members and
+admin; new requests tick the admin. Clients refetch the lists they show,
+update rows in place and reconnect on their own, falling back to polling
+every minute. Each stream re-checks its session every 25 seconds and ends
+when it is gone. Ticks live in an in-process broadcast channel, so this
+works for a single instance only.
+
+## Static assets
+
+`web/` is embedded with `rust_embed`; changing it needs a rebuild. HTML
+pages reference assets as `/v/__V__/...`, and the server replaces `__V__`
+with a hash over all embedded files. Only URLs with the current hash are
+`immutable`; anything else revalidates by ETag.
+
+## Configuration
+
+Set in the environment (Docker Compose reads `.env`). The app refuses to
+start if a required value is missing or invalid. Unknown variables are
+ignored.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PUBLIC_ORIGIN` | required | Exact address in the browser, without a trailing slash or path. An `http://` origin turns off the `Secure` cookie flag (local development only). |
+| `CODE_PEPPER` | required | HMAC key for access codes, at least 32 bytes. Changing it invalidates every code. |
+| `ADMIN_USER`, `ADMIN_PASSWORD_HASH` | required | Admin login; make the hash with `mediaqueue hash-password`. |
+| `TMDB_TOKEN` | required | TMDB API read access token. |
+| `NTFY_URL`, `NTFY_TOPIC`, `NTFY_TOKEN` | off | Push notification for new requests. |
+| `CF_ACCESS_ENABLED`, `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD`, `CF_ACCESS_CERTS_URL` | off | Cloudflare Access check (needs the `cf-access` build feature). |
+| `TRUSTED_PROXY_CIDRS` | loopback and `172.16.0.0/12` | Proxies trusted to send `X-Real-IP`. |
+| `RUST_LOG` | `info` | Log filter. |
+| `BIND_ADDR` | `0.0.0.0:8000` | Listen address (the image sets it). |
+| `DATABASE_PATH` | `./data/db.sqlite3` | SQLite file (the image sets `/data/db.sqlite3`). |
+| `TMDB_BASE_URL`, `DMM_BASE_URL` | the real services | For tests and mocks. `DMM_BASE_URL` builds the optional "Open in DMM" link on the admin page. |
+
+## Performance targets
+
+Measured at the compose limits (0.5 CPU, 64 MB) against a mock TMDB:
+
+- idle memory under 25 MB, peak under 50 MB with Argon2 logins in flight;
+- warm search under 10 ms, cold search under 800 ms;
+- image under 50 MB;
+- database writes only for logins, requests, status changes and one
+  last-seen update per session every 10 minutes.

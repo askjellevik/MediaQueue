@@ -1,4 +1,4 @@
-//! Phase 2 acceptance tests: rate limits, lockouts and the global login
+//! Rate limit tests: limits, lockouts and the global login
 //! throttle, against the real app on a random port. Time comes from the
 //! app's fake clock, so nothing here sleeps to wait out a limit.
 

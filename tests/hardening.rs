@@ -1,4 +1,4 @@
-//! Phase 7 review gaps: exact security headers everywhere, and the admin
+//! Tests for exact security headers everywhere, and the admin
 //! session's idle and absolute limits.
 
 mod common;

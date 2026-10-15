@@ -1,7 +1,7 @@
-//! Phase 5 checks on the embedded frontend that need no browser: what the
+//! Checks on the embedded frontend that need no browser: what the
 //! page contains before login, CSP-friendliness, caching of versioned
 //! assets and the transfer budget. Browser-only checks (keyboard flow,
-//! console under CSP, Lighthouse) are in docs/frontend-checks.md.
+//! console under CSP, Lighthouse) are described in the README.
 
 mod common;
 

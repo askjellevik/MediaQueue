@@ -1,4 +1,4 @@
-//! Phase 7: a backup restores into a working app, and only the newest 14
+//! A backup restores into a working app, and only the newest 14
 //! are kept.
 
 mod common;

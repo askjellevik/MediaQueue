@@ -1,5 +1,5 @@
 //! Access codes, sessions, cookies and the `RequireUser`/`RequireAdmin`
-//! extractors. See docs/SPEC.md "Authentication and security".
+//! extractors.
 
 use std::sync::OnceLock;
 

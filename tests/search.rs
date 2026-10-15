@@ -1,4 +1,4 @@
-//! Phase 3 acceptance tests: `/api/search` and the TMDB caches, against
+//! Tests for `/api/search` and the TMDB caches, against
 //! the real app with a wiremock TMDB. Cache time comes from the app's fake
 //! clock; nothing here sleeps to move time forward.
 
