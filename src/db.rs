@@ -586,6 +586,15 @@ pub async fn create_request(
     })
 }
 
+/// Which of a member's requests to list.
+#[derive(Clone, Copy)]
+pub enum MineFilter {
+    All,
+    Pending,
+    /// Everything that is no longer pending.
+    Earlier,
+}
+
 /// A member's requests, newest first: titles they asked for first, plus
 /// titles they asked for again after someone else (matched by the
 /// `duplicate` event's actor name). Keyset pagination on
@@ -594,10 +603,16 @@ pub async fn requests_for_member(
     pool: &SqlitePool,
     member_id: i64,
     member_name: &str,
+    filter: MineFilter,
     before: (i64, i64),
     limit: i64,
 ) -> Result<Vec<RequestRow>, sqlx::Error> {
     let (before_created, before_id) = before;
+    let filter = match filter {
+        MineFilter::All => 0_i64,
+        MineFilter::Pending => 1,
+        MineFilter::Earlier => 2,
+    };
     sqlx::query_as!(
         RequestRow,
         r#"SELECT r.id AS "id!", r.tmdb_id AS "tmdb_id!", r.media_type AS "media_type!",
@@ -609,13 +624,16 @@ pub async fn requests_for_member(
                              WHERE e.request_id = r.id AND e.kind = 'duplicate'
                                AND e.actor = ?2))
              AND (r.created_at < ?3 OR (r.created_at = ?3 AND r.id < ?4))
+             AND (?6 = 0 OR (?6 = 1 AND r.status = 'pending')
+                  OR (?6 = 2 AND r.status <> 'pending'))
            ORDER BY r.created_at DESC, r.id DESC
            LIMIT ?5"#,
         member_id,
         member_name,
         before_created,
         before_id,
-        limit
+        limit,
+        filter
     )
     .fetch_all(pool)
     .await

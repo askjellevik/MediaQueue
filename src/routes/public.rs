@@ -461,6 +461,8 @@ pub async fn post_request(
 pub struct PageParams {
     cursor: Option<String>,
     limit: Option<i64>,
+    /// `pending` or `earlier` (everything else); absent means all.
+    status: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -469,8 +471,8 @@ struct MineBody {
     next_cursor: Option<String>,
 }
 
-/// `GET /api/requests/mine?cursor=&limit=`: the caller's requests with
-/// their current status, newest first.
+/// `GET /api/requests/mine?cursor=&limit=&status=`: the caller's requests
+/// with their current status, newest first.
 pub async fn get_requests_mine(
     State(state): State<AppState>,
     user: RequireUser,
@@ -478,11 +480,18 @@ pub async fn get_requests_mine(
 ) -> Result<impl IntoResponse, AppError> {
     let before = parse_cursor(params.cursor.as_deref())?;
     let limit = page_limit(params.limit)?;
+    let filter = match params.status.as_deref() {
+        None | Some("") => db::MineFilter::All,
+        Some("pending") => db::MineFilter::Pending,
+        Some("earlier") => db::MineFilter::Earlier,
+        Some(_) => return Err(AppError::BadRequest),
+    };
     // One extra row tells us whether another page exists.
     let mut rows = db::requests_for_member(
         &state.pool,
         user.member_id,
         &user.member_name,
+        filter,
         before,
         limit + 1,
     )

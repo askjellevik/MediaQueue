@@ -131,7 +131,6 @@ function renderApp(me) {
     sent: null,
     active: -1,
     memo: new Map(),
-    mineCursor: null,
   };
   const latest = latestOnly();
   let debounceTimer = 0;
@@ -508,23 +507,57 @@ function renderApp(me) {
   };
 
   // ----- My requests -----
-  const mineList = el('ul', { class: 'mine-list' });
-  const mineEmpty = el('p', { class: 'muted', text: 'Nothing requested yet.', hidden: true });
+  // Two groups that page on their own: still pending, and everything that
+  // has moved on (added, in library, declined).
   const mineStatus = el('p', { class: 'status', role: 'status' });
-  const more = el('button', { class: 'btn btn-small', type: 'button', text: 'Load more', hidden: true });
-  more.addEventListener('click', () => loadMine(false));
+  const makeGroup = (key, title, emptyText) => {
+    const group = {
+      key,
+      list: el('ul', { class: 'mine-list' }),
+      empty: el('p', { class: 'muted', text: emptyText, hidden: true }),
+      more: el('button', { class: 'btn btn-small', type: 'button', text: 'Load more', hidden: true }),
+      cursor: null,
+      // Newest-first key of the last loaded row; rows older than this are
+      // not loaded yet.
+      last: null,
+    };
+    group.more.addEventListener('click', () => loadGroup(group, false));
+    group.section = el(
+      'div',
+      { class: 'mine-group' },
+      el('h3', { text: title }),
+      group.empty,
+      group.list,
+      group.more,
+    );
+    return group;
+  };
+  const pendingGroup = makeGroup('pending', 'Pending', 'Nothing pending.');
+  const earlierGroup = makeGroup('earlier', 'Earlier', 'Nothing earlier.');
+  earlierGroup.section.hidden = true;
 
   // Rendered items by request id, so an update changes a row in place.
   const mineNodes = new Map();
 
-  const mineItem = (r) => {
+  const newer = (a, b) => a[0] > b[0] || (a[0] === b[0] && a[1] > b[1]);
+  const keyOf = (r) => [r.created_at, r.id];
+
+  const paintGroup = (group) => {
+    const none = group.list.children.length === 0;
+    group.empty.hidden = !none || group === earlierGroup;
+    group.more.hidden = !group.cursor;
+    // The earlier group is only worth a heading once it has rows.
+    group.section.hidden = group === earlierGroup && none && !group.cursor;
+  };
+
+  const mineItem = (r, group) => {
     const status = chip(r.status, STATUS_LABEL[r.status] || r.status);
     // IMDb once the request has an ID, the TMDB page until then.
     const href = r.imdb_id ? imdbUrl(r.imdb_id) : tmdbUrl(r.type, r.tmdb_id);
     const site = r.imdb_id ? 'IMDb' : 'TMDB';
     const li = el(
       'li',
-      { class: 'mine-item' },
+      { class: 'mine-item', 'data-id': r.id },
       extLink(href, `${r.title} on ${site}`, posterSmall(r.poster), true),
       el(
         'div',
@@ -534,14 +567,36 @@ function renderApp(me) {
       ),
       status,
     );
-    mineNodes.set(r.id, { li, status, state: r.status });
-    return li;
+    const node = { id: r.id, li, status, state: r.status, group, key: keyOf(r) };
+    mineNodes.set(r.id, node);
+    return node;
   };
 
-  const loadMine = async (reset) => {
-    more.disabled = true;
-    const res = await api.mine(reset ? null : state.mineCursor);
-    more.disabled = false;
+  // Puts a row into its group at its newest-first position. A row older
+  // than everything loaded is left for "Load more" to fetch.
+  const place = (group, node) => {
+    if (group.cursor && group.last && newer(group.last, node.key)) {
+      mineNodes.delete(node.id);
+      return;
+    }
+    let before = null;
+    for (const child of group.list.children) {
+      const other = mineNodes.get(Number(child.dataset.id));
+      if (other && newer(node.key, other.key)) {
+        before = child;
+        break;
+      }
+    }
+    if (before) before.before(node.li);
+    else group.list.append(node.li);
+    node.group = group;
+    if (!group.last || newer(group.last, node.key)) group.last = node.key;
+  };
+
+  const loadGroup = async (group, reset) => {
+    group.more.disabled = true;
+    const res = await api.mine(group.key, reset ? null : group.cursor);
+    group.more.disabled = false;
     if (res.status === 401) {
       renderGate();
       return;
@@ -553,13 +608,18 @@ function renderApp(me) {
     }
     mineStatus.textContent = '';
     if (reset) {
-      clear(mineList);
-      mineNodes.clear();
+      for (const [id, node] of mineNodes) if (node.group === group) mineNodes.delete(id);
+      clear(group.list);
+      group.last = null;
     }
-    for (const r of res.data.items) mineList.append(mineItem(r));
-    state.mineCursor = res.data.next_cursor;
-    more.hidden = !state.mineCursor;
-    mineEmpty.hidden = mineList.children.length > 0;
+    for (const r of res.data.items) {
+      // A row already shown (it moved since the last page) is not added twice.
+      if (mineNodes.has(r.id)) continue;
+      group.list.append(mineItem(r, group).li);
+      group.last = keyOf(r);
+    }
+    group.cursor = res.data.next_cursor;
+    paintGroup(group);
   };
 
   // Search results learn a request's new status too.
@@ -577,42 +637,62 @@ function renderApp(me) {
     return changed;
   };
 
-  // Re-reads the first page and updates rows in place: no clearing, no
-  // scroll jump. A status that changed gets a toast.
+  // Re-reads the first page of both groups and updates rows in place: no
+  // clearing, no scroll jump. A row whose status changed gets a toast and
+  // moves to the group it now belongs to.
   const refreshMine = async () => {
-    const res = await api.mine(null);
-    if (res.status === 401) {
+    const fresh = [
+      [pendingGroup, await api.mine('pending', null)],
+      [earlierGroup, await api.mine('earlier', null)],
+    ];
+    if (fresh.some(([, res]) => res.status === 401)) {
       renderGate();
       return;
     }
-    if (!res.ok || !res.data) return;
-    const wasEmpty = mineNodes.size === 0;
-    let previous = null;
+    if (fresh.some(([, res]) => !res.ok || !res.data)) return;
     let resultsChanged = false;
-    for (const r of res.data.items) {
-      const known = mineNodes.get(r.id);
-      if (known) {
-        if (known.state !== r.status) {
-          known.state = r.status;
-          const fresh = chip(r.status, STATUS_LABEL[r.status] || r.status);
-          known.status.replaceWith(fresh);
-          known.status = fresh;
-          toast(`“${r.title}” is now ${STATUS_LABEL[r.status] || r.status}.`);
+    const seen = new Set();
+    for (const [group, res] of fresh) {
+      if (!group.last) group.cursor = res.data.next_cursor;
+      for (const r of res.data.items) {
+        seen.add(r.id);
+        const known = mineNodes.get(r.id);
+        if (!known) {
+          place(group, mineItem(r, group));
+        } else {
+          if (known.state !== r.status) {
+            known.state = r.status;
+            const chipNow = chip(r.status, STATUS_LABEL[r.status] || r.status);
+            known.status.replaceWith(chipNow);
+            known.status = chipNow;
+            toast(`“${r.title}” is now ${STATUS_LABEL[r.status] || r.status}.`);
+          }
+          if (known.group !== group) {
+            known.li.remove();
+            place(group, known);
+          }
         }
-        previous = known.li;
-      } else {
-        const li = mineItem(r);
-        if (previous) previous.after(li);
-        else mineList.prepend(li);
-        previous = li;
+        if (syncResults(r)) resultsChanged = true;
       }
-      if (syncResults(r)) resultsChanged = true;
     }
-    if (wasEmpty) {
-      state.mineCursor = res.data.next_cursor;
-      more.hidden = !state.mineCursor;
+    // A row that should be on a group's first page but is on neither has
+    // moved to a spot beyond a first page. Drop it; if the other group has
+    // loaded past its first page, reload that group so it shows up.
+    const reload = new Set();
+    for (const [group, res] of fresh) {
+      const items = res.data.items;
+      const edge = res.data.next_cursor && items.length ? keyOf(items[items.length - 1]) : null;
+      for (const node of [...mineNodes.values()]) {
+        if (node.group !== group || seen.has(node.id)) continue;
+        if (edge && newer(edge, node.key)) continue;
+        node.li.remove();
+        mineNodes.delete(node.id);
+        const other = group === pendingGroup ? earlierGroup : pendingGroup;
+        if (other.last) reload.add(other);
+      }
     }
-    mineEmpty.hidden = mineList.children.length > 0;
+    for (const group of reload) await loadGroup(group, true);
+    for (const group of [pendingGroup, earlierGroup]) paintGroup(group);
     if (resultsChanged && !list.hidden) {
       const active = state.active;
       renderResults(state.results);
@@ -624,10 +704,9 @@ function renderApp(me) {
     'section',
     { class: 'mine', 'aria-labelledby': 'mine-title' },
     el('h2', { id: 'mine-title', text: 'My requests' }),
-    mineEmpty,
-    mineList,
+    pendingGroup.section,
+    earlierGroup.section,
     mineStatus,
-    more,
   );
 
   const logout = async () => {
@@ -647,7 +726,8 @@ function renderApp(me) {
     ),
   );
   input.focus();
-  loadMine(true);
+  loadGroup(pendingGroup, true);
+  loadGroup(earlierGroup, true);
   if (stopLive) stopLive();
   stopLive = watch('/api/events', refreshMine);
 }

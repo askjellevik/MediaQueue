@@ -39,8 +39,12 @@ export const api = {
     call('POST', '/api/requests', {
       body: note ? { tmdb_id: tmdbId, media_type: mediaType, note } : { tmdb_id: tmdbId, media_type: mediaType },
     }),
-  mine: (cursor) =>
-    call('GET', cursor ? `/api/requests/mine?cursor=${encodeURIComponent(cursor)}` : '/api/requests/mine'),
+  // `status` is 'pending' or 'earlier' (everything no longer pending).
+  mine: (status, cursor) => {
+    const params = new URLSearchParams({ status });
+    if (cursor) params.set('cursor', cursor);
+    return call('GET', `/api/requests/mine?${params}`);
+  },
 };
 
 export { call };

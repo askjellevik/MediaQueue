@@ -224,26 +224,30 @@ async fn typing_race_and_keyboard_flow_work_end_to_end() {
     )
     .await;
     // Empty on load, then the new request after submitting.
+    let empty = json!({"items": [], "next_cursor": null});
     Mock::given(method("GET"))
         .and(path("/api/requests/mine"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({"items": [], "next_cursor": null})),
-        )
+        .and(query_param("status", "pending"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty.clone()))
         .up_to_n_times(1)
         .mount(&server)
         .await;
+    Mock::given(method("GET"))
+        .and(path("/api/requests/mine"))
+        .and(query_param("status", "earlier"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty))
+        .mount(&server)
+        .await;
     quiet_event_stream(&server, "/api/events").await;
-    api_json(
-        &server,
-        "GET",
-        "/api/requests/mine",
-        200,
-        json!({"items": [
-        {"id": 1, "tmdb_id": 438631, "type": "movie", "title": "Dune", "year": 2021,
-         "poster": null, "status": "pending", "created_at": 1700000000}
-    ], "next_cursor": null}),
-    )
-    .await;
+    Mock::given(method("GET"))
+        .and(path("/api/requests/mine"))
+        .and(query_param("status", "pending"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"items": [
+            {"id": 1, "tmdb_id": 438631, "type": "movie", "title": "Dune", "year": 2021,
+             "poster": null, "status": "pending", "created_at": 1700000000}
+        ], "next_cursor": null})))
+        .mount(&server)
+        .await;
 
     let (dom, log) = dump_dom(format!("{}/", server.uri())).await;
     let verdict = dom

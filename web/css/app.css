@@ -393,6 +393,17 @@ select {
   font-size: 1.1rem;
 }
 
+.mine-group + .mine-group {
+  margin-top: 1rem;
+}
+
+.mine h3 {
+  margin: 0 0 0.5rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
 .mine-list {
   display: grid;
   margin: 0 0 0.75rem;

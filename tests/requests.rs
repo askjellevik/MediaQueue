@@ -541,6 +541,45 @@ async fn my_requests_pages_through_own_titles_newest_first() {
         )
         .await;
     assert_eq!(bad.status, 400);
+
+    // The status filter splits the same list into pending and earlier,
+    // each paging on its own.
+    let ids_of = |response: &HttpResponse| -> Vec<i64> {
+        json_of(response)["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["tmdb_id"].as_i64().unwrap())
+            .collect()
+    };
+    let pending = app
+        .request(
+            "GET",
+            "/api/requests/mine?status=pending",
+            &[("Cookie", &alice)],
+            None,
+        )
+        .await;
+    assert_eq!(ids_of(&pending), [51, 4, 3, 1]);
+    let earlier = app
+        .request(
+            "GET",
+            "/api/requests/mine?status=earlier&limit=1",
+            &[("Cookie", &alice)],
+            None,
+        )
+        .await;
+    assert_eq!(ids_of(&earlier), [2]);
+    assert!(json_of(&earlier)["next_cursor"].is_null());
+    let unknown = app
+        .request(
+            "GET",
+            "/api/requests/mine?status=nope",
+            &[("Cookie", &alice)],
+            None,
+        )
+        .await;
+    assert_eq!(unknown.status, 400);
 }
 
 // ---------------------------------------------------------------------
