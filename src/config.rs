@@ -12,10 +12,6 @@ use crate::clientip::{Cidr, parse_cidr_list};
 /// trivially reversible for short codes; see docs/SPEC.md "Access codes".
 const MIN_PEPPER_BYTES: usize = 32;
 
-/// The spec: "Codes shorter than 8 characters are not supported: a 6-digit
-/// code has only a million values, which a distributed attacker could cover."
-const MIN_CODE_LENGTH: usize = 8;
-
 /// Devices a new member may be logged in on at once. It only bounds session
 /// rows; the admin can change it per member.
 pub const DEFAULT_MAX_SESSIONS: i64 = 10;
@@ -39,7 +35,6 @@ pub struct Config {
     /// HMAC key for access codes. Never logged or debug-printed.
     pub code_pepper: Vec<u8>,
     pub cookie_dev_insecure: bool,
-    pub code_length: usize,
     pub admin_user: String,
     /// Argon2id PHC hash string from `mediaqueue hash-password`. Not a
     /// secret itself (it's a salted hash), but never logged regardless.
@@ -167,7 +162,6 @@ impl std::fmt::Debug for Config {
             .field("database_path", &self.database_path)
             .field("code_pepper", &"<redacted>")
             .field("cookie_dev_insecure", &self.cookie_dev_insecure)
-            .field("code_length", &self.code_length)
             .field("admin_user", &self.admin_user)
             .field("admin_password_hash", &"<redacted>")
             .field("trusted_proxy_cidrs", &self.trusted_proxy_cidrs)
@@ -214,20 +208,6 @@ fn bool_flag(env: &impl EnvLookup, name: &str, default: bool) -> bool {
     match env.get(name) {
         Some(v) => v == "1" || v.eq_ignore_ascii_case("true"),
         None => default,
-    }
-}
-
-fn int_with_default(
-    env: &impl EnvLookup,
-    name: &'static str,
-    default: i64,
-) -> Result<i64, ConfigError> {
-    match env.get(name) {
-        Some(v) => v.parse().map_err(|_| ConfigError::Invalid {
-            name,
-            reason: "must be an integer".into(),
-        }),
-        None => Ok(default),
     }
 }
 
@@ -366,15 +346,6 @@ impl Config {
             });
         }
 
-        let code_length_raw = int_with_default(env, "CODE_LENGTH", MIN_CODE_LENGTH as i64)?;
-        if code_length_raw < MIN_CODE_LENGTH as i64 {
-            return Err(ConfigError::Invalid {
-                name: "CODE_LENGTH",
-                reason: format!("must be at least {MIN_CODE_LENGTH}"),
-            });
-        }
-        let code_length = code_length_raw as usize;
-
         let admin_user = required(env, "ADMIN_USER")?;
         let admin_password_hash = required(env, "ADMIN_PASSWORD_HASH")?;
         // Fail fast on a malformed hash rather than discovering it on the
@@ -433,7 +404,6 @@ impl Config {
             database_path,
             code_pepper,
             cookie_dev_insecure,
-            code_length,
             admin_user,
             admin_password_hash,
             trusted_proxy_cidrs,
@@ -574,22 +544,7 @@ mod tests {
         let cfg = Config::from_lookup(&env).unwrap();
         assert_eq!(cfg.bind_addr.to_string(), "127.0.0.1:9000");
         assert_eq!(cfg.public_origin, "https://example.com");
-        assert_eq!(cfg.code_length, 8);
         assert_eq!(cfg.trusted_proxy_cidrs.len(), 3);
-    }
-
-    #[test]
-    fn rejects_code_length_below_minimum() {
-        let mut env = base_env();
-        env.insert("CODE_LENGTH", "6");
-        let err = Config::from_lookup(&env).unwrap_err();
-        assert!(matches!(
-            err,
-            ConfigError::Invalid {
-                name: "CODE_LENGTH",
-                ..
-            }
-        ));
     }
 
     #[test]

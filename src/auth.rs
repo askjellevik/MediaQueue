@@ -69,17 +69,23 @@ pub fn normalise_code(input: &str) -> String {
         .collect()
 }
 
+/// Length of the codes the app generates (about 40 bits).
+pub const GENERATED_CODE_LENGTH: usize = 8;
+/// Admin-chosen codes may be short; the admin is trusted to weigh the risk,
+/// and the lockouts and throttle still apply.
+pub const MIN_CUSTOM_CODE_LENGTH: usize = 3;
 /// Longest admin-chosen code (after normalising).
 pub const MAX_CUSTOM_CODE_LENGTH: usize = 64;
 
 /// Checks an admin-chosen code and returns it normalised, or `None` if it
-/// is shorter than `min_length` or longer than [`MAX_CUSTOM_CODE_LENGTH`]
-/// once spaces and hyphens are stripped. Unlike generated codes it may use
-/// any characters; lookups are case-insensitive because of normalising.
-pub fn check_custom_code(input: &str, min_length: usize) -> Option<String> {
+/// is shorter than [`MIN_CUSTOM_CODE_LENGTH`] or longer than
+/// [`MAX_CUSTOM_CODE_LENGTH`] once spaces and hyphens are stripped. Unlike
+/// generated codes it may use any characters; lookups are case-insensitive
+/// because of normalising.
+pub fn check_custom_code(input: &str) -> Option<String> {
     let normalised = normalise_code(input);
     let len = normalised.chars().count();
-    ((min_length..=MAX_CUSTOM_CODE_LENGTH).contains(&len)
+    ((MIN_CUSTOM_CODE_LENGTH..=MAX_CUSTOM_CODE_LENGTH).contains(&len)
         && !normalised.chars().any(char::is_control))
     .then_some(normalised)
 }
@@ -421,21 +427,21 @@ mod tests {
     #[test]
     fn custom_codes_are_normalised_and_length_checked() {
         assert_eq!(
-            check_custom_code("my-film nite", 8).as_deref(),
+            check_custom_code("my-film nite").as_deref(),
             Some("MYFILMNITE")
         );
-        assert_eq!(check_custom_code("abc-def", 8), None);
+        assert_eq!(check_custom_code("abc-123").as_deref(), Some("ABC123"));
+        assert_eq!(check_custom_code("abc").as_deref(), Some("ABC"));
+        assert_eq!(check_custom_code("ab"), None);
+        assert_eq!(check_custom_code("a-b "), None);
+        assert_eq!(check_custom_code("abcd efgh").as_deref(), Some("ABCDEFGH"));
+        assert!(check_custom_code(&"x".repeat(MAX_CUSTOM_CODE_LENGTH)).is_some());
         assert_eq!(
-            check_custom_code("abcd efgh", 8).as_deref(),
-            Some("ABCDEFGH")
-        );
-        assert!(check_custom_code(&"x".repeat(MAX_CUSTOM_CODE_LENGTH), 8).is_some());
-        assert_eq!(
-            check_custom_code(&"x".repeat(MAX_CUSTOM_CODE_LENGTH + 1), 8),
+            check_custom_code(&"x".repeat(MAX_CUSTOM_CODE_LENGTH + 1)),
             None
         );
-        assert_eq!(check_custom_code("abcdefg\u{7}h", 8), None);
-        assert_eq!(check_custom_code("        ", 8), None);
+        assert_eq!(check_custom_code("abcdefg\u{7}h").as_deref(), None);
+        assert_eq!(check_custom_code("        "), None);
     }
 
     #[test]

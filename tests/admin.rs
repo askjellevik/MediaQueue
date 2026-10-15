@@ -854,10 +854,7 @@ async fn admin_can_choose_a_members_code_on_create_and_rotate() {
     assert_eq!(login_with(&app, "MOVIENIGHT").await.status, 200);
 
     // Too short, too long, and already in use; none of them create a member.
-    for bad in [
-        r#""abc-123""#.to_string(),
-        format!("\"{}\"", "x".repeat(65)),
-    ] {
+    for bad in [r#""ab""#.to_string(), format!("\"{}\"", "x".repeat(65))] {
         let body: &'static str =
             Box::leak(format!(r#"{{"name":"Bad","code":{bad}}}"#).into_boxed_str());
         assert_eq!(post("/api/admin/members".into(), body).await.status, 400);
@@ -874,6 +871,16 @@ async fn admin_can_choose_a_members_code_on_create_and_rotate() {
         1,
         "failed creates leave no member behind"
     );
+
+    // Three characters is the shortest allowed, and logs in in lower case.
+    let short_ok = post(
+        "/api/admin/members".into(),
+        r#"{"name":"Hal","code":"Abc"}"#,
+    )
+    .await;
+    assert_eq!(short_ok.status, 201, "{}", short_ok.body);
+    assert_eq!(login_with(&app, "abc").await.status, 200);
+    assert_eq!(login_with(&app, "ABC").await.status, 200);
 
     // A blank code still generates one.
     let generated = post(
@@ -895,7 +902,7 @@ async fn admin_can_choose_a_members_code_on_create_and_rotate() {
     assert_eq!(dup.status, 409);
     let short = post(
         format!("/api/admin/members/{gina}/rotate"),
-        r#"{"code":"short"}"#,
+        r#"{"code":"ab"}"#,
     )
     .await;
     assert_eq!(short.status, 400);
@@ -911,6 +918,14 @@ async fn admin_can_choose_a_members_code_on_create_and_rotate() {
     assert_eq!(json_of(&rotated)["code"], Value::Null);
     assert_eq!(login_with(&app, gina_code).await.status, 401);
     assert_eq!(login_with(&app, "POPCORN-TIME").await.status, 200);
+
+    let tiny = post(
+        format!("/api/admin/members/{gina}/rotate"),
+        r#"{"code":"xyz"}"#,
+    )
+    .await;
+    assert_eq!(tiny.status, 200, "{}", tiny.body);
+    assert_eq!(login_with(&app, "XyZ").await.status, 200);
 }
 
 #[tokio::test]

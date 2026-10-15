@@ -179,7 +179,6 @@ fn test_config() -> Config {
         database_path: db_path,
         code_pepper: b"integration-test-pepper-at-least-32-bytes!!".to_vec(),
         cookie_dev_insecure: false,
-        code_length: 8,
         admin_user: TEST_ADMIN_USER.to_string(),
         admin_password_hash: test_admin_password_hash().to_string(),
         trusted_proxy_cidrs: mediaqueue::clientip::parse_cidr_list(
@@ -273,7 +272,8 @@ pub async fn create_member_with_sessions(
     name: &str,
     max_sessions: i64,
 ) -> (i64, String) {
-    let code = mediaqueue::auth::generate_code(config.code_length).expect("os random source");
+    let code = mediaqueue::auth::generate_code(mediaqueue::auth::GENERATED_CODE_LENGTH)
+        .expect("os random source");
     let normalised = mediaqueue::auth::normalise_code(&code);
     let code_hash = mediaqueue::auth::hmac_code(&config.code_pepper, &normalised);
     let now = db::now_unix();

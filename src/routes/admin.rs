@@ -346,7 +346,7 @@ fn check_max_sessions(max: Option<i64>) -> Result<Option<i64>, AppError> {
 
 /// A fresh code and its HMAC; only the HMAC is ever stored.
 fn new_code(state: &AppState) -> Result<(String, Vec<u8>), AppError> {
-    let code = auth::generate_code(state.config.code_length)
+    let code = auth::generate_code(auth::GENERATED_CODE_LENGTH)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("OS random source failed: {e}")))?;
     let hash = auth::hmac_code(&state.config.code_pepper, &auth::normalise_code(&code));
     Ok((code, hash))
@@ -358,8 +358,7 @@ fn chosen_code_hash(state: &AppState, code: Option<&str>) -> Result<Option<Vec<u
     let Some(code) = code.filter(|c| !c.trim().is_empty()) else {
         return Ok(None);
     };
-    let normalised =
-        auth::check_custom_code(code, state.config.code_length).ok_or(AppError::BadRequest)?;
+    let normalised = auth::check_custom_code(code).ok_or(AppError::BadRequest)?;
     Ok(Some(auth::hmac_code(
         &state.config.code_pepper,
         &normalised,

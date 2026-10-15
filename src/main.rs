@@ -33,7 +33,7 @@ enum Command {
     AddMember {
         #[arg(long)]
         name: String,
-        /// Use this access code instead of generating one.
+        /// Use this access code (3 to 64 characters) instead of generating one.
         #[arg(long)]
         code: Option<String>,
         #[arg(long)]
@@ -267,18 +267,18 @@ async fn add_member_async(
     // A chosen code is validated and hashed; otherwise one is generated and
     // printed once.
     let (shown, normalised) = match chosen {
-        Some(chosen) => match auth::check_custom_code(&chosen, config.code_length) {
+        Some(chosen) => match auth::check_custom_code(&chosen) {
             Some(normalised) => (None, normalised),
             None => {
                 eprintln!(
                     "the code must be {} to {} characters (spaces and hyphens do not count)",
-                    config.code_length,
+                    auth::MIN_CUSTOM_CODE_LENGTH,
                     auth::MAX_CUSTOM_CODE_LENGTH
                 );
                 return ExitCode::FAILURE;
             }
         },
-        None => match auth::generate_code(config.code_length) {
+        None => match auth::generate_code(auth::GENERATED_CODE_LENGTH) {
             Ok(code) => {
                 let normalised = auth::normalise_code(&code);
                 (Some(code), normalised)

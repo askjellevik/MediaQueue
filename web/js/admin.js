@@ -430,6 +430,13 @@ function renderMembers(panel, { say, expired }) {
   const daily = el('input', { id: 'm-daily', class: 'field', type: 'number', min: 0, max: 1000, inputmode: 'numeric', placeholder: 'No limit' });
   const devices = el('input', { id: 'm-devices', class: 'field', type: 'number', min: 1, max: 20, inputmode: 'numeric', placeholder: String(DEFAULT_DEVICES) });
   const code = el('input', { id: 'm-code', class: 'field', maxlength: 64, autocomplete: 'off', spellcheck: false });
+  // Advice, not a block: the server accepts anything from 3 characters.
+  const codeWarning = el('span', { class: 'muted', id: 'm-code-note' });
+  code.setAttribute('aria-describedby', 'm-code-note');
+  code.addEventListener('input', () => {
+    const n = code.value.replace(/[\s-]/g, '').length;
+    codeWarning.textContent = n > 0 && n < 6 ? 'Short codes are easy to guess.' : '';
+  });
   const add = el('button', { class: 'btn btn-primary', type: 'submit', text: 'Add member' });
   const form = el(
     'form',
@@ -437,7 +444,8 @@ function renderMembers(panel, { say, expired }) {
     el('label', { for: 'm-name' }, 'Name', name),
     el('label', { for: 'm-daily' }, 'Daily limit (optional)', daily),
     el('label', { for: 'm-devices' }, 'Device limit (optional)', devices),
-    el('label', { for: 'm-code' }, 'Access code (optional, 8+ characters; blank makes one)', code),
+    el('label', { for: 'm-code' }, 'Access code (optional, 3+ characters; blank generates one)', code),
+    codeWarning,
     add,
   );
   form.addEventListener('submit', async (event) => {
@@ -458,6 +466,7 @@ function renderMembers(panel, { say, expired }) {
         say(`Added ${res.data.name} with the code you chose.`, 'status-ok');
       }
       form.reset();
+      codeWarning.textContent = '';
       load();
     } else if (res.status === 409) {
       say(
@@ -465,7 +474,7 @@ function renderMembers(panel, { say, expired }) {
         'status-bad',
       );
     } else {
-      say('Check the name (1 to 40 characters), the code (8 to 64 characters) and limits.', 'status-bad');
+      say('Check the name (1 to 40 characters), the code (3 to 64 characters) and limits.', 'status-bad');
     }
   });
 
@@ -496,7 +505,7 @@ function renderMembers(panel, { say, expired }) {
     const rotate = el('button', { class: 'btn btn-small', type: 'button', text: 'Rotate code', disabled: revoked });
     rotate.addEventListener('click', async () => {
       const chosen = window.prompt(
-        `Give ${m.name} a new code? The old one and all their devices stop working.\n\nType the new code (8 to 64 characters), or leave blank to generate one.`,
+        `Give ${m.name} a new code? The old one and all their devices stop working.\n\nType the new code (3 to 64 characters), or leave blank to generate one.`,
       );
       if (chosen === null) return;
       const res = await send('POST', `/api/admin/members/${m.id}/rotate`, chosen.trim() === '' ? {} : { code: chosen });
@@ -512,7 +521,7 @@ function renderMembers(panel, { say, expired }) {
       } else if (res.status === 409 && codeTaken(res)) {
         say('That code is already in use.', 'status-bad');
       } else if (res.status === 400) {
-        say('The code must be 8 to 64 characters.', 'status-bad');
+        say('The code must be 3 to 64 characters.', 'status-bad');
       } else {
         say("Couldn't rotate the code.", 'status-bad');
       }
