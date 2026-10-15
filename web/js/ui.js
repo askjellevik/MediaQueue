@@ -27,9 +27,9 @@ const POSTER_BASE = 'https://image.tmdb.org/t/p/';
 
 // Fixed width and height on every poster so nothing shifts as images load.
 export function poster(path, size, cls, width, height) {
-  if (!path) return el('div', { class: `poster ${cls}`, 'aria-hidden': 'true' });
+  if (!path) return el('div', { class: `poster ${cls} rounded-lg ring-1 ring-white/10`, 'aria-hidden': 'true' });
   return el('img', {
-    class: `poster ${cls}`,
+    class: `poster ${cls} rounded-lg shadow-md shadow-black/40 ring-1 ring-white/10`,
     src: `${POSTER_BASE}${size}${path}`,
     alt: '',
     width,
@@ -80,12 +80,30 @@ export const STATUS_LABEL = {
   refused: 'Declined',
 };
 
+// Whole class strings, so the Tailwind build can see them.
+const CHIP_STYLE = {
+  requested: 'bg-warn/15 text-warn ring-warn/30',
+  pending: 'bg-warn/15 text-warn ring-warn/30',
+  added: 'bg-ok/15 text-ok ring-ok/30',
+  have: 'bg-ok/15 text-ok ring-ok/30',
+  already_had: 'bg-ok/15 text-ok ring-ok/30',
+  unavailable: 'bg-bad/15 text-bad ring-bad/30',
+  refused: 'bg-bad/15 text-bad ring-bad/30',
+};
+
 export function chip(key, label) {
-  return el('span', { class: `chip chip-${key}`, text: label });
+  const style = CHIP_STYLE[key] || 'bg-surface-2 text-muted ring-line';
+  return el('span', {
+    class: `chip chip-${key} rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset ${style}`,
+    text: label,
+  });
 }
 
 export function badge(type) {
-  return el('span', { class: 'badge', text: TYPE_LABEL[type] || type });
+  return el('span', {
+    class: 'badge rounded-md border-line px-1.5 text-[0.68rem] font-medium uppercase tracking-wide',
+    text: TYPE_LABEL[type] || type,
+  });
 }
 
 // "45s", "14:59" or "3h 12m".
@@ -249,13 +267,13 @@ export function copyOnClick(button, text, failText) {
 export function footer(onLogout) {
   return el(
     'footer',
-    { class: 'foot' },
+    { class: 'foot border-t border-line pt-4 text-muted' },
     el(
       'div',
       { class: 'attribution' },
       el('img', { class: 'tmdb-logo', src: LOGO_URL, alt: 'TMDB', width: 92, height: 12 }),
       el('span', { text: 'This product uses the TMDB API but is not endorsed or certified by TMDB.' }),
     ),
-    onLogout ? el('button', { class: 'btn-link', type: 'button', text: 'Log out', onclick: onLogout }) : null,
+    onLogout ? el('button', { class: 'btn-link rounded-md hover:text-ink', type: 'button', text: 'Log out', onclick: onLogout }) : null,
   );
 }

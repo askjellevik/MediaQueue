@@ -1,0 +1,29 @@
+/* Tailwind entry point. `scripts/build-css.sh` compiles this into
+   web/css/app.css, which is committed so a normal build needs no Tailwind.
+   The hand-written rules in base.css go in a layer below the utilities, so a
+   Tailwind class on an element always wins over them. */
+@layer theme, components, utilities;
+
+@import "tailwindcss/theme.css" layer(theme);
+@import "./base.css" layer(components);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+@source "../web/index.html";
+@source "../web/admin.html";
+@source "../web/js";
+
+/* The page colours stay CSS variables (dark by default, light when the
+   system asks), and Tailwind's colour names point at them. */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-line: var(--border);
+  --color-ink: var(--text);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-text);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-bad: var(--bad);
+}

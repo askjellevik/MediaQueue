@@ -111,7 +111,14 @@ cargo audit && cargo deny check
 ```
 
 The `web/` directory is embedded in the binary, so changes there need a
-rebuild. SQL is checked at compile time against `.sqlx/`; after changing a
+rebuild.
+
+**Styles.** The CSS is Tailwind v4 plus a hand-written `styles/base.css`,
+compiled into `web/css/app.css` (committed, so a normal build needs no
+Tailwind). After changing `styles/` or a class name in `web/`, run
+`scripts/build-css.sh`; it needs the Tailwind standalone CLI (see the
+script's header). Write class names as whole strings in the JavaScript, or
+the build cannot see them. SQL is checked at compile time against `.sqlx/`; after changing a
 query run `cargo sqlx prepare -- --all-targets --all-features` against a
 migrated scratch database (`DATABASE_URL=sqlite://$PWD/dev.sqlite3`, then
 `sqlx database create && sqlx migrate run`).
