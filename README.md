@@ -198,7 +198,7 @@ and point `image:` in `compose.yaml` at `mediaqueue:latest`.
 ## Development
 
 ```sh
-cp .env.example .env    # set COOKIE_DEV_INSECURE=1, PUBLIC_ORIGIN=http://localhost:8000
+cp .env.example .env    # set PUBLIC_ORIGIN=http://localhost:8000
 cargo test                                   # unit and integration tests
 cargo test --features cf-access              # plus the Cloudflare Access tests
 cargo test --test browser -- --ignored       # headless Chrome; CHROME=/path/to/chrome

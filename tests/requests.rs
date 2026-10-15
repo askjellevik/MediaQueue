@@ -227,7 +227,7 @@ async fn member_daily_limit_overrides_the_default() {
 async fn fourth_request_in_a_minute_is_429_until_the_oldest_ages_out() {
     let tmdb = MockServer::start().await;
     mount_movies(&tmdb).await;
-    let app = spawn_with(&tmdb, |_| {}).await;
+    let app = spawn_with(&tmdb, |cfg| cfg.rate_limits.requests_per_minute = 3).await;
     let alice = login_new_member(&app, "Alice").await;
 
     assert_eq!(submit_movie(&app, &alice, 1).await.status, 201);
@@ -388,7 +388,7 @@ async fn twenty_concurrent_identical_submits_make_exactly_one_row() {
 async fn concurrent_submits_never_overshoot_the_minute_cap() {
     let tmdb = MockServer::start().await;
     mount_movies(&tmdb).await;
-    let app = spawn_with(&tmdb, |_| {}).await;
+    let app = spawn_with(&tmdb, |cfg| cfg.rate_limits.requests_per_minute = 3).await;
     let alice = login_new_member(&app, "Alice").await;
 
     let handles: Vec<_> = (1..=10)

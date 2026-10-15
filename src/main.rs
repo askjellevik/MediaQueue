@@ -82,6 +82,8 @@ fn run_serve() -> ExitCode {
         }
     };
 
+    warn_if_insecure_origin(&config.public_origin);
+
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .max_blocking_threads(8)
@@ -101,6 +103,21 @@ fn run_serve() -> ExitCode {
             eprintln!("server error: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// Plain http is only sensible on the machine itself; elsewhere the session
+/// cookies would travel unencrypted.
+fn warn_if_insecure_origin(origin: &str) {
+    let Some(rest) = origin.strip_prefix("http://") else {
+        return;
+    };
+    let host = rest.split(':').next().unwrap_or(rest);
+    if !matches!(host, "localhost" | "127.0.0.1") && !rest.starts_with("[::1]") {
+        tracing::warn!(
+            origin,
+            "PUBLIC_ORIGIN is plain http on a non-local host; cookies are sent without the Secure flag"
+        );
     }
 }
 

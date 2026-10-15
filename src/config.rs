@@ -1,7 +1,6 @@
 //! Startup configuration, read from the environment and validated once.
 //!
-//! Each phase adds the env vars it needs here; nothing is read from the
-//! environment anywhere else in the codebase.
+//! Nothing is read from the environment anywhere else in the codebase.
 
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf};
 
@@ -57,7 +56,7 @@ pub struct Config {
     pub rate_limits: RateLimitConfig,
 }
 
-/// Cloudflare Access settings (Phase 7 hardening, `cf-access` feature).
+/// Cloudflare Access settings (`cf-access` feature).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CfAccessConfig {
     /// Expected `iss`, e.g. `https://myteam.cloudflareaccess.com`.
@@ -100,8 +99,8 @@ pub struct ThrottleConfig {
     pub tier2: u32,
 }
 
-/// Every number from the spec's rate-limit table, overridable via `RL_*`
-/// env vars. `Default` holds the spec's values.
+/// Every rate-limit number. They only protect the server and TMDB, so they
+/// are fixed rather than configurable; tests override fields directly.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RateLimitConfig {
     pub api_per_minute: u32,
@@ -135,7 +134,7 @@ impl Default for RateLimitConfig {
             search_burst: 10,
             search_per_second: 5,
             tmdb_per_second: 20,
-            requests_per_minute: 3,
+            requests_per_minute: 10,
             key_cap: 10_000,
             fail_max: 5,
             fail_window_secs: 15 * 60,
@@ -230,100 +229,6 @@ fn int_with_default(
         }),
         None => Ok(default),
     }
-}
-
-/// A rate-limit number: a positive integer, since a zero would either
-/// disable a limit or make it reject everything.
-fn positive<T: std::str::FromStr + PartialOrd + From<u8>>(
-    env: &impl EnvLookup,
-    name: &'static str,
-    default: T,
-) -> Result<T, ConfigError> {
-    let Some(raw) = env.get(name) else {
-        return Ok(default);
-    };
-    match raw.trim().parse::<T>() {
-        Ok(v) if v >= T::from(1) => Ok(v),
-        _ => Err(ConfigError::Invalid {
-            name,
-            reason: "must be a positive integer".into(),
-        }),
-    }
-}
-
-fn throttle_config(
-    env: &impl EnvLookup,
-    names: [&'static str; 3],
-    default: ThrottleConfig,
-) -> Result<ThrottleConfig, ConfigError> {
-    let [window_name, tier1_name, tier2_name] = names;
-    let cfg = ThrottleConfig {
-        window_secs: positive(env, window_name, default.window_secs)?,
-        tier1: positive(env, tier1_name, default.tier1)?,
-        tier2: positive(env, tier2_name, default.tier2)?,
-    };
-    if cfg.tier2 <= cfg.tier1 {
-        return Err(ConfigError::Invalid {
-            name: tier2_name,
-            reason: format!("must be greater than {tier1_name}"),
-        });
-    }
-    Ok(cfg)
-}
-
-fn rate_limit_config(env: &impl EnvLookup) -> Result<RateLimitConfig, ConfigError> {
-    let d = RateLimitConfig::default();
-
-    let lockout_secs = match env.get("RL_LOCKOUT_SECS") {
-        None => d.lockout_secs,
-        Some(raw) => {
-            let parsed: Option<Vec<u64>> = raw
-                .split(',')
-                .map(|s| s.trim().parse::<u64>().ok().filter(|v| *v >= 1))
-                .collect();
-            parsed
-                .filter(|v| !v.is_empty())
-                .ok_or(ConfigError::Invalid {
-                    name: "RL_LOCKOUT_SECS",
-                    reason: "must be a comma-separated list of positive integers".into(),
-                })?
-        }
-    };
-
-    let cfg = RateLimitConfig {
-        api_per_minute: positive(env, "RL_API_PER_MINUTE", d.api_per_minute)?,
-        search_burst: positive(env, "RL_SEARCH_BURST", d.search_burst)?,
-        search_per_second: positive(env, "RL_SEARCH_PER_SECOND", d.search_per_second)?,
-        tmdb_per_second: positive(env, "RL_TMDB_PER_SECOND", d.tmdb_per_second)?,
-        requests_per_minute: positive(env, "RL_REQUESTS_PER_MINUTE", d.requests_per_minute)?,
-        key_cap: positive(env, "RL_KEY_CAP", d.key_cap as u64)? as usize,
-        fail_max: positive(env, "RL_FAIL_MAX", d.fail_max)?,
-        fail_window_secs: positive(env, "RL_FAIL_WINDOW_SECS", d.fail_window_secs)?,
-        lockout_secs,
-        code_throttle: throttle_config(
-            env,
-            [
-                "RL_CODE_THROTTLE_WINDOW_SECS",
-                "RL_CODE_THROTTLE_TIER1",
-                "RL_CODE_THROTTLE_TIER2",
-            ],
-            d.code_throttle,
-        )?,
-        admin_throttle: throttle_config(
-            env,
-            [
-                "RL_ADMIN_THROTTLE_WINDOW_SECS",
-                "RL_ADMIN_THROTTLE_TIER1",
-                "RL_ADMIN_THROTTLE_TIER2",
-            ],
-            d.admin_throttle,
-        )?,
-        delay1_ms: positive(env, "RL_THROTTLE_DELAY1_MS", d.delay1_ms)?,
-        delay2_ms: positive(env, "RL_THROTTLE_DELAY2_MS", d.delay2_ms)?,
-        delay_permits: positive(env, "RL_DELAY_PERMITS", d.delay_permits)?,
-        alert_interval_secs: positive(env, "RL_ALERT_INTERVAL_SECS", d.alert_interval_secs)?,
-    };
-    Ok(cfg)
 }
 
 fn cf_access_config(env: &impl EnvLookup) -> Result<Option<CfAccessConfig>, ConfigError> {
@@ -424,27 +329,22 @@ impl Config {
 
     fn from_lookup(env: &impl EnvLookup) -> Result<Self, ConfigError> {
         let public_origin = required(env, "PUBLIC_ORIGIN")?;
-        let cookie_dev_insecure = bool_flag(env, "COOKIE_DEV_INSECURE", false);
+        // The CSRF check compares this byte for byte with the browser's
+        // `Origin`, which never ends in a slash.
+        let public_origin = public_origin.trim().trim_end_matches('/').to_string();
 
-        let is_https = public_origin.starts_with("https://");
-        let is_http = public_origin.starts_with("http://");
-        if !is_https && !is_http {
+        let cookie_dev_insecure = public_origin.starts_with("http://");
+        if !cookie_dev_insecure && !public_origin.starts_with("https://") {
             return Err(ConfigError::Invalid {
                 name: "PUBLIC_ORIGIN",
                 reason: "must start with http:// or https://".into(),
             });
         }
-        if !is_https && !cookie_dev_insecure {
+        let authority = &public_origin[public_origin.find("://").map_or(0, |i| i + 3)..];
+        if authority.is_empty() || authority.contains(['/', '?', '#']) {
             return Err(ConfigError::Invalid {
                 name: "PUBLIC_ORIGIN",
-                reason: "must be https unless COOKIE_DEV_INSECURE=1".into(),
-            });
-        }
-        if is_https && cookie_dev_insecure {
-            return Err(ConfigError::Invalid {
-                name: "COOKIE_DEV_INSECURE",
-                reason: "refusing to start with an insecure cookie flag against an https origin"
-                    .into(),
+                reason: "must be just scheme, host and optional port, for example https://requests.example.com (no path, query or fragment)".into(),
             });
         }
 
@@ -542,7 +442,6 @@ impl Config {
         let cf_access = cf_access_config(env)?;
 
         let ntfy = ntfy_config(env)?;
-        let rate_limits = rate_limit_config(env)?;
 
         Ok(Config {
             public_origin,
@@ -561,7 +460,7 @@ impl Config {
             dmm_base_url,
             cf_access,
             ntfy,
-            rate_limits,
+            rate_limits: RateLimitConfig::default(),
         })
     }
 }
@@ -607,9 +506,23 @@ mod tests {
     }
 
     #[test]
-    fn rejects_http_origin_without_dev_flag() {
+    fn http_origin_enables_insecure_cookies() {
         let mut env = base_env();
-        env.insert("PUBLIC_ORIGIN", "http://example.com");
+        env.insert("PUBLIC_ORIGIN", "http://localhost:8000");
+        let cfg = Config::from_lookup(&env).unwrap();
+        assert!(cfg.cookie_dev_insecure);
+    }
+
+    #[test]
+    fn https_origin_keeps_cookies_secure() {
+        let cfg = Config::from_lookup(&base_env()).unwrap();
+        assert!(!cfg.cookie_dev_insecure);
+    }
+
+    #[test]
+    fn origin_must_be_http_or_https() {
+        let mut env = base_env();
+        env.insert("PUBLIC_ORIGIN", "example.com");
         let err = Config::from_lookup(&env).unwrap_err();
         assert!(matches!(
             err,
@@ -621,26 +534,41 @@ mod tests {
     }
 
     #[test]
-    fn accepts_http_origin_with_dev_flag() {
+    fn origin_loses_a_trailing_slash_and_rejects_paths() {
         let mut env = base_env();
-        env.insert("PUBLIC_ORIGIN", "http://localhost:8000");
-        env.insert("COOKIE_DEV_INSECURE", "1");
+        env.insert("PUBLIC_ORIGIN", "https://example.com:8443/");
         let cfg = Config::from_lookup(&env).unwrap();
-        assert!(cfg.cookie_dev_insecure);
+        assert_eq!(cfg.public_origin, "https://example.com:8443");
+
+        for bad in [
+            "https://example.com/app",
+            "https://example.com?x=1",
+            "https://example.com#top",
+            "https://",
+        ] {
+            env.insert("PUBLIC_ORIGIN", bad);
+            let err = Config::from_lookup(&env).unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    ConfigError::Invalid {
+                        name: "PUBLIC_ORIGIN",
+                        ..
+                    }
+                ),
+                "{bad} gave {err:?}"
+            );
+        }
     }
 
     #[test]
-    fn rejects_dev_flag_with_https_origin() {
+    fn unknown_variables_are_ignored() {
         let mut env = base_env();
+        env.insert("RL_FAIL_MAX", "1");
         env.insert("COOKIE_DEV_INSECURE", "1");
-        let err = Config::from_lookup(&env).unwrap_err();
-        assert!(matches!(
-            err,
-            ConfigError::Invalid {
-                name: "COOKIE_DEV_INSECURE",
-                ..
-            }
-        ));
+        let cfg = Config::from_lookup(&env).unwrap();
+        assert_eq!(cfg.rate_limits, RateLimitConfig::default());
+        assert!(!cfg.cookie_dev_insecure);
     }
 
     #[test]
@@ -793,11 +721,12 @@ mod tests {
     }
 
     #[test]
-    fn rate_limits_default_to_spec_values() {
+    fn rate_limits_use_the_built_in_defaults() {
         let cfg = Config::from_lookup(&base_env()).unwrap();
         let rl = &cfg.rate_limits;
         assert_eq!(*rl, RateLimitConfig::default());
         assert_eq!(rl.api_per_minute, 120);
+        assert_eq!(rl.requests_per_minute, 10);
         assert_eq!((rl.search_burst, rl.search_per_second), (10, 5));
         assert_eq!(rl.key_cap, 10_000);
         assert_eq!((rl.fail_max, rl.fail_window_secs), (5, 900));
@@ -808,53 +737,6 @@ mod tests {
         assert_eq!(rl.admin_throttle.window_secs, 900);
         assert_eq!((rl.delay1_ms, rl.delay2_ms), (1000, 3000));
         assert_eq!(rl.delay_permits, 32);
-    }
-
-    #[test]
-    fn rate_limits_are_overridable() {
-        let mut env = base_env();
-        env.insert("RL_API_PER_MINUTE", "300");
-        env.insert("RL_LOCKOUT_SECS", "60, 120");
-        env.insert("RL_CODE_THROTTLE_TIER1", "10");
-        env.insert("RL_CODE_THROTTLE_TIER2", "20");
-        let rl = Config::from_lookup(&env).unwrap().rate_limits;
-        assert_eq!(rl.api_per_minute, 300);
-        assert_eq!(rl.lockout_secs, vec![60, 120]);
-        assert_eq!((rl.code_throttle.tier1, rl.code_throttle.tier2), (10, 20));
-    }
-
-    #[test]
-    fn rejects_zero_or_garbage_rate_limits() {
-        for (name, value) in [
-            ("RL_API_PER_MINUTE", "0"),
-            ("RL_SEARCH_BURST", "-1"),
-            ("RL_KEY_CAP", "lots"),
-            ("RL_LOCKOUT_SECS", ""),
-            ("RL_LOCKOUT_SECS", "900,0"),
-        ] {
-            let mut env = base_env();
-            env.insert(name, value);
-            let err = Config::from_lookup(&env).unwrap_err();
-            assert!(
-                matches!(err, ConfigError::Invalid { name: n, .. } if n == name),
-                "{name}={value:?} gave {err:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn rejects_throttle_tiers_out_of_order() {
-        let mut env = base_env();
-        env.insert("RL_ADMIN_THROTTLE_TIER1", "50");
-        env.insert("RL_ADMIN_THROTTLE_TIER2", "50");
-        let err = Config::from_lookup(&env).unwrap_err();
-        assert!(matches!(
-            err,
-            ConfigError::Invalid {
-                name: "RL_ADMIN_THROTTLE_TIER2",
-                ..
-            }
-        ));
     }
 
     #[test]

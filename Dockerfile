@@ -14,6 +14,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
  && cp target/release/mediaqueue /mediaqueue
 
 FROM gcr.io/distroless/cc-debian12:nonroot
+ENV BIND_ADDR=0.0.0.0:8000 DATABASE_PATH=/data/db.sqlite3
 # Large allocations (each Argon2 login takes 19 MiB) go straight to mmap and
 # back to the OS when freed. Without a fixed threshold glibc starts keeping
 # them in per-thread arenas, RSS ratchets up with every blocking thread that

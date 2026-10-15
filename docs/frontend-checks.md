@@ -40,7 +40,7 @@ of failures into the page.
 
 ## Manual checks
 
-Run the app locally (`COOKIE_DEV_INSECURE=1`, `PUBLIC_ORIGIN=http://localhost:8000`)
+Run the app locally (`PUBLIC_ORIGIN=http://localhost:8000`)
 and add a member with `mediaqueue add-member --name Test`.
 
 1. **Real keyboard.** Using only the keyboard: type the code, press Enter,
