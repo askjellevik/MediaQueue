@@ -48,6 +48,8 @@ export const ta = {
   orderedByOn: (who, date) => `Bestilt av ${who} · ${date}`,
   loadRequestsFailed: 'Kunne ikke laste bestillinger.',
   note: (text) => `Merknad: ${text}`,
+  withPro: 'Infuse PRO',
+  withoutPro: 'Uten PRO',
   actionLabel: (action, title) => `${action}: ${title}`,
   openInDmm: 'Åpne i DMM',
   statusChanged: (title, status) => `«${title}» er nå ${status.toLowerCase()}.`,

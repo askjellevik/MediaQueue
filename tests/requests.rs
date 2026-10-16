@@ -163,6 +163,56 @@ async fn note_is_stored_cleaned() {
     assert_eq!(event_note, "4K please");
 }
 
+#[tokio::test]
+async fn pro_and_plain_requests_for_one_title_are_separate_rows() {
+    let tmdb = MockServer::start().await;
+    mount_movies(&tmdb).await;
+    let app = spawn_with(&tmdb, |_| {}).await;
+    let alice = login_new_member(&app, "Alice").await;
+    let bob = login_new_member(&app, "Bob").await;
+
+    // Omitted means no Infuse PRO.
+    let plain = submit(&app, &alice, r#"{"tmdb_id":1,"media_type":"movie"}"#).await;
+    assert_eq!(plain.status, 201, "{}", plain.body);
+    assert_eq!(json_of(&plain)["request"]["infuse_pro"], false);
+
+    let pro = submit(
+        &app,
+        &bob,
+        r#"{"tmdb_id":1,"media_type":"movie","infuse_pro":true}"#,
+    )
+    .await;
+    assert_eq!(pro.status, 201, "{}", pro.body);
+    assert_eq!(json_of(&pro)["request"]["infuse_pro"], true);
+    assert_ne!(
+        json_of(&pro)["request"]["id"],
+        json_of(&plain)["request"]["id"]
+    );
+
+    // The same answer again is a duplicate of the matching row only.
+    let again = submit(
+        &app,
+        &alice,
+        r#"{"tmdb_id":1,"media_type":"movie","infuse_pro":false}"#,
+    )
+    .await;
+    assert_eq!(again.status, 200, "{}", again.body);
+    assert_eq!(
+        json_of(&again)["request"]["id"],
+        json_of(&plain)["request"]["id"]
+    );
+
+    assert_eq!(count(&app, "requests").await, 2);
+    let flags: Vec<(bool, i64)> = sqlx::query_as(
+        "SELECT infuse_pro, (SELECT COUNT(*) FROM request_events e WHERE e.request_id = r.id)
+         FROM requests r ORDER BY id",
+    )
+    .fetch_all(&app.pool)
+    .await
+    .unwrap();
+    assert_eq!(flags, [(false, 2), (true, 1)]);
+}
+
 // ---------------------------------------------------------------------
 // Quotas
 // ---------------------------------------------------------------------
@@ -680,7 +730,7 @@ async fn new_titles_push_one_notification_and_duplicates_none() {
         .and(body_partial_json(json!({
             "topic": "requests-topic",
             "title": "Ny bestilling: Movie 7 (2021)",
-            "message": "Film, bestilt av Alice\nMerknad: please",
+            "message": "Film, bestilt av Alice (uten Infuse PRO)\nMerknad: please",
             "tags": ["movie_camera"],
             "click": "https://example.com/admin#pending",
         })))

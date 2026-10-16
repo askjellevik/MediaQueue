@@ -102,6 +102,8 @@ async function e2e() {
   if (!sheet) return;
   const add = document.activeElement;
   check(add && add.textContent === 'Bestill', `focus in sheet was on ${add && add.textContent}`);
+  const infuse = sheet.querySelector('#infuse');
+  check(infuse && !infuse.checked, 'Infuse PRO switch is not off by default');
 
   // Enter on the focused button submits.
   add.click();
@@ -109,9 +111,17 @@ async function e2e() {
   check(!document.querySelector('dialog[open]'), 'sheet stayed open after submit');
   const status = document.querySelector('.status-ok');
   check(status && status.textContent.includes('Bestilte «Dune»'), `status was ${status && status.textContent}`);
-  check(document.activeElement === input, 'focus did not return to the search input');
+  check(document.activeElement !== input, 'search input kept focus after the sheet closed');
   const mine = await waitFor(() => document.querySelector('.mine-item'));
   check(mine && mine.textContent.includes('Venter'), 'my requests not refreshed');
+
+  // The clear button shows while there is text, and empties the field.
+  const clearButton = document.querySelector('.search-clear');
+  type(input, 'dun');
+  check(clearButton && !clearButton.hidden, 'clear button hidden while the field has text');
+  clearButton.click();
+  check(input.value === '', 'clear button did not empty the field');
+  check(clearButton.hidden, 'clear button stayed visible on an empty field');
 
   // Escape closes the list, a second Escape clears the input.
   type(input, 'dun');

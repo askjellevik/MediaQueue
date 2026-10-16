@@ -138,7 +138,8 @@ async fn quiet_event_stream(server: &MockServer, url_path: &str) {
 fn result(title: &str, id: u32, state: &str) -> serde_json::Value {
     json!({
         "tmdb_id": id, "type": "movie", "title": title, "year": 2021,
-        "poster": null, "overview": "Spice.", "state": state
+        "poster": null, "overview": "Spice.",
+        "states": { "plain": state, "pro": "none" }
     })
 }
 
@@ -349,7 +350,7 @@ async fn admin_queue_archive_and_members_work_end_to_end() {
     let dune = json!({
         "id": 1, "tmdb_id": 438631, "type": "movie", "title": "Dune", "year": 2021,
         "poster": null, "imdb_id": "tt1160419", "dmm_url": "https://dmm.example/movie/tt1160419",
-        "note": "the 2021 one", "status": "pending", "requester": "Alice", "times_requested": 2,
+        "note": "the 2021 one", "status": "pending", "requester": "Alice", "times_requested": 2, "infuse_pro": false,
         "created_at": 1700000000, "status_changed_at": 1700000000
     });
     quiet_event_stream(&server, "/api/admin/events").await;

@@ -22,6 +22,7 @@ import {
   imdbUrl,
   posterLarge,
   posterSmall,
+  proBadge,
   spinner,
   tmdbUrl,
   toast,
@@ -36,6 +37,18 @@ const NOTE_MAX = 200;
 
 // Which search-result state each request status shows as.
 const STATE_OF_STATUS = { pending: 'requested', added: 'added', already_had: 'have', refused: 'unavailable' };
+
+// A title has one request per Infuse PRO answer; `item.states` holds the
+// state of each ('none' when that variant is not requested).
+const variantKey = (pro) => (pro ? 'pro' : 'plain');
+const listedAll = (item) => item.states.plain !== 'none' && item.states.pro !== 'none';
+const listedStates = (item) =>
+  [false, true]
+    .filter((pro) => item.states[variantKey(pro)] !== 'none')
+    .map((pro) => {
+      const s = item.states[variantKey(pro)];
+      return chip(s, `${STATE_LABEL[s] || s}${pro ? ` · ${t.proBadge}` : ''}`);
+    });
 
 // Stops the live updates of the signed-in page when it goes away.
 let stopLive = null;
@@ -167,6 +180,13 @@ function renderApp(me) {
     maxlength: 80,
     placeholder: t.searchPlaceholder,
   });
+  const clearButton = el('button', {
+    class: 'search-clear',
+    type: 'button',
+    'aria-label': t.clearSearch,
+    text: '×',
+    hidden: true,
+  });
   const list = el('ul', { id: 'results', class: 'results', role: 'listbox', 'aria-label': t.searchResults, hidden: true });
   const status = el('p', { class: 'status', role: 'status', 'aria-live': 'polite' });
   const combo = el(
@@ -174,6 +194,7 @@ function renderApp(me) {
     { class: 'combo' },
     el('label', { class: 'sr-only', for: 'q', text: t.searchPlaceholder }),
     input,
+    clearButton,
     list,
   );
 
@@ -226,7 +247,8 @@ function renderApp(me) {
       return;
     }
     results.forEach((item, i) => {
-      const disabled = item.state !== 'none';
+      const disabled = listedAll(item);
+      const listed = listedStates(item);
       const meta = el('span', { class: 'opt-meta' }, item.year ? String(item.year) : null, badge(item.type));
       const option = el(
         'li',
@@ -239,7 +261,7 @@ function renderApp(me) {
         },
         posterSmall(item.poster),
         el('span', { class: 'opt-text' }, el('span', { class: 'opt-title', text: item.title }), meta),
-        disabled ? chip(item.state, STATE_LABEL[item.state] || item.state) : null,
+        listed.length > 0 ? el('span', { class: 'opt-chips' }, ...listed) : null,
       );
       // mousedown, not click: keeps focus in the input on desktop.
       option.addEventListener('mousedown', (event) => event.preventDefault());
@@ -327,6 +349,18 @@ function renderApp(me) {
     debounceTimer = setTimeout(() => runSearch(q), DEBOUNCE_MS);
   });
 
+  const clearInput = () => {
+    input.value = '';
+    input.dispatchEvent(new Event('input'));
+    input.focus();
+  };
+  // mousedown would blur the input before the click lands.
+  clearButton.addEventListener('mousedown', (event) => event.preventDefault());
+  clearButton.addEventListener('click', clearInput);
+  input.addEventListener('input', () => {
+    clearButton.hidden = input.value.length === 0;
+  });
+
   input.addEventListener('keydown', (event) => {
     const count = state.results.length;
     const open = !list.hidden && count > 0;
@@ -364,8 +398,7 @@ function renderApp(me) {
           closeList();
         } else if (input.value) {
           event.preventDefault();
-          input.value = '';
-          input.dispatchEvent(new Event('input'));
+          clearInput();
         }
         break;
       case 'Tab':
@@ -389,15 +422,17 @@ function renderApp(me) {
     class: 'sheet',
     'aria-labelledby': 'sheet-title',
   });
+  // Leave the search field when the sheet closes (the browser has just
+  // given it focus back), so the phone keyboard stays down.
   sheet.addEventListener('close', () => {
-    input.focus();
+    input.blur();
   });
 
   const choose = (index) => {
     const item = state.results[index];
     if (!item) return;
-    if (item.state !== 'none') {
-      setStatus(t.alreadyListed(item.title, STATE_LABEL[item.state] || item.state));
+    if (listedAll(item)) {
+      setStatus(t.alreadyListed(item.title));
       return;
     }
     closeList();
@@ -418,6 +453,8 @@ function renderApp(me) {
     note.addEventListener('input', () => {
       counter.textContent = `${note.value.length} / ${NOTE_MAX}`;
     });
+    const infuse = el('input', { id: 'infuse', type: 'checkbox', role: 'switch' });
+    const infuseSwitch = el('label', { class: 'infuse-switch', for: 'infuse' }, infuse, t.infusePro);
     const message = el('p', { class: 'status', role: 'status' });
     const cancel = el('button', { class: 'btn', type: 'button', text: t.cancel, onclick: () => sheet.close() });
     const add = el('button', { class: 'btn btn-primary', type: 'submit', autofocus: true }, t.order);
@@ -441,9 +478,20 @@ function renderApp(me) {
       el('label', { class: 'note-label', for: 'note', text: t.noteLabel }),
       note,
       counter,
+      infuseSwitch,
       message,
       el('div', { class: 'actions' }, cancel, add),
     );
+    // The answer picks which request this is; if that one is already on the
+    // list, ordering it again would only add a duplicate.
+    const syncVariant = () => {
+      const listed = item.states[variantKey(infuse.checked)];
+      add.disabled = listed !== 'none';
+      message.className = 'status';
+      message.textContent = listed !== 'none' ? t.listedAs(STATE_LABEL[listed] || listed) : '';
+    };
+    infuse.addEventListener('change', syncVariant);
+    syncVariant();
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       add.disabled = true;
@@ -451,13 +499,13 @@ function renderApp(me) {
       add.replaceChildren(spinner(), t.ordering);
       message.className = 'status';
       message.textContent = '';
-      const res = await api.submit(item.tmdb_id, item.type, note.value.trim());
+      const res = await api.submit(item.tmdb_id, item.type, note.value.trim(), infuse.checked);
       cancel.disabled = false;
       add.replaceChildren(t.order);
       if (res.status === 201 || res.status === 200) {
         state.remaining = res.data.remaining_today ?? null;
         updateRemaining();
-        markRequested(item);
+        markRequested(item, infuse.checked);
         sheet.close();
         setStatus(
           res.status === 201 ? t.ordered(item.title) : t.alreadyOrdered(item.title),
@@ -497,10 +545,10 @@ function renderApp(me) {
   };
 
   // Results already shown (and memoised) learn the new state at once.
-  const markRequested = (item) => {
+  const markRequested = (item, pro) => {
     for (const results of [state.results, ...state.memo.values()]) {
       for (const r of results) {
-        if (r.tmdb_id === item.tmdb_id && r.type === item.type) r.state = 'requested';
+        if (r.tmdb_id === item.tmdb_id && r.type === item.type) r.states[variantKey(pro)] = 'requested';
       }
     }
   };
@@ -571,7 +619,7 @@ function renderApp(me) {
         toast(t.withdrawn(r.title));
         for (const results of [state.results, ...state.memo.values()]) {
           for (const item of results) {
-            if (item.tmdb_id === r.tmdb_id && item.type === r.type) item.state = 'none';
+            if (item.tmdb_id === r.tmdb_id && item.type === r.type) item.states[variantKey(r.infuse_pro)] = 'none';
           }
         }
         if (!list.hidden) {
@@ -607,7 +655,7 @@ function renderApp(me) {
         'div',
         { class: 'opt-text' },
         el('p', { class: 'opt-title' }, extLink(href, t.onSite(r.title, site), r.title)),
-        el('p', { class: 'opt-meta' }, r.year ? String(r.year) : null, badge(r.type), t.orderedOn(formatDate(r.created_at))),
+        el('p', { class: 'opt-meta' }, r.year ? String(r.year) : null, badge(r.type), r.infuse_pro ? proBadge(t.proBadge) : null, t.orderedOn(formatDate(r.created_at))),
       ),
       side,
     );
@@ -673,8 +721,9 @@ function renderApp(me) {
     let changed = false;
     for (const results of [state.results, ...state.memo.values()]) {
       for (const item of results) {
-        if (item.tmdb_id === r.tmdb_id && item.type === r.type && item.state !== next) {
-          item.state = next;
+        const key = variantKey(r.infuse_pro);
+        if (item.tmdb_id === r.tmdb_id && item.type === r.type && item.states[key] !== next) {
+          item.states[key] = next;
           changed = true;
         }
       }

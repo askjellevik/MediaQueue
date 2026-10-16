@@ -38,6 +38,7 @@ pub struct NewRequestInfo<'a> {
     pub is_movie: bool,
     pub requester: &'a str,
     pub note: Option<&'a str>,
+    pub infuse_pro: bool,
 }
 
 impl Message {
@@ -49,7 +50,11 @@ impl Message {
             None => format!("Ny bestilling: {}", info.title),
         };
         let kind = if info.is_movie { "Film" } else { "Serie" };
-        let mut lines = vec![format!("{kind}, bestilt av {}", info.requester)];
+        let pro = if info.infuse_pro { "med" } else { "uten" };
+        let mut lines = vec![format!(
+            "{kind}, bestilt av {} ({pro} Infuse PRO)",
+            info.requester
+        )];
         if let Some(note) = info.note {
             lines.push(format!("Merknad: {note}"));
         }
@@ -197,10 +202,14 @@ mod tests {
             is_movie: true,
             requester: "Alice",
             note: Some("the 2021 one"),
+            infuse_pro: true,
         };
         let m = Message::new_request(&info, "https://requests.example.com");
         assert_eq!(m.title, "Ny bestilling: Dune (2021)");
-        assert_eq!(m.message, "Film, bestilt av Alice\nMerknad: the 2021 one");
+        assert_eq!(
+            m.message,
+            "Film, bestilt av Alice (med Infuse PRO)\nMerknad: the 2021 one"
+        );
         assert_eq!(m.tags, ["movie_camera"]);
         assert_eq!(
             m.click.as_deref(),
@@ -213,10 +222,11 @@ mod tests {
             is_movie: false,
             requester: "Bob",
             note: None,
+            infuse_pro: false,
         };
         let m = Message::new_request(&series, "https://r.example");
         assert_eq!(m.title, "Ny bestilling: Severance");
-        assert_eq!(m.message, "Serie, bestilt av Bob");
+        assert_eq!(m.message, "Serie, bestilt av Bob (uten Infuse PRO)");
         assert_eq!(m.tags, ["tv"]);
     }
 

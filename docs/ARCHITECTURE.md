@@ -14,11 +14,11 @@ Defined in `migrations/`; times are unix seconds in UTC.
 | --- | --- |
 | `members` | One row per person: unique name, `code_hash` (HMAC of the access code), optional `daily_limit` (`NULL` means no limit), and `rotated_at`, `revoked_at`, `last_seen_at`. (An unused `max_sessions` column remains from the first schema.) |
 | `sessions` | Logged-in devices. `token_hash` is the SHA-256 of the cookie token. `kind` is `user` (with a `member_id`) or `admin`. |
-| `requests` | One row per title (`UNIQUE (tmdb_id, media_type)`). `status` is `pending`, `added`, `already_had` or `refused`. Also the IMDb ID, title, year, poster path, an optional note of up to 200 characters, and who asked first (`requested_by`, which becomes `NULL` when that member is deleted; `requested_by_name` then keeps their name as text). |
+| `requests` | One row per title and Infuse PRO answer (`UNIQUE (tmdb_id, media_type, infuse_pro)`), so members with and without Infuse PRO get separate requests and the admin can pick a fitting release for each. `status` is `pending`, `added`, `already_had` or `refused`. Also the IMDb ID, title, year, poster path, an optional note of up to 200 characters, and who asked first (`requested_by`, which becomes `NULL` when that member is deleted; `requested_by_name` then keeps their name as text). |
 | `request_events` | History: `submitted`, `duplicate` and `status` events with the actor's name. Events are only ever added, and removed together with their request when the admin deletes it (or a member withdraws it). It is the audit trail, the CSV export source and the source of the request quotas, so deleting a request also frees that day's quota for the people who asked for it. |
 
-A second person asking for a title that already exists adds a `duplicate`
-event instead of a row. The UI is in Norwegian (bokmål), with every string in
+A second person asking for a title that already exists with the same Infuse
+PRO answer adds a `duplicate` event instead of a row. The UI is in Norwegian (bokmål), with every string in
 `web/js/strings.js`. Status labels are "Venter", "Lagt til", "Har fra før" and
 "Avvist"; the stored values stay as listed above. The CSV export and the
 log lines stay in English.
@@ -34,8 +34,8 @@ failed). Every `/api` response has `Cache-Control: no-store`.
 | --- | --- | --- |
 | `POST /auth/code`, `POST /auth/logout` | anyone, member | Log in with an access code; log out. |
 | `GET /me` | member | Name and, if the member has a daily limit, `remaining_today`. |
-| `GET /search?q=` | member | TMDB search, annotated with request state. |
-| `POST /requests`, `GET /requests/mine`, `DELETE /requests/{id}` | member | Request a title; list one's own requests (cursor paging, `status=pending\|earlier`); withdraw one's own request while it is pending and nobody else asked for it (the row and its events are deleted, which also frees the daily-limit slot). |
+| `GET /search?q=` | member | TMDB search; each result carries `states.plain` and `states.pro`, the request state of each Infuse PRO variant (`none` if not requested). |
+| `POST /requests`, `GET /requests/mine`, `DELETE /requests/{id}` | member | Request a title (body: `tmdb_id`, `media_type`, optional `note`, optional `infuse_pro`, default false); list one's own requests (cursor paging, `status=pending\|earlier`); withdraw one's own request while it is pending and nobody else asked for it (the row and its events are deleted, which also frees the daily-limit slot). |
 | `GET /events` | member | Server-sent ticks when a request changes. |
 | `POST /admin/login`, `POST /admin/logout` | anyone, admin | Admin session. |
 | `GET /admin/requests`, `PATCH` and `DELETE /admin/requests/{id}`, `GET /admin/requests/{id}/events` | admin | Queue with filter and paging; change a status; delete a request with its history; a request's history. |

@@ -174,7 +174,15 @@ struct SearchResult {
     year: Option<i32>,
     poster: Option<String>,
     overview: String,
-    state: &'static str,
+    states: VariantStates,
+}
+
+/// How a title stands for each Infuse PRO answer; `"none"` if that variant
+/// has not been requested.
+#[derive(Serialize)]
+struct VariantStates {
+    plain: &'static str,
+    pro: &'static str,
 }
 
 #[derive(Serialize)]
@@ -213,10 +221,12 @@ pub async fn get_search(
 
     let ids: Vec<u32> = items.iter().map(|i| i.tmdb_id).collect();
     let rows = db::request_states(&state.pool, &ids).await?;
-    let state_of = |item: &SearchItem| {
+    let state_of = |item: &SearchItem, infuse_pro: bool| {
         rows.iter()
             .find(|r| {
-                r.tmdb_id == i64::from(item.tmdb_id) && r.media_type == item.media_type.as_str()
+                r.tmdb_id == i64::from(item.tmdb_id)
+                    && r.media_type == item.media_type.as_str()
+                    && r.infuse_pro == infuse_pro
             })
             .map(|r| state_for_status(&r.status))
             .unwrap_or("none")
@@ -231,7 +241,10 @@ pub async fn get_search(
             year: item.year,
             poster: item.poster_path.clone(),
             overview: item.overview.clone(),
-            state: state_of(item),
+            states: VariantStates {
+                plain: state_of(item, false),
+                pro: state_of(item, true),
+            },
         })
         .collect();
     Ok(axum::Json(SearchBody { results }))
@@ -308,6 +321,10 @@ pub struct CreateRequestBody {
     media_type: MediaType,
     #[serde(default)]
     note: Option<String>,
+    /// Whether the requester has Infuse PRO. A title has one request per
+    /// answer, so PRO and non-PRO members each get a fitting release.
+    #[serde(default)]
+    infuse_pro: bool,
 }
 
 /// Strips control characters and surrounding whitespace; an empty note is
@@ -336,6 +353,7 @@ struct RequestView {
     poster: Option<String>,
     status: String,
     created_at: i64,
+    infuse_pro: bool,
 }
 
 impl From<db::RequestRow> for RequestView {
@@ -350,6 +368,7 @@ impl From<db::RequestRow> for RequestView {
             poster: row.poster_path,
             status: row.status,
             created_at: row.created_at,
+            infuse_pro: row.infuse_pro,
         }
     }
 }
@@ -400,6 +419,7 @@ pub async fn post_request(
         year: detail.year.map(i64::from),
         poster_path: detail.poster_path.as_deref(),
         note: note.as_deref(),
+        infuse_pro: body.infuse_pro,
         member_id: user.member_id,
         member_name: &user.member_name,
         now: quota.now,
@@ -443,6 +463,7 @@ pub async fn post_request(
             is_movie: body.media_type == MediaType::Movie,
             requester: &user.member_name,
             note: note.as_deref(),
+            infuse_pro: row.infuse_pro,
         };
         state
             .notifier
@@ -545,6 +566,7 @@ pub async fn get_requests_mine(
                     poster_path: r.poster_path,
                     status: r.status,
                     created_at: r.created_at,
+                    infuse_pro: r.infuse_pro,
                 }),
             })
             .collect(),

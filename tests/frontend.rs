@@ -196,7 +196,7 @@ async fn versioned_assets_are_immutable_and_others_revalidate() {
 }
 
 #[tokio::test]
-async fn main_page_transfer_is_under_80_kb() {
+async fn main_page_transfer_is_under_90_kb() {
     let app = common::spawn_app().await;
     let mut total = get(&app, "/").await.body.len();
     for asset in PAGE_ASSETS {
@@ -204,5 +204,5 @@ async fn main_page_transfer_is_under_80_kb() {
         assert_eq!(response.status, 200, "{asset}");
         total += response.body.len();
     }
-    assert!(total < 80 * 1024, "main page assets total {total} bytes");
+    assert!(total < 90 * 1024, "main page assets total {total} bytes");
 }

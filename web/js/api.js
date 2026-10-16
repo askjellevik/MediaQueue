@@ -35,9 +35,14 @@ export const api = {
   login: (code) => call('POST', '/api/auth/code', { body: { code } }),
   logout: () => call('POST', '/api/auth/logout', { body: {} }),
   search: (q, signal) => call('GET', `/api/search?q=${encodeURIComponent(q)}`, { signal }),
-  submit: (tmdbId, mediaType, note) =>
+  submit: (tmdbId, mediaType, note, infusePro) =>
     call('POST', '/api/requests', {
-      body: note ? { tmdb_id: tmdbId, media_type: mediaType, note } : { tmdb_id: tmdbId, media_type: mediaType },
+      body: {
+        tmdb_id: tmdbId,
+        media_type: mediaType,
+        infuse_pro: infusePro,
+        ...(note ? { note } : {}),
+      },
     }),
   cancel: (id) => call('DELETE', `/api/requests/${id}`, { body: {} }),
   // `status` is 'pending' or 'earlier' (everything no longer pending).
