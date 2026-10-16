@@ -8,6 +8,8 @@ import { t } from './strings.js';
 import {
   STATE_LABEL,
   STATUS_LABEL,
+  appBar,
+  appIcon,
   badge,
   chip,
   clear,
@@ -85,6 +87,7 @@ function renderGate() {
   const form = el(
     'form',
     { class: 'gate-form', novalidate: true },
+    appIcon('mx-auto size-14 rounded-2xl shadow-md ring-1 ring-black/10'),
     el('h1', { text: APP_NAME }),
     el('label', { class: 'sr-only', for: 'code', text: t.accessCode }),
     input,
@@ -146,17 +149,12 @@ function renderApp(me) {
     remainingText.textContent = typeof n === 'number' ? t.requestsLeft(n) : '';
   };
   updateRemaining();
-  const header = el(
-    'header',
-    { class: 'top' },
-    el('h1', { text: APP_NAME }),
-    el('p', { class: 'muted text-sm' }, t.hi(me.name), remainingText),
-  );
+  const greeting = el('p', { class: 'appbar-meta' }, t.hi(me.name), remainingText);
 
   // ----- Search combobox -----
   const input = el('input', {
     id: 'q',
-    class: 'field',
+    class: 'field search-field',
     type: 'text',
     role: 'combobox',
     'aria-autocomplete': 'list',
@@ -526,7 +524,7 @@ function renderApp(me) {
     group.section = el(
       'div',
       { class: 'mine-group' },
-      el('h3', { class: 'mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400', text: title }),
+      el('h3', { class: 'group-title', text: title }),
       group.empty,
       group.list,
       group.more,
@@ -751,7 +749,7 @@ function renderApp(me) {
   const mine = el(
     'section',
     { class: 'mine', 'aria-labelledby': 'mine-title' },
-    el('h2', { id: 'mine-title', class: 'mb-3 text-lg font-semibold', text: t.myRequests }),
+    el('h2', { id: 'mine-title', class: 'section-title', text: t.myRequests }),
     pendingGroup.section,
     earlierGroup.section,
     mineStatus,
@@ -764,10 +762,10 @@ function renderApp(me) {
 
   clear(root);
   root.append(
+    appBar(APP_NAME, greeting),
     el(
       'div',
       { class: 'page' },
-      header,
       el('main', {}, el('section', { class: 'search', 'aria-label': t.searchLabel }, combo, status), mine),
       footer(logout),
       sheet,

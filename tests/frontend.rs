@@ -8,9 +8,10 @@ mod common;
 use common::TestApp;
 use mediaqueue::routes::static_files::asset_version;
 
-const PAGE_ASSETS: [&str; 8] = [
+const PAGE_ASSETS: [&str; 9] = [
     "css/app.css",
     "js/theme.js",
+    "js/strings.js",
     "js/search.js",
     "js/api.js",
     "js/live.js",
@@ -44,6 +45,8 @@ async fn admin_page_carries_no_data_and_no_inline_code() {
     assert_eq!(page.header("cache-control"), Some("no-cache"));
     let html = page.body.to_ascii_lowercase();
     assert!(html.contains(&versioned("js/admin.js")));
+    assert!(html.contains(&versioned("css/app.css")));
+    assert!(html.contains(&versioned("css/admin.css")));
     for marker in ["<table", "<input", "<form", "tt0", "<style", " style="] {
         assert!(!html.contains(marker), "admin.html contains {marker:?}");
     }
@@ -104,6 +107,8 @@ async fn scripts_never_write_html() {
         "js/api.js",
         "js/live.js",
         "js/ui.js",
+        "js/strings.js",
+        "js/strings-admin.js",
         "js/admin.js",
     ] {
         let js = get(&app, &versioned(asset)).await.body;
@@ -130,6 +135,8 @@ async fn module_imports_resolve() {
         "js/api.js",
         "js/live.js",
         "js/ui.js",
+        "js/strings.js",
+        "js/strings-admin.js",
         "js/admin.js",
     ] {
         let js = get(&app, &versioned(asset)).await.body;
@@ -151,6 +158,7 @@ async fn versioned_assets_are_immutable_and_others_revalidate() {
     for (asset, content_type) in [
         ("js/search.js", "javascript"),
         ("css/app.css", "text/css"),
+        ("css/admin.css", "text/css"),
         ("img/tmdb.svg", "image/svg+xml"),
     ] {
         let fresh = get(&app, &versioned(asset)).await;

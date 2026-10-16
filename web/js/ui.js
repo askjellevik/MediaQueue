@@ -24,6 +24,25 @@ export function clear(node) {
 
 // Resolved against this module's own (versioned) URL.
 const LOGO_URL = new URL('../img/tmdb.svg', import.meta.url).href;
+const ICON_URL = new URL('../img/icon.svg', import.meta.url).href;
+
+// The app icon, for the gate card and the app bar.
+export const appIcon = (cls = '') => el('img', { class: cls, src: ICON_URL, alt: '', width: 32, height: 32 });
+
+// The bar across the top of the signed-in pages: icon and name on the left,
+// whatever `right` holds on the right. `wide` matches the admin page width.
+export function appBar(name, right = null, wide = false) {
+  return el(
+    'header',
+    { class: 'appbar' },
+    el(
+      'div',
+      { class: `appbar-inner ${wide ? 'max-w-6xl' : ''}`.trim() },
+      el('h1', { class: 'brand' }, appIcon(), name),
+      right,
+    ),
+  );
+}
 
 const POSTER_BASE = 'https://image.tmdb.org/t/p/';
 
@@ -72,33 +91,13 @@ export const STATE_LABEL = t.state;
 
 export const STATUS_LABEL = t.status;
 
-// Whole class strings, so the Tailwind build can see them.
-const CHIP_AMBER = 'bg-amber-50 text-amber-800 ring-amber-600/20 dark:bg-amber-400/10 dark:text-amber-300 dark:ring-amber-400/30';
-const CHIP_GREEN = 'bg-green-50 text-green-800 ring-green-600/20 dark:bg-green-400/10 dark:text-green-300 dark:ring-green-400/30';
-const CHIP_RED = 'bg-red-50 text-red-800 ring-red-600/20 dark:bg-red-400/10 dark:text-red-300 dark:ring-red-400/30';
-const CHIP_STYLE = {
-  requested: CHIP_AMBER,
-  pending: CHIP_AMBER,
-  added: CHIP_GREEN,
-  have: CHIP_GREEN,
-  already_had: CHIP_GREEN,
-  unavailable: CHIP_RED,
-  refused: CHIP_RED,
-};
-
+// The colours of chip-<key> and the badge are in styles/base.css.
 export function chip(key, label) {
-  const style = CHIP_STYLE[key] || 'bg-zinc-100 text-zinc-700 ring-zinc-500/20 dark:bg-zinc-800 dark:text-zinc-300 dark:ring-zinc-600';
-  return el('span', {
-    class: `chip chip-${key} inline-block whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${style}`,
-    text: label,
-  });
+  return el('span', { class: `chip chip-${key}`, text: label });
 }
 
 export function badge(type) {
-  return el('span', {
-    class: 'badge inline-block whitespace-nowrap rounded border border-zinc-300 px-1.5 text-[0.7rem] font-medium uppercase tracking-wide dark:border-zinc-700',
-    text: TYPE_LABEL[type] || type,
-  });
+  return el('span', { class: 'badge', text: TYPE_LABEL[type] || type });
 }
 
 // "45 s", "14:59" or "3 t 12 min".

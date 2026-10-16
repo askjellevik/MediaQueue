@@ -1,7 +1,9 @@
-/* Tailwind entry point. `scripts/build-css.sh` compiles this into
-   web/css/app.css, which is committed so a normal build needs no Tailwind.
-   The component rules in base.css go in a layer below the utilities, so a
-   Tailwind class on an element always wins over them. */
+/* Tailwind entry point for both pages: the shared and member-page styles.
+   `scripts/build-css.sh` compiles this into web/css/app.css, which is
+   committed so a normal build needs no Tailwind. The component rules in
+   base.css go in a layer below the utilities, so a Tailwind class on an
+   element always wins over them. The admin-only styles are built separately
+   from admin.css, so members never download them. */
 @layer theme, base, components, utilities;
 
 @import "tailwindcss/theme.css" layer(theme);
@@ -10,9 +12,10 @@
 @import "tailwindcss/utilities.css" layer(utilities);
 
 @source "../web/index.html";
-@source "../web/admin.html";
 @source "../web/js";
+@source not "../web/js/admin.js";
+@source not "../web/js/strings-admin.js";
 
-/* Dark mode follows the data-theme attribute on <html>, which js/theme.js
-   sets from the saved choice or the system setting. */
-@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+/* Dark mode follows the "dark" class on <html>, which js/theme.js sets from
+   the saved choice or the system setting. */
+@custom-variant dark (&:where(.dark *));
