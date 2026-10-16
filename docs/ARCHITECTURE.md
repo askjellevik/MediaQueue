@@ -14,7 +14,7 @@ Defined in `migrations/`; times are unix seconds in UTC.
 | --- | --- |
 | `members` | One row per person: unique name, `code_hash` (HMAC of the access code), optional `daily_limit` (`NULL` means no limit), and `rotated_at`, `revoked_at`, `last_seen_at`. (An unused `max_sessions` column remains from the first schema.) |
 | `sessions` | Logged-in devices. `token_hash` is the SHA-256 of the cookie token. `kind` is `user` (with a `member_id`) or `admin`. |
-| `requests` | One row per title (`UNIQUE (tmdb_id, media_type)`). `status` is `pending`, `added`, `already_had` or `refused`. Also the IMDb ID, title, year, poster path, an optional note of up to 200 characters, and who asked first. |
+| `requests` | One row per title (`UNIQUE (tmdb_id, media_type)`). `status` is `pending`, `added`, `already_had` or `refused`. Also the IMDb ID, title, year, poster path, an optional note of up to 200 characters, and who asked first (`requested_by`, which becomes `NULL` when that member is deleted; `requested_by_name` then keeps their name as text). |
 | `request_events` | Append-only history: `submitted`, `duplicate` and `status` events with the actor's name. It is the audit trail, the CSV export source and the source of the request quotas. |
 
 A second person asking for a title that already exists adds a `duplicate`
@@ -38,7 +38,7 @@ failed). Every `/api` response has `Cache-Control: no-store`.
 | `POST /admin/login`, `POST /admin/logout` | anyone, admin | Admin session. |
 | `GET /admin/requests`, `PATCH /admin/requests/{id}`, `GET /admin/requests/{id}/events` | admin | Queue with filter and paging; change a status; a request's history. |
 | `GET /admin/counts`, `GET /admin/events`, `GET /admin/export.csv` | admin | Per-status counts; live ticks; CSV of everything. |
-| `GET/POST /admin/members`, `PATCH` and `DELETE /admin/members/{id}` (delete only for a revoked member with no requests), `POST /admin/members/{id}/rotate`, `POST /admin/members/{id}/revoke`, `DELETE /admin/sessions/{id}` | admin | Manage members and devices. |
+| `GET/POST /admin/members`, `PATCH` and `DELETE /admin/members/{id}` (delete only for a revoked member; their requests stay under their name and their events are relabelled `<name> (deleted)`), `POST /admin/members/{id}/rotate`, `POST /admin/members/{id}/revoke`, `POST /admin/members/{id}/restore` (undo a revoke), `DELETE /admin/sessions/{id}` | admin | Manage members and devices. |
 | `GET /healthz` | anyone | Database check, for the container healthcheck. |
 
 Anything else is served from the embedded `web/` directory.

@@ -715,22 +715,36 @@ function renderMembers(panel, { say, expired }) {
         toast("Couldn't rotate the code.", { kind: 'bad' });
       }
     });
-    const revoke = el('button', { class: 'btn btn-small', type: 'button', text: 'Revoke', disabled: revoked });
+    const revoke = el('button', { class: 'btn btn-small', type: 'button', text: revoked ? 'Restore' : 'Revoke' });
     revoke.addEventListener('click', async () => {
-      if (!window.confirm(`Revoke ${m.name}? Their code and devices stop working for good.`)) return;
-      const res = await send('POST', `/api/admin/members/${m.id}/revoke`);
+      if (
+        !revoked &&
+        !window.confirm(`Revoke ${m.name}? Their code and devices stop working until you restore them.`)
+      ) {
+        return;
+      }
+      const res = await send('POST', `/api/admin/members/${m.id}/${revoked ? 'restore' : 'revoke'}`);
       if (expired(res)) return;
-      toast(res.ok ? `${m.name} is revoked.` : "Couldn't revoke.", { kind: res.ok ? 'ok' : 'bad' });
+      const done = revoked ? 'restored' : 'revoked';
+      toast(res.ok ? `${m.name} is ${done}.` : `Couldn't ${revoked ? 'restore' : 'revoke'}.`, {
+        kind: res.ok ? 'ok' : 'bad',
+      });
       load();
     });
-    // Only a revoked member with no requests can go; the server decides.
+    // Only a revoked member can go; their requests stay under their name.
     const remove = el('button', { class: 'btn btn-small', type: 'button', text: 'Delete' });
     remove.addEventListener('click', async () => {
-      if (!window.confirm(`Delete ${m.name} for good?`)) return;
+      if (
+        !window.confirm(
+          `Delete ${m.name} for good? Their code stops working for good and this can't be undone. Their requests stay in the queue under their name.`,
+        )
+      ) {
+        return;
+      }
       const res = await send('DELETE', `/api/admin/members/${m.id}`);
       if (expired(res)) return;
       toast(
-        res.ok ? `${m.name} is deleted.` : res.status === 409 ? `${m.name} has requests, so they are kept.` : "Couldn't delete.",
+        res.ok ? `${m.name} is deleted.` : res.status === 409 ? `Revoke ${m.name} first.` : "Couldn't delete.",
         { kind: res.ok ? 'ok' : 'bad' },
       );
       load();
@@ -750,7 +764,7 @@ function renderMembers(panel, { say, expired }) {
       el('td', {}, devicesCell(m, deviceList)),
       el('td', { text: String(m.request_count) }),
       limits,
-      el('td', {}, el('div', { class: 'row-actions' }, edit, rotate, revoke, revoked && m.request_count === 0 ? remove : null)),
+      el('td', {}, el('div', { class: 'row-actions' }, edit, rotate, revoke, revoked ? remove : null)),
     );
   };
 

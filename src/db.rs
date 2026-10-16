@@ -747,15 +747,16 @@ pub async fn admin_requests(
         AdminRequestRow,
         r#"SELECT r.id AS "id!", r.tmdb_id AS "tmdb_id!", r.media_type AS "media_type!",
                   r.imdb_id, r.title AS "title!", r.year, r.poster_path, r.note,
-                  r.status AS "status!", m.name AS "requester!",
+                  r.status AS "status!", COALESCE(m.name, r.requested_by_name, '(deleted)') AS "requester!",
                   r.created_at AS "created_at!", r.status_changed_at AS "status_changed_at!",
                   (SELECT COUNT(*) FROM request_events e
                    WHERE e.request_id = r.id AND e.kind IN ('submitted', 'duplicate'))
                     AS "times_requested!: i64"
            FROM requests r
-           JOIN members m ON m.id = r.requested_by
+           LEFT JOIN members m ON m.id = r.requested_by
            WHERE (?1 IS NULL OR r.status = ?1)
-             AND (?2 IS NULL OR r.title LIKE ?2 ESCAPE '\' OR m.name LIKE ?2 ESCAPE '\'
+             AND (?2 IS NULL OR r.title LIKE ?2 ESCAPE '\'
+                  OR COALESCE(m.name, r.requested_by_name) LIKE ?2 ESCAPE '\'
                   OR r.imdb_id = ?3)
              AND (r.created_at < ?4 OR (r.created_at = ?4 AND r.id < ?5))
            ORDER BY r.created_at DESC, r.id DESC
@@ -935,13 +936,14 @@ pub fn export_csv(pool: &'static SqlitePool) -> axum::body::Body {
                     'status_changed_at' AS status_changed_at
              UNION ALL
              SELECT 1, r.id, CAST(r.id AS TEXT), CAST(r.tmdb_id AS TEXT), r.media_type, r.title,
-                    CAST(r.year AS TEXT), r.imdb_id, r.status, m.name, r.note,
+                    CAST(r.year AS TEXT), r.imdb_id, r.status,
+                    COALESCE(m.name, r.requested_by_name, '(deleted)'), r.note,
                     CAST((SELECT COUNT(*) FROM request_events e
                           WHERE e.request_id = r.id AND e.kind IN ('submitted', 'duplicate'))
                          AS TEXT),
                     strftime('%Y-%m-%dT%H:%M:%SZ', r.created_at, 'unixepoch'),
                     strftime('%Y-%m-%dT%H:%M:%SZ', r.status_changed_at, 'unixepoch')
-             FROM requests r JOIN members m ON m.id = r.requested_by
+             FROM requests r LEFT JOIN members m ON m.id = r.requested_by
            )
            ORDER BY sort_key, sort_id"#
     )
@@ -1002,13 +1004,22 @@ pub async fn list_devices(pool: &SqlitePool, now: i64) -> Result<Vec<DeviceRow>,
     .await
 }
 
-/// Whether another member already uses `name` (case-insensitively).
-/// Names double as event actors, so they are kept unique.
+/// Suffix given to a deleted member's name on the events they authored.
+/// `name_taken` refuses names with it, so a new member cannot collide
+/// with a deleted one and inherit its history.
+pub const DELETED_SUFFIX: &str = " (deleted)";
+
+/// Whether another member already uses `name` (case-insensitively), or the
+/// name is reserved for deleted members. Names double as event actors, so
+/// they are kept unique.
 async fn name_taken(
     executor: impl sqlx::SqliteExecutor<'_>,
     name: &str,
     except_id: i64,
 ) -> Result<bool, sqlx::Error> {
+    if name.to_lowercase().ends_with(DELETED_SUFFIX) {
+        return Ok(true);
+    }
     let found = sqlx::query_scalar!(
         r#"SELECT id AS "id!" FROM members WHERE lower(name) = lower(?) AND id != ? LIMIT 1"#,
         name,
@@ -1077,6 +1088,9 @@ pub async fn update_member(
     }
     let set_limit = update.daily_limit.is_some();
     let new_limit = update.daily_limit.flatten();
+    let old_name = sqlx::query_scalar!("SELECT name FROM members WHERE id = ?", member_id)
+        .fetch_optional(&mut *tx)
+        .await?;
     let result = sqlx::query!(
         "UPDATE members
          SET name = COALESCE(?, name),
@@ -1092,6 +1106,19 @@ pub async fn update_member(
     if result.rows_affected() == 0 {
         tx.rollback().await?;
         return Ok(MemberWrite::NotFound);
+    }
+    // Events carry the name as text, so a rename must follow them or the
+    // member's earlier duplicate requests would drop out of their list.
+    if let (Some(old), Some(new)) = (old_name, update.name)
+        && old != new
+    {
+        sqlx::query!(
+            "UPDATE request_events SET actor = ? WHERE actor = ?",
+            new,
+            old
+        )
+        .execute(&mut *tx)
+        .await?;
     }
     tx.commit().await?;
     Ok(MemberWrite::Done(member_id))
@@ -1161,17 +1188,32 @@ pub async fn revoke_member(
     Ok(MemberWrite::Done(member_id))
 }
 
+/// Lifts a revoke. The member's old code works again; their devices were
+/// deleted by the revoke, so they log in afresh.
+pub async fn restore_member(pool: &SqlitePool, member_id: i64) -> Result<MemberWrite, sqlx::Error> {
+    let result = sqlx::query!(
+        "UPDATE members SET revoked_at = NULL WHERE id = ?",
+        member_id
+    )
+    .execute(pool)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Ok(MemberWrite::NotFound);
+    }
+    Ok(MemberWrite::Done(member_id))
+}
+
 pub enum MemberDelete {
     Deleted,
     NotFound,
+    /// Only a revoked member can be deleted, so a stray click cannot
+    /// remove someone who is still active.
     NotRevoked,
-    /// The member has requests or event history under their name; deleting
-    /// them would orphan it, and a new member could inherit it by reusing
-    /// the name.
-    HasHistory,
 }
 
-/// Deletes a revoked member who never requested or duplicated anything.
+/// Deletes a revoked member. Their requests stay, carrying the name as
+/// text; their events are re-labelled `<name> (deleted)`; their sessions
+/// go with them. All in one transaction.
 pub async fn delete_member(pool: &SqlitePool, member_id: i64) -> Result<MemberDelete, sqlx::Error> {
     let mut tx = begin_immediate(pool).await?;
     let Some(member) = sqlx::query!(
@@ -1188,18 +1230,21 @@ pub async fn delete_member(pool: &SqlitePool, member_id: i64) -> Result<MemberDe
         tx.rollback().await?;
         return Ok(MemberDelete::NotRevoked);
     }
-    let history: i64 = sqlx::query_scalar!(
-        r#"SELECT (SELECT COUNT(*) FROM requests WHERE requested_by = ?1)
-                + (SELECT COUNT(*) FROM request_events WHERE actor = ?2) AS "n!: i64""#,
-        member_id,
+    sqlx::query!(
+        "UPDATE requests SET requested_by_name = ?, requested_by = NULL WHERE requested_by = ?",
+        member.name,
+        member_id
+    )
+    .execute(&mut *tx)
+    .await?;
+    let tombstone = format!("{}{DELETED_SUFFIX}", member.name);
+    sqlx::query!(
+        "UPDATE request_events SET actor = ? WHERE actor = ?",
+        tombstone,
         member.name
     )
-    .fetch_one(&mut *tx)
+    .execute(&mut *tx)
     .await?;
-    if history > 0 {
-        tx.rollback().await?;
-        return Ok(MemberDelete::HasHistory);
-    }
     sqlx::query!("DELETE FROM sessions WHERE member_id = ?", member_id)
         .execute(&mut *tx)
         .await?;
@@ -1247,6 +1292,84 @@ mod tests {
             .await
             .expect("members table should exist and be empty");
         assert_eq!(row.0, 0);
+    }
+
+    #[tokio::test]
+    async fn upgrading_from_the_first_schema_keeps_requests_and_events() {
+        let options = SqliteConnectOptions::new()
+            .filename(":memory:")
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("connect to in-memory sqlite");
+        // Stop after the first migration, add data, then apply the rest.
+        let full = sqlx::migrate!();
+        let first = sqlx::migrate::Migrator {
+            migrations: full
+                .migrations
+                .iter()
+                .filter(|m| m.version <= 1)
+                .cloned()
+                .collect::<Vec<_>>()
+                .into(),
+            ..sqlx::migrate::Migrator::DEFAULT
+        };
+        first.run(&pool).await.expect("first migration");
+        sqlx::query(
+            "INSERT INTO members (id, name, code_hash, created_at) VALUES (7, 'Ann', x'01', 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO requests (id, tmdb_id, media_type, title, requested_by, created_at, status_changed_at)
+             VALUES (3, 10, 'movie', 'Dune', 7, 5, 5)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO request_events (request_id, kind, actor, created_at) VALUES (3, 'submitted', 'Ann', 5)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        full.run(&pool).await.expect("upgrade");
+
+        let row: (i64, i64, Option<String>) =
+            sqlx::query_as("SELECT id, requested_by, requested_by_name FROM requests")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(row, (3, 7, None));
+        let events: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM request_events")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(events.0, 1);
+        let violations = sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert!(violations.is_empty());
+        // The unique key and the index survived the rebuild.
+        let dup = sqlx::query(
+            "INSERT INTO requests (tmdb_id, media_type, title, requested_by, created_at, status_changed_at)
+             VALUES (10, 'movie', 'Dune again', 7, 6, 6)",
+        )
+        .execute(&pool)
+        .await;
+        assert!(dup.is_err());
+        let index: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'requests_status_created'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(index.0, 1);
     }
 
     #[tokio::test]

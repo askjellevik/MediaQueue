@@ -103,7 +103,7 @@ async fn count(pool: &SqlitePool, sql: &'static str) -> i64 {
 async fn every_admin_route_is_401_anonymous_and_403_for_members() {
     let app = common::spawn_app().await;
     let user = login_new_member(&app, "Alice").await;
-    let routes: [(&str, &str, Option<&str>); 12] = [
+    let routes: [(&str, &str, Option<&str>); 14] = [
         ("POST", "/api/admin/logout", Some("{}")),
         ("GET", "/api/admin/requests", None),
         ("GET", "/api/admin/requests?status=all", None),
@@ -123,6 +123,8 @@ async fn every_admin_route_is_401_anonymous_and_403_for_members() {
         ),
         ("POST", "/api/admin/members/1/rotate", Some("{}")),
         ("POST", "/api/admin/members/1/revoke", Some("{}")),
+        ("POST", "/api/admin/members/1/restore", Some("{}")),
+        ("DELETE", "/api/admin/members/1", None),
         ("DELETE", "/api/admin/sessions/1", None),
     ];
     for (method, path, body) in routes {
@@ -996,41 +998,205 @@ async fn no_endpoint_returns_a_code_except_create_and_rotate() {
 }
 
 #[tokio::test]
-async fn only_a_revoked_member_without_history_can_be_deleted() {
+async fn revoke_can_be_undone() {
     let app = common::spawn_app().await;
     let admin = login_admin(&app).await;
-    let (idle, _) = create_member(&app.pool, &app.config, "Idle").await;
-    let (asked, _) = create_member(&app.pool, &app.config, "Asked").await;
+    let (id, code) = create_member(&app.pool, &app.config, "Alice").await;
+    let path = format!("/api/admin/members/{id}");
+
+    let revoke = call(
+        &app,
+        Some(&admin),
+        "POST",
+        &format!("{path}/revoke"),
+        Some("{}"),
+    )
+    .await;
+    assert_eq!(revoke.status, 200);
+    assert_eq!(login_with(&app, &code).await.status, 401);
+
+    let restore = call(
+        &app,
+        Some(&admin),
+        "POST",
+        &format!("{path}/restore"),
+        Some("{}"),
+    )
+    .await;
+    assert_eq!(restore.status, 200, "{}", restore.body);
+    assert_eq!(login_with(&app, &code).await.status, 200);
+    let members = json_of(&call(&app, Some(&admin), "GET", "/api/admin/members", None).await);
+    assert!(members["members"][0]["revoked_at"].is_null());
+
+    let missing = call(
+        &app,
+        Some(&admin),
+        "POST",
+        "/api/admin/members/999/restore",
+        Some("{}"),
+    )
+    .await;
+    assert_eq!(missing.status, 404);
+}
+
+#[tokio::test]
+async fn deleting_a_revoked_member_keeps_their_requests_under_their_name() {
+    let app = common::spawn_app().await;
+    let admin = login_admin(&app).await;
+    let (alice, alice_code) = create_member(&app.pool, &app.config, "Alice").await;
+    let (bob, bob_code) = create_member(&app.pool, &app.config, "Bob").await;
     let delete = |id: i64| format!("/api/admin/members/{id}");
 
-    // Active members are never deleted.
-    let resp = call(&app, Some(&admin), "DELETE", &delete(idle), None).await;
-    assert_eq!(resp.status, 409);
-
-    // A revoked member with a request is kept.
+    let dune = seed_request(&app.pool, (alice, "Alice"), 1, "Dune", "pending", 10).await;
+    // Alice also asked for something already queued: a duplicate event.
     sqlx::query(
-        "INSERT INTO requests (tmdb_id, media_type, title, requested_by, status, created_at,
-                               status_changed_at)
-         VALUES (1, 'movie', 'Dune', ?, 'pending', 0, 0)",
+        "INSERT INTO request_events (request_id, kind, actor, created_at)
+         VALUES (?, 'duplicate', 'Alice', 11)",
     )
-    .bind(asked)
+    .bind(dune)
     .execute(&app.pool)
     .await
     .unwrap();
-    for id in [idle, asked] {
-        let path = format!("/api/admin/members/{id}/revoke");
-        assert_eq!(
-            call(&app, Some(&admin), "POST", &path, Some("{}"))
-                .await
-                .status,
-            200
-        );
-    }
-    let resp = call(&app, Some(&admin), "DELETE", &delete(asked), None).await;
-    assert_eq!(resp.status, 409);
+    seed_request(&app.pool, (bob, "Bob"), 2, "Arrival", "pending", 12).await;
 
-    let resp = call(&app, Some(&admin), "DELETE", &delete(idle), None).await;
+    // An active member is never deleted, and revoking comes first.
+    let resp = call(&app, Some(&admin), "DELETE", &delete(alice), None).await;
+    assert_eq!(resp.status, 409);
+    assert_eq!(count(&app.pool, "SELECT COUNT(*) FROM members").await, 2);
+
+    let path = format!("{}/revoke", delete(alice));
+    assert_eq!(
+        call(&app, Some(&admin), "POST", &path, Some("{}"))
+            .await
+            .status,
+        200
+    );
+    let resp = call(&app, Some(&admin), "DELETE", &delete(alice), None).await;
     assert_eq!(resp.status, 200, "{}", resp.body);
-    let resp = call(&app, Some(&admin), "DELETE", &delete(idle), None).await;
+    let resp = call(&app, Some(&admin), "DELETE", &delete(alice), None).await;
     assert_eq!(resp.status, 404);
+
+    // Member gone, request kept with the name as text.
+    assert_eq!(count(&app.pool, "SELECT COUNT(*) FROM members").await, 1);
+    assert_eq!(count(&app.pool, "SELECT COUNT(*) FROM requests").await, 2);
+    let (by, name): (Option<i64>, Option<String>) =
+        sqlx::query_as("SELECT requested_by, requested_by_name FROM requests WHERE id = ?")
+            .bind(dune)
+            .fetch_one(&app.pool)
+            .await
+            .unwrap();
+    assert_eq!((by, name.as_deref()), (None, Some("Alice")));
+    let actors: Vec<String> =
+        sqlx::query_scalar("SELECT actor FROM request_events WHERE request_id = ? ORDER BY id")
+            .bind(dune)
+            .fetch_all(&app.pool)
+            .await
+            .unwrap();
+    assert_eq!(actors, ["Alice (deleted)", "Alice (deleted)"]);
+
+    // Admin views still show who asked.
+    let queue = json_of(&call(&app, Some(&admin), "GET", "/api/admin/requests", None).await);
+    assert!(
+        queue.to_string().contains("\"requester\":\"Alice\""),
+        "{queue}"
+    );
+    let found = call(
+        &app,
+        Some(&admin),
+        "GET",
+        "/api/admin/requests?q=alice",
+        None,
+    )
+    .await;
+    assert!(found.body.contains("Dune"), "{}", found.body);
+    let csv = call(&app, Some(&admin), "GET", "/api/admin/export.csv", None).await;
+    assert!(csv.body.contains("Alice"), "{}", csv.body);
+
+    // The old code fails like any wrong code; others are untouched.
+    let wrong = login_with(&app, "definitely-wrong").await;
+    let gone = login_with(&app, &alice_code).await;
+    assert_eq!((gone.status, &gone.body), (wrong.status, &wrong.body));
+    assert_eq!(login_with(&app, &bob_code).await.status, 200);
+
+    // A new Alice starts clean: no inherited requests or duplicates.
+    let new_alice = call(
+        &app,
+        Some(&admin),
+        "POST",
+        "/api/admin/members",
+        Some(r#"{"name":"Alice"}"#),
+    )
+    .await;
+    assert_eq!(new_alice.status, 201, "{}", new_alice.body);
+    let code = json_of(&new_alice)["code"].as_str().unwrap().to_string();
+    let login = login_with(&app, &code).await;
+    let cookie = cookie_pair(login.header("set-cookie").unwrap()).to_string();
+    let mine = app
+        .request("GET", "/api/requests/mine", &[("Cookie", &cookie)], None)
+        .await;
+    assert_eq!(
+        json_of(&mine)["items"].as_array().unwrap().len(),
+        0,
+        "{}",
+        mine.body
+    );
+}
+
+#[tokio::test]
+async fn names_ending_in_deleted_are_reserved() {
+    let app = common::spawn_app().await;
+    let admin = login_admin(&app).await;
+    let create = call(
+        &app,
+        Some(&admin),
+        "POST",
+        "/api/admin/members",
+        Some(r#"{"name":"Alice (Deleted)"}"#),
+    )
+    .await;
+    assert_eq!(create.status, 409, "{}", create.body);
+    let (id, _) = create_member(&app.pool, &app.config, "Bob").await;
+    let rename = call(
+        &app,
+        Some(&admin),
+        "PATCH",
+        &format!("/api/admin/members/{id}"),
+        Some(r#"{"name":"Bob (deleted)"}"#),
+    )
+    .await;
+    assert_eq!(rename.status, 409, "{}", rename.body);
+}
+
+#[tokio::test]
+async fn renaming_a_member_keeps_their_duplicate_requests() {
+    let app = common::spawn_app().await;
+    let admin = login_admin(&app).await;
+    let (asker, _) = create_member(&app.pool, &app.config, "Alice").await;
+    let (bob, _) = create_member(&app.pool, &app.config, "Bob").await;
+    let dune = seed_request(&app.pool, (bob, "Bob"), 1, "Dune", "pending", 10).await;
+    sqlx::query(
+        "INSERT INTO request_events (request_id, kind, actor, created_at)
+         VALUES (?, 'duplicate', 'Alice', 11)",
+    )
+    .bind(dune)
+    .execute(&app.pool)
+    .await
+    .unwrap();
+    let rename = call(
+        &app,
+        Some(&admin),
+        "PATCH",
+        &format!("/api/admin/members/{asker}"),
+        Some(r#"{"name":"Alicia"}"#),
+    )
+    .await;
+    assert_eq!(rename.status, 200, "{}", rename.body);
+    let actor: String = sqlx::query_scalar(
+        "SELECT actor FROM request_events WHERE request_id = ? AND kind = 'duplicate'",
+    )
+    .bind(dune)
+    .fetch_one(&app.pool)
+    .await
+    .unwrap();
+    assert_eq!(actor, "Alicia");
 }

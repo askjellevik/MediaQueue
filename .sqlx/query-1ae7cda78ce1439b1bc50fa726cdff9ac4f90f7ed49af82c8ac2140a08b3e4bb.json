@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT r.id AS \"id!\", r.tmdb_id AS \"tmdb_id!\", r.media_type AS \"media_type!\",\n                  r.imdb_id, r.title AS \"title!\", r.year, r.poster_path, r.note,\n                  r.status AS \"status!\", m.name AS \"requester!\",\n                  r.created_at AS \"created_at!\", r.status_changed_at AS \"status_changed_at!\",\n                  (SELECT COUNT(*) FROM request_events e\n                   WHERE e.request_id = r.id AND e.kind IN ('submitted', 'duplicate'))\n                    AS \"times_requested!: i64\"\n           FROM requests r\n           JOIN members m ON m.id = r.requested_by\n           WHERE (?1 IS NULL OR r.status = ?1)\n             AND (?2 IS NULL OR r.title LIKE ?2 ESCAPE '\\' OR m.name LIKE ?2 ESCAPE '\\'\n                  OR r.imdb_id = ?3)\n             AND (r.created_at < ?4 OR (r.created_at = ?4 AND r.id < ?5))\n           ORDER BY r.created_at DESC, r.id DESC\n           LIMIT ?6",
+  "query": "SELECT r.id AS \"id!\", r.tmdb_id AS \"tmdb_id!\", r.media_type AS \"media_type!\",\n                  r.imdb_id, r.title AS \"title!\", r.year, r.poster_path, r.note,\n                  r.status AS \"status!\", COALESCE(m.name, r.requested_by_name, '(deleted)') AS \"requester!\",\n                  r.created_at AS \"created_at!\", r.status_changed_at AS \"status_changed_at!\",\n                  (SELECT COUNT(*) FROM request_events e\n                   WHERE e.request_id = r.id AND e.kind IN ('submitted', 'duplicate'))\n                    AS \"times_requested!: i64\"\n           FROM requests r\n           LEFT JOIN members m ON m.id = r.requested_by\n           WHERE (?1 IS NULL OR r.status = ?1)\n             AND (?2 IS NULL OR r.title LIKE ?2 ESCAPE '\\'\n                  OR COALESCE(m.name, r.requested_by_name) LIKE ?2 ESCAPE '\\'\n                  OR r.imdb_id = ?3)\n             AND (r.created_at < ?4 OR (r.created_at = ?4 AND r.id < ?5))\n           ORDER BY r.created_at DESC, r.id DESC\n           LIMIT ?6",
   "describe": {
     "columns": [
       {
@@ -106,12 +106,7 @@
         "name": "requester!",
         "ordinal": 9,
         "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "members",
-            "name": "name"
-          }
-        }
+        "origin": "Expression"
       },
       {
         "name": "created_at!",
@@ -161,5 +156,5 @@
       false
     ]
   },
-  "hash": "3463458adb87d53022f0713fa9de4738450f793417608c86a4bf045404c82b90"
+  "hash": "1ae7cda78ce1439b1bc50fa726cdff9ac4f90f7ed49af82c8ac2140a08b3e4bb"
 }
