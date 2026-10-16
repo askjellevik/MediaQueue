@@ -86,6 +86,10 @@ fn api_router(state: AppState) -> Router<()> {
             post(routes::admin::post_revoke),
         )
         .route(
+            "/admin/members/{id}/restore",
+            post(routes::admin::post_restore),
+        )
+        .route(
             "/admin/sessions/{id}",
             delete(routes::admin::delete_session),
         )

@@ -622,7 +622,7 @@ pub async fn post_rotate(
     )))
 }
 
-/// `POST /api/admin/members/{id}/revoke`
+/// `POST /api/admin/members/{id}/revoke`: blocks the member until restored.
 pub async fn post_revoke(
     State(state): State<AppState>,
     _admin: RequireAdmin,
@@ -637,8 +637,24 @@ pub async fn post_revoke(
     }
 }
 
-/// `DELETE /api/admin/members/{id}`: removes a revoked member who has no
-/// requests or history.
+/// `POST /api/admin/members/{id}/restore`: lifts a revoke; the old code
+/// works again.
+pub async fn post_restore(
+    State(state): State<AppState>,
+    _admin: RequireAdmin,
+    AppPath(id): AppPath<i64>,
+) -> Result<impl IntoResponse, AppError> {
+    match db::restore_member(&state.pool, id).await? {
+        db::MemberWrite::Done(_) => {
+            tracing::info!(member_id = id, "member restored");
+            Ok(Json(json!({ "ok": true })))
+        }
+        _ => Err(AppError::NotFound),
+    }
+}
+
+/// `DELETE /api/admin/members/{id}`: removes a revoked member. Their
+/// requests stay in the queue under their name.
 pub async fn delete_member(
     State(state): State<AppState>,
     _admin: RequireAdmin,
@@ -646,14 +662,11 @@ pub async fn delete_member(
 ) -> Result<impl IntoResponse, AppError> {
     match db::delete_member(&state.pool, id).await? {
         db::MemberDelete::Deleted => {
-            tracing::info!(member_id = id, "member deleted");
+            tracing::info!(member_id = id, "member deleted; requests kept");
             Ok(Json(json!({ "ok": true })))
         }
         db::MemberDelete::NotFound => Err(AppError::NotFound),
         db::MemberDelete::NotRevoked => Err(AppError::Conflict("revoke the member first")),
-        db::MemberDelete::HasHistory => {
-            Err(AppError::Conflict("the member has requests, so it is kept"))
-        }
     }
 }
 

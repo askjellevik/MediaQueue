@@ -411,7 +411,12 @@ pub async fn post_request(
         quota.minute_start,
         |usage| quota.retry_after(usage).is_none(),
     )
-    .await?;
+    .await
+    // The member was deleted after this session was checked.
+    .map_err(|e| match &e {
+        sqlx::Error::Database(d) if d.is_foreign_key_violation() => AppError::Unauthorized,
+        _ => AppError::from(e),
+    })?;
 
     let (status, created, row) = match outcome {
         db::CreateOutcome::OverQuota(usage) => {

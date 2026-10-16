@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE requests SET requested_by_name = ?, requested_by = NULL WHERE requested_by = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "4d84b91b678102d4be762c9116e4f11e34ec49e56b83b99be137567ca6d50ee0"
+}

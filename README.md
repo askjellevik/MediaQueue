@@ -83,6 +83,9 @@ header in the global options block (Caddy 2.7 or newer):
 
 ## Backups and restore
 
+Upgrading to the release that lets the admin delete members rebuilds the
+`requests` table on first start. Take a backup first (below).
+
 A snapshot is written to `data/backups/` daily and the newest 14 are kept.
 Take one now with `docker compose exec portal /app/mediaqueue backup`, and
 copy the folder off the machine. To restore, stop the container, replace

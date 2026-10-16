@@ -20,8 +20,8 @@ the same source file. For the overall design, see
 | Admin-chosen codes: 3 to 64 characters after normalising, unique, 400 or 409 otherwise. **Short codes are guessable**; what limits the damage is the per-IP lockout (about 5 guesses per IP a day after the first hour), the global throttle with its ntfy alert, per-member revocation, and that a guessed code only allows searching TMDB and filing requests under that member's name. This holds only when the app sees real visitor IPs (see the reverse proxy section of the README). | `auth::check_custom_code`, `routes::admin::chosen_code_hash` | unit `custom_codes_are_normalised_and_length_checked`, `admin::admin_can_choose_a_members_code_on_create_and_rotate` |
 | Session: 32 random bytes in the cookie, SHA-256 in the database | `auth::generate_session_token`, `auth::hash_token` | unit `session_token_hash_matches_hash_token`, `auth_flow::database_holds_no_raw_code_or_token` |
 | 90-day sliding sessions, touched at most every 10 minutes | `auth::RequireUser` | `auth_flow::me_requires_session_and_reports_remaining_today`; load test: no `UPDATE` in 200 requests |
-| Rotate and revoke delete the member's sessions at once | `db::rotate_member_code`, `db::revoke_member` | `admin::member_lifecycle_create_devices_rotate_revoke` |
-| Wrong, rotated and revoked codes: same status and body, HMAC and lookup always run | `routes::public::post_auth_code` | `auth_flow::wrong_rotated_and_revoked_codes_return_identical_response` |
+| Rotate, revoke and delete remove the member's sessions at once; revoke can be undone with restore, delete cannot and needs a revoke first | `db::rotate_member_code`, `db::revoke_member`, `db::restore_member`, `db::delete_member` | `admin::member_lifecycle_create_devices_rotate_revoke`, `revoke_can_be_undone`, `deleting_a_revoked_member_keeps_their_requests_under_their_name` |
+| Wrong, rotated, revoked and deleted codes: same status and body, HMAC and lookup always run | `routes::public::post_auth_code` | `auth_flow::wrong_rotated_and_revoked_codes_return_identical_response`, `admin::deleting_a_revoked_member_keeps_their_requests_under_their_name` |
 
 ### Brute force and sharing
 
@@ -117,8 +117,14 @@ the same source file. For the overall design, see
 - **Duplicate events have no member id.** `request_events` only stores
   `actor` (the member name). So the per-minute quota and "My requests"
   match a member's duplicate events by name, and member names are kept
-  unique (case-insensitively) to make that sound. Renaming a member can
-  hide older duplicate requests from their list.
+  unique (case-insensitively) to make that sound. Renaming a member rewrites
+  the name on their events in the same transaction, so their list is kept.
+- **Deleting a member keeps their requests.** `requests.requested_by`
+  becomes `NULL` and `requested_by_name` holds the name; their events are
+  relabelled `<name> (deleted)`. Names ending in ` (deleted)` are refused
+  for new or renamed members, so a new member with the same name cannot
+  inherit the old history, and SQLite reusing a member id cannot either.
+  The name stays as plain text in the archive and CSV.
 - **Same-status PATCH is a no-op.** It returns `changed: false` and writes
   no event, so a double click never adds noise to the archive.
 - **TV details use one call.** `/tv/{id}?append_to_response=external_ids`
