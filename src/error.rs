@@ -88,19 +88,19 @@ impl AppError {
     /// in the response body.
     fn public_message(&self) -> &'static str {
         match self {
-            AppError::NotFound => "not found",
-            AppError::Unauthorized => "authentication required",
-            AppError::Forbidden => "forbidden",
-            AppError::InvalidCode => "that code didn't work",
-            AppError::InvalidAdminCredentials => "invalid username or password",
-            AppError::RateLimited { .. } => "too many requests, try again later",
-            AppError::QuotaExceeded { .. } => "you have used up your requests for now",
-            AppError::BadRequest => "the request was malformed",
+            AppError::NotFound => "ikke funnet",
+            AppError::Unauthorized => "innlogging kreves",
+            AppError::Forbidden => "ikke tillatt",
+            AppError::InvalidCode => "den koden fungerte ikke",
+            AppError::InvalidAdminCredentials => "feil brukernavn eller passord",
+            AppError::RateLimited { .. } => "for mange forespørsler, prøv igjen senere",
+            AppError::QuotaExceeded { .. } => "grense nådd",
+            AppError::BadRequest => "forespørselen er ugyldig",
             AppError::Conflict(message) => message,
             AppError::Unavailable => {
-                "the movie database is not reachable right now, try again shortly"
+                "filmdatabasen er ikke tilgjengelig akkurat nå, prøv igjen om litt"
             }
-            AppError::Database(_) | AppError::Internal(_) => "internal error",
+            AppError::Database(_) | AppError::Internal(_) => "intern feil",
         }
     }
 }

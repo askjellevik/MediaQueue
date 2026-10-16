@@ -377,7 +377,7 @@ async fn admin_queue_archive_and_members_work_end_to_end() {
         .and(path("/api/admin/requests/1"))
         .respond_with(
             ResponseTemplate::new(500)
-                .set_body_json(json!({"error": "internal_error", "message": "internal error"})),
+                .set_body_json(json!({"error": "internal_error", "message": "intern feil"})),
         )
         .up_to_n_times(1)
         .mount(&server)

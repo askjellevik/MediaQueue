@@ -20,7 +20,7 @@ fn assert_429(resp: &HttpResponse, retry_after: u64) {
     );
     assert_eq!(
         resp.body,
-        r#"{"error":"rate_limited","message":"too many requests, try again later"}"#
+        r#"{"error":"rate_limited","message":"for mange forespørsler, prøv igjen senere"}"#
     );
     assert_eq!(resp.header("cache-control"), Some("no-store"));
 }

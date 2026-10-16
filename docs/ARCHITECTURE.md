@@ -18,8 +18,10 @@ Defined in `migrations/`; times are unix seconds in UTC.
 | `request_events` | Append-only history: `submitted`, `duplicate` and `status` events with the actor's name. It is the audit trail, the CSV export source and the source of the request quotas. |
 
 A second person asking for a title that already exists adds a `duplicate`
-event instead of a row. Status labels in the UI are "Pending", "Added",
-"In library" and "Declined"; the stored values stay as listed above.
+event instead of a row. The UI is in Norwegian (bokmål), with every string in
+`web/js/strings.js`. Status labels are "Venter", "Lagt til", "Har fra før" and
+"Avvist"; the stored values stay as listed above. The CSV export and the
+log lines stay in English.
 
 ## API
 

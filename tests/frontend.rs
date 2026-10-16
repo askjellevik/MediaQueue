@@ -64,7 +64,7 @@ async fn index_has_no_search_ui_before_login() {
         "<form",
         "combobox",
         "listbox",
-        "search movies",
+        "søk etter filmer",
         "<dialog",
     ] {
         assert!(!html.contains(marker), "index.html contains {marker:?}");

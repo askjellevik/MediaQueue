@@ -1,8 +1,10 @@
-// The user page: access-code gate, then search, confirm and "My requests".
+// The user page: access-code gate, then search, confirm and the user's own
+// requests.
 // Nothing but the gate is rendered until /api/me says a session exists.
 
 import { api, latestOnly } from './api.js';
 import { watch } from './live.js';
+import { t } from './strings.js';
 import {
   STATE_LABEL,
   STATUS_LABEL,
@@ -24,7 +26,7 @@ import {
 } from './ui.js';
 
 const root = document.getElementById('app');
-const APP_NAME = 'MediaQueue';
+const APP_NAME = t.appName;
 const DEBOUNCE_MS = 200;
 const MIN_QUERY = 2;
 const MEMO_SIZE = 20;
@@ -55,10 +57,10 @@ function renderGate() {
     spellcheck: 'false',
     maxlength: 64,
     required: true,
-    placeholder: 'Access code',
+    placeholder: t.accessCode,
     'aria-describedby': 'code-error',
   });
-  const button = el('button', { class: 'btn btn-primary', type: 'submit', text: 'Continue' });
+  const button = el('button', { class: 'btn btn-primary', type: 'submit', text: t.continue });
   const error = el('p', { id: 'code-error', class: 'error', role: 'alert' });
   let stopCountdown = null;
 
@@ -69,7 +71,7 @@ function renderGate() {
     stopCountdown = countdown(
       seconds,
       (left) => {
-        error.textContent = `Too many attempts. Try again in ${formatWait(left)}.`;
+        error.textContent = t.tooManyAttempts(formatWait(left));
       },
       () => {
         input.disabled = false;
@@ -84,7 +86,7 @@ function renderGate() {
     'form',
     { class: 'gate-form', novalidate: true },
     el('h1', { text: APP_NAME }),
-    el('label', { class: 'sr-only', for: 'code', text: 'Access code' }),
+    el('label', { class: 'sr-only', for: 'code', text: t.accessCode }),
     input,
     button,
     error,
@@ -93,7 +95,7 @@ function renderGate() {
     event.preventDefault();
     const code = input.value.trim();
     if (!code) {
-      error.textContent = "That code didn't work";
+      error.textContent = t.badCode;
       return;
     }
     button.disabled = true;
@@ -105,9 +107,9 @@ function renderGate() {
     } else if (res.status === 429) {
       lock(res.retryAfter || 60);
     } else if (res.status === 0) {
-      error.textContent = "Can't reach the server. Check your connection and try again.";
+      error.textContent = t.noServerCheck;
     } else {
-      error.textContent = "That code didn't work";
+      error.textContent = t.badCode;
       input.select();
     }
   });
@@ -141,14 +143,14 @@ function renderApp(me) {
   const updateRemaining = () => {
     const n = state.remaining;
     // Only members with an admin-set limit see a count.
-    remainingText.textContent = typeof n === 'number' ? ` · ${n} request${n === 1 ? '' : 's'} left today` : '';
+    remainingText.textContent = typeof n === 'number' ? t.requestsLeft(n) : '';
   };
   updateRemaining();
   const header = el(
     'header',
     { class: 'top' },
     el('h1', { text: APP_NAME }),
-    el('p', { class: 'muted text-sm' }, `Hi ${me.name}`, remainingText),
+    el('p', { class: 'muted text-sm' }, t.hi(me.name), remainingText),
   );
 
   // ----- Search combobox -----
@@ -165,14 +167,14 @@ function renderApp(me) {
     spellcheck: 'false',
     enterkeyhint: 'search',
     maxlength: 80,
-    placeholder: 'Search movies and series',
+    placeholder: t.searchPlaceholder,
   });
-  const list = el('ul', { id: 'results', class: 'results', role: 'listbox', 'aria-label': 'Search results', hidden: true });
+  const list = el('ul', { id: 'results', class: 'results', role: 'listbox', 'aria-label': t.searchResults, hidden: true });
   const status = el('p', { class: 'status', role: 'status', 'aria-live': 'polite' });
   const combo = el(
     'div',
     { class: 'combo' },
-    el('label', { class: 'sr-only', for: 'q', text: 'Search movies and series' }),
+    el('label', { class: 'sr-only', for: 'q', text: t.searchPlaceholder }),
     input,
     list,
   );
@@ -222,7 +224,7 @@ function renderApp(me) {
     input.removeAttribute('aria-activedescendant');
     if (results.length === 0) {
       closeList();
-      setStatus(`No matches for “${state.query}”.`);
+      setStatus(t.noMatches(state.query));
       return;
     }
     results.forEach((item, i) => {
@@ -247,7 +249,7 @@ function renderApp(me) {
       list.append(option);
     });
     openList();
-    setStatus(`${results.length} result${results.length === 1 ? '' : 's'}. Use the arrow keys to choose.`);
+    setStatus(t.resultCount(results.length));
   };
 
   const memoGet = (q) => {
@@ -270,7 +272,7 @@ function renderApp(me) {
     if (stopSearchLock) stopSearchLock();
     stopSearchLock = countdown(
       seconds,
-      (left) => setStatus(`Too many searches. Try again in ${formatWait(left)}.`, 'status-bad'),
+      (left) => setStatus(t.tooManySearches(formatWait(left)), 'status-bad'),
       () => {
         input.disabled = false;
         setStatus('');
@@ -282,7 +284,7 @@ function renderApp(me) {
   const runSearch = async (q) => {
     state.sent = q;
     renderSkeleton();
-    setStatus('Searching…');
+    setStatus(t.searching);
     const outcome = await latest.run((signal) => api.search(q, signal));
     if (!outcome.current) return;
     const res = outcome.value;
@@ -295,13 +297,9 @@ function renderApp(me) {
       lockSearch(res.retryAfter || 1);
     } else {
       closeList();
-      const retry = el('button', { class: 'btn-link', type: 'button', text: 'Retry', onclick: () => runSearch(q) });
+      const retry = el('button', { class: 'btn-link', type: 'button', text: t.retry, onclick: () => runSearch(q) });
       const text =
-        res.status === 0
-          ? "Can't reach the server."
-          : res.status === 503
-            ? 'The movie database is not answering right now.'
-            : 'Search failed.';
+        res.status === 0 ? t.noServer : res.status === 503 ? t.dbDown : t.searchFailed;
       setStatus(text, 'status-bad', retry);
     }
   };
@@ -401,7 +399,7 @@ function renderApp(me) {
     const item = state.results[index];
     if (!item) return;
     if (item.state !== 'none') {
-      setStatus(`“${item.title}” is already on the list: ${STATE_LABEL[item.state] || item.state}.`);
+      setStatus(t.alreadyListed(item.title, STATE_LABEL[item.state] || item.state));
       return;
     }
     closeList();
@@ -415,7 +413,7 @@ function renderApp(me) {
       class: 'field note',
       maxlength: NOTE_MAX,
       rows: 3,
-      placeholder: 'Anything I should know? (optional)',
+      placeholder: t.notePlaceholder,
       'aria-describedby': 'note-count',
     });
     const counter = el('p', { id: 'note-count', class: 'counter', text: `0 / ${NOTE_MAX}` });
@@ -423,8 +421,8 @@ function renderApp(me) {
       counter.textContent = `${note.value.length} / ${NOTE_MAX}`;
     });
     const message = el('p', { class: 'status', role: 'status' });
-    const cancel = el('button', { class: 'btn', type: 'button', text: 'Cancel', onclick: () => sheet.close() });
-    const add = el('button', { class: 'btn btn-primary', type: 'submit', autofocus: true }, 'Add to queue');
+    const cancel = el('button', { class: 'btn', type: 'button', text: t.cancel, onclick: () => sheet.close() });
+    const add = el('button', { class: 'btn btn-primary', type: 'submit', autofocus: true }, t.order);
     const overview = item.overview && item.overview.length > 240 ? `${item.overview.slice(0, 240).trimEnd()}…` : item.overview;
 
     const form = el(
@@ -433,16 +431,16 @@ function renderApp(me) {
       el(
         'div',
         { class: 'sheet-body' },
-        extLink(tmdbUrl(item.type, item.tmdb_id), `${item.title} on TMDB`, posterLarge(item.poster), true),
+        extLink(tmdbUrl(item.type, item.tmdb_id), t.onTmdb(item.title), posterLarge(item.poster), true),
         el(
           'div',
           {},
-          el('h2', { id: 'sheet-title', class: 'text-lg font-semibold' }, extLink(tmdbUrl(item.type, item.tmdb_id), `${item.title} on TMDB`, item.title)),
+          el('h2', { id: 'sheet-title', class: 'text-lg font-semibold' }, extLink(tmdbUrl(item.type, item.tmdb_id), t.onTmdb(item.title), item.title)),
           el('p', { class: 'opt-meta' }, item.year ? String(item.year) : null, badge(item.type)),
           overview ? el('p', { class: 'overview', text: overview }) : null,
         ),
       ),
-      el('label', { class: 'note-label', for: 'note', text: 'Note (optional)' }),
+      el('label', { class: 'note-label', for: 'note', text: t.noteLabel }),
       note,
       counter,
       message,
@@ -452,19 +450,19 @@ function renderApp(me) {
       event.preventDefault();
       add.disabled = true;
       cancel.disabled = true;
-      add.replaceChildren(spinner(), 'Adding…');
+      add.replaceChildren(spinner(), t.ordering);
       message.className = 'status';
       message.textContent = '';
       const res = await api.submit(item.tmdb_id, item.type, note.value.trim());
       cancel.disabled = false;
-      add.replaceChildren('Add to queue');
+      add.replaceChildren(t.order);
       if (res.status === 201 || res.status === 200) {
         state.remaining = res.data.remaining_today ?? null;
         updateRemaining();
         markRequested(item);
         sheet.close();
         setStatus(
-          res.status === 201 ? `Requested “${item.title}”.` : `“${item.title}” was already requested. You're on the list too.`,
+          res.status === 201 ? t.ordered(item.title) : t.alreadyOrdered(item.title),
           'status-ok',
         );
         refreshMine();
@@ -480,19 +478,19 @@ function renderApp(me) {
         const wait = formatWait(res.retryAfter || 60);
         message.textContent =
           res.data && res.data.remaining_today === 0
-            ? `You've reached your daily limit. You can request again in ${wait}.`
-            : `You're requesting too fast. Try again in ${wait}.`;
+            ? t.limitReached(wait)
+            : t.tooFast(wait);
       } else {
         add.disabled = false;
         message.className = 'status status-bad';
         message.textContent =
           res.status === 0
-            ? "Can't reach the server. Try again."
+            ? t.noServerRetry
             : res.status === 503
-              ? 'The movie database is not answering right now. Try again shortly.'
+              ? t.dbDownRetry
               : res.status === 404
-                ? "That title couldn't be found."
-                : 'Something went wrong. Try again.';
+                ? t.titleNotFound
+                : t.wentWrong;
       }
     });
     sheet.append(form);
@@ -511,14 +509,14 @@ function renderApp(me) {
 
   // ----- My requests -----
   // Two groups that page on their own: still pending, and everything that
-  // has moved on (added, in library, declined).
+  // has moved on (added, already had, declined).
   const mineStatus = el('p', { class: 'status', role: 'status' });
   const makeGroup = (key, title, emptyText) => {
     const group = {
       key,
       list: el('ul', { class: 'mine-list' }),
       empty: el('p', { class: 'muted', text: emptyText, hidden: true }),
-      more: el('button', { class: 'btn btn-small', type: 'button', text: 'Load more', hidden: true }),
+      more: el('button', { class: 'btn btn-small', type: 'button', text: t.loadMore, hidden: true }),
       cursor: null,
       // Newest-first key of the last loaded row; rows older than this are
       // not loaded yet.
@@ -535,8 +533,8 @@ function renderApp(me) {
     );
     return group;
   };
-  const pendingGroup = makeGroup('pending', 'Pending', 'Nothing pending.');
-  const earlierGroup = makeGroup('earlier', 'Earlier', 'Nothing earlier.');
+  const pendingGroup = makeGroup('pending', t.pending, t.nothingPending);
+  const earlierGroup = makeGroup('earlier', t.earlier, t.nothingEarlier);
   earlierGroup.section.hidden = true;
 
   // Rendered items by request id, so an update changes a row in place.
@@ -559,12 +557,12 @@ function renderApp(me) {
     const button = el('button', {
       class: 'btn btn-small',
       type: 'button',
-      text: 'Cancel',
+      text: t.withdraw,
       'data-cancel': '',
-      'aria-label': `Cancel request: ${r.title}`,
+      'aria-label': t.withdrawLabel(r.title),
     });
     button.addEventListener('click', async () => {
-      if (!window.confirm(`Cancel your request for “${r.title}”?`)) return;
+      if (!window.confirm(t.withdrawConfirm(r.title))) return;
       button.disabled = true;
       const res = await api.cancel(r.id);
       if (res.status === 401) {
@@ -572,7 +570,7 @@ function renderApp(me) {
         return;
       }
       if (res.ok) {
-        toast(`Cancelled “${r.title}”.`);
+        toast(t.withdrawn(r.title));
         for (const results of [state.results, ...state.memo.values()]) {
           for (const item of results) {
             if (item.tmdb_id === r.tmdb_id && item.type === r.type) item.state = 'none';
@@ -586,9 +584,7 @@ function renderApp(me) {
       } else {
         button.disabled = false;
         toast(
-          res.status === 409 || res.status === 404
-            ? 'That request can no longer be cancelled.'
-            : "Couldn't cancel. Nothing was changed.",
+          res.status === 409 || res.status === 404 ? t.cannotWithdraw : t.withdrawFailed,
           { kind: 'bad' },
         );
       }
@@ -605,12 +601,12 @@ function renderApp(me) {
     const li = el(
       'li',
       { class: 'mine-item', 'data-id': r.id },
-      extLink(href, `${r.title} on ${site}`, posterSmall(r.poster), true),
+      extLink(href, t.onSite(r.title, site), posterSmall(r.poster), true),
       el(
         'div',
         { class: 'opt-text' },
-        el('p', { class: 'opt-title' }, extLink(href, `${r.title} on ${site}`, r.title)),
-        el('p', { class: 'opt-meta' }, r.year ? String(r.year) : null, badge(r.type), `Requested ${formatDate(r.created_at)}`),
+        el('p', { class: 'opt-title' }, extLink(href, t.onSite(r.title, site), r.title)),
+        el('p', { class: 'opt-meta' }, r.year ? String(r.year) : null, badge(r.type), t.orderedOn(formatDate(r.created_at))),
       ),
       status,
     );
@@ -621,7 +617,7 @@ function renderApp(me) {
   };
 
   // Puts a row into its group at its newest-first position. A row older
-  // than everything loaded is left for "Load more" to fetch.
+  // than everything loaded is left for the load-more button to fetch.
   const place = (group, node) => {
     if (group.cursor && group.last && newer(group.last, node.key)) {
       mineNodes.delete(node.id);
@@ -651,7 +647,7 @@ function renderApp(me) {
     }
     if (!res.ok || !res.data) {
       mineStatus.className = 'status status-bad';
-      mineStatus.textContent = "Couldn't load your requests.";
+      mineStatus.textContent = t.loadMineFailed;
       return;
     }
     mineStatus.textContent = '';
@@ -717,7 +713,7 @@ function renderApp(me) {
             const chipNow = chip(r.status, STATUS_LABEL[r.status] || r.status);
             known.status.replaceWith(chipNow);
             known.status = chipNow;
-            toast(`“${r.title}” is now ${STATUS_LABEL[r.status] || r.status}.`);
+            toast(t.nowStatus(r.title, STATUS_LABEL[r.status] || r.status));
           }
           if (known.group !== group) {
             known.li.remove();
@@ -755,7 +751,7 @@ function renderApp(me) {
   const mine = el(
     'section',
     { class: 'mine', 'aria-labelledby': 'mine-title' },
-    el('h2', { id: 'mine-title', class: 'mb-3 text-lg font-semibold', text: 'My requests' }),
+    el('h2', { id: 'mine-title', class: 'mb-3 text-lg font-semibold', text: t.myRequests }),
     pendingGroup.section,
     earlierGroup.section,
     mineStatus,
@@ -772,7 +768,7 @@ function renderApp(me) {
       'div',
       { class: 'page' },
       header,
-      el('main', {}, el('section', { class: 'search', 'aria-label': 'Search' }, combo, status), mine),
+      el('main', {}, el('section', { class: 'search', 'aria-label': t.searchLabel }, combo, status), mine),
       footer(logout),
       sheet,
     ),
@@ -796,12 +792,12 @@ async function boot() {
     renderGate();
   } else {
     clear(root);
-    const retry = el('button', { class: 'btn', type: 'button', text: 'Try again', onclick: boot });
+    const retry = el('button', { class: 'btn', type: 'button', text: t.tryAgain, onclick: boot });
     root.append(
       el(
         'main',
         { class: 'gate' },
-        el('div', { class: 'gate-form' }, el('h1', { text: APP_NAME }), el('p', { text: "Can't reach the server right now." }), retry),
+        el('div', { class: 'gate-form' }, el('h1', { text: APP_NAME }), el('p', { text: t.serverDown }), retry),
       ),
     );
   }

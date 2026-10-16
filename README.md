@@ -28,13 +28,14 @@ distroless container that runs in 64 MB. Design notes are in
    `--code "movie night"` (3 to 64 characters; short codes are easy to guess).
    `docker compose exec portal /app/mediaqueue add-member --name Alice`
 8. Open `/admin`, sign in, and manage members, limits and requests there.
+   The interface is in Norwegian (bokmål).
 
 ## Configuration
 
 Everything is set in `.env`; see the
 [configuration table](docs/ARCHITECTURE.md#configuration) for every variable.
 Rate limits are built in. Members have no daily request limit unless you set
-one on the Members tab. `NTFY_URL` and `NTFY_TOPIC` turn on push
+one on the Brukere tab. `NTFY_URL` and `NTFY_TOPIC` turn on push
 notifications (use a long random topic on public ntfy.sh).
 
 ## Deploy and update
@@ -102,7 +103,7 @@ up `.env` too), or every access code stops working.
 | Container exits with `configuration error` | The message names the variable; check the quotes around `ADMIN_PASSWORD_HASH`. |
 | `unable to open database file` | `data/` must be owned by UID 65532. |
 | Everyone is locked out together | The app sees one IP for all visitors; see Reverse proxy. |
-| Lost access code | Members tab, **Rotate code**. |
+| Lost access code | Brukere tab, **Lag ny kode**. |
 
 ## Development
 

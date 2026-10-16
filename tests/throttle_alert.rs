@@ -67,7 +67,7 @@ async fn throttle_turning_on_logs_a_warning_and_sends_exactly_one_alert() {
         .and(header("authorization", "Bearer ntfy-test-token"))
         .and(body_partial_json(serde_json::json!({
             "topic": "throttle-test-topic",
-            "title": "Access code throttle on",
+            "title": "Tilgangskode: forsinkelse slått på",
             "tags": ["warning"],
         })))
         .respond_with(ResponseTemplate::new(200))

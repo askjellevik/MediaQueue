@@ -4,6 +4,7 @@
 
 import { call } from './api.js';
 import { watch } from './live.js';
+import { t } from './strings.js';
 import {
   STATUS_LABEL,
   TYPE_LABEL,
@@ -23,33 +24,32 @@ import {
 } from './ui.js';
 
 const root = document.getElementById('app');
-const TITLE = 'MediaQueue admin';
+const TITLE = t.adminTitle;
 
 const TABS = [
-  { id: 'pending', label: STATUS_LABEL.pending, status: 'pending', empty: 'Nothing pending.' },
-  { id: 'added', label: STATUS_LABEL.added, status: 'added', empty: 'Nothing marked added yet.' },
-  { id: 'refused', label: STATUS_LABEL.refused, status: 'refused', empty: 'Nothing declined.' },
-  { id: 'already_had', label: STATUS_LABEL.already_had, status: 'already_had', empty: 'Nothing marked in library.' },
-  { id: 'archive', label: 'All requests', status: 'all', empty: 'No requests yet.' },
-  { id: 'members', label: 'Members' },
+  { id: 'pending', label: t.tabs.pending, status: 'pending', empty: t.empty.pending },
+  { id: 'added', label: t.tabs.added, status: 'added', empty: t.empty.added },
+  { id: 'refused', label: t.tabs.refused, status: 'refused', empty: t.empty.refused },
+  { id: 'already_had', label: t.tabs.already_had, status: 'already_had', empty: t.empty.already_had },
+  { id: 'archive', label: t.tabs.archive, status: 'all', empty: t.empty.archive },
+  { id: 'members', label: t.tabs.members },
 ];
 
 // Status buttons: every status but the current one.
 const ACTIONS = [
-  { status: 'added', label: 'Mark added' },
-  { status: 'refused', label: 'Decline' },
-  { status: 'already_had', label: 'Already in library' },
-  { status: 'pending', label: 'Reopen' },
+  { status: 'added', label: t.actions.added },
+  { status: 'refused', label: t.actions.refused },
+  { status: 'already_had', label: t.actions.already_had },
+  { status: 'pending', label: t.actions.pending },
 ];
 
 const EVENT_TEXT = {
-  submitted: (e) => `Requested by ${e.actor}`,
-  duplicate: (e) => `Requested again by ${e.actor}`,
+  submitted: (e) => t.orderedBy(e.actor),
+  duplicate: (e) => t.orderedAgainBy(e.actor),
   status: (e) => `${STATUS_LABEL[e.from_status] || e.from_status} → ${STATUS_LABEL[e.to_status] || e.to_status}`,
 };
 
 const get = (path) => call('GET', path);
-// What the server gives a new member; only a different value is worth showing.
 
 // Stops the live updates of the signed-in page when it goes away.
 let stopLive = null;
@@ -66,21 +66,21 @@ function renderLogin() {
   document.title = TITLE;
   const user = el('input', { id: 'user', class: 'field', autocomplete: 'username', required: true });
   const pass = el('input', { id: 'pass', class: 'field', type: 'password', autocomplete: 'current-password', required: true });
-  const button = el('button', { class: 'btn btn-primary', type: 'submit', text: 'Sign in' });
+  const button = el('button', { class: 'btn btn-primary', type: 'submit', text: t.signIn });
   const error = el('p', { class: 'error', role: 'alert' });
   const form = el(
     'form',
     { class: 'gate-form' },
     el('h1', { text: TITLE }),
-    el('label', { class: 'sr-only', for: 'user', text: 'Username' }),
+    el('label', { class: 'sr-only', for: 'user', text: t.username }),
     user,
-    el('label', { class: 'sr-only', for: 'pass', text: 'Password' }),
+    el('label', { class: 'sr-only', for: 'pass', text: t.password }),
     pass,
     button,
     error,
   );
-  user.placeholder = 'Username';
-  pass.placeholder = 'Password';
+  user.placeholder = t.username;
+  pass.placeholder = t.password;
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     button.disabled = true;
@@ -95,7 +95,7 @@ function renderLogin() {
       countdown(
         res.retryAfter || 60,
         (left) => {
-          error.textContent = `Too many attempts. Try again in ${formatWait(left)}.`;
+          error.textContent = t.tooManyAttempts(formatWait(left));
         },
         () => {
           button.disabled = false;
@@ -105,7 +105,7 @@ function renderLogin() {
       return;
     }
     button.disabled = false;
-    error.textContent = res.status === 0 ? "Can't reach the server." : 'Wrong username or password.';
+    error.textContent = res.status === 0 ? t.noServer : t.wrongLogin;
   });
   clear(root);
   root.append(el('main', { class: 'gate' }, form));
@@ -158,7 +158,7 @@ function renderAdmin() {
     pendingCount.textContent = String(res.data.pending);
     pendingCount.hidden = res.data.pending === 0;
   };
-  const tablist = el('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Sections' }, tabButtons);
+  const tablist = el('div', { class: 'tabs', role: 'tablist', 'aria-label': t.sections }, tabButtons);
 
   const select = (index) => {
     tabButtons.forEach((b, i) => {
@@ -251,26 +251,26 @@ function renderQueue(panel, tab, { say, expired }) {
     id: 'filter',
     class: 'field',
     type: 'search',
-    placeholder: 'Filter by title, requester or IMDb ID',
+    placeholder: t.filterPlaceholder,
     maxlength: 100,
   });
   const tbody = el('tbody');
   const empty = el('p', { class: 'muted', text: tab.empty, hidden: true });
-  const more = el('button', { class: 'btn btn-small', type: 'button', text: 'Load more', hidden: true });
-  const refresh = el('button', { class: 'btn btn-small', type: 'button', text: 'Refresh' });
+  const more = el('button', { class: 'btn btn-small', type: 'button', text: t.loadMore, hidden: true });
+  const refresh = el('button', { class: 'btn btn-small', type: 'button', text: t.refresh });
   const toolbar = el(
     'div',
     { class: 'toolbar' },
-    el('label', { class: 'sr-only', for: 'filter', text: 'Filter' }),
+    el('label', { class: 'sr-only', for: 'filter', text: t.filter }),
     filter,
     refresh,
-    archive ? el('a', { class: 'btn btn-small', href: '/api/admin/export.csv', download: 'mediaqueue.csv', text: 'Export CSV' }) : null,
+    archive ? el('a', { class: 'btn btn-small', href: '/api/admin/export.csv', download: 'mediaqueue.csv', text: t.exportCsv }) : null,
   );
   const head = el(
     'tr',
     {},
-    ['', 'Title', 'Type', 'Requested by', 'Requested', 'IMDb', 'Status', 'Actions'].map((h) =>
-      el('th', { scope: 'col' }, h ? h : el('span', { class: 'sr-only', text: 'Poster' })),
+    ['', ...t.queueHead].map((h) =>
+      el('th', { scope: 'col' }, h ? h : el('span', { class: 'sr-only', text: t.poster })),
     ),
   );
   const table = el('table', { class: 'table' }, el('thead', {}, head), tbody);
@@ -296,7 +296,7 @@ function renderQueue(panel, tab, { say, expired }) {
     refresh.disabled = false;
     if (mine !== generation || expired(res)) return;
     if (!res.ok) {
-      say("Couldn't load requests.", 'status-bad');
+      say(t.loadRequestsFailed, 'status-bad');
       return;
     }
     if (reset) {
@@ -311,7 +311,7 @@ function renderQueue(panel, tab, { say, expired }) {
     loaded = true;
     cursor = res.data.next_cursor;
     more.hidden = !cursor;
-    empty.textContent = q ? 'No requests match.' : tab.empty;
+    empty.textContent = q ? t.noRequestsMatch : tab.empty;
     empty.hidden = tbody.children.length > 0;
   };
 
@@ -335,9 +335,9 @@ function renderQueue(panel, tab, { say, expired }) {
       el(
         'td',
         {},
-        el('strong', {}, item.imdb_id ? extLink(imdbUrl(item.imdb_id), `${item.title} on IMDb`, item.title) : item.title),
+        el('strong', {}, item.imdb_id ? extLink(imdbUrl(item.imdb_id), t.onSite(item.title, 'IMDb'), item.title) : item.title),
         item.year ? ` (${item.year})` : null,
-        item.note ? el('p', { class: 'muted', text: `Note: ${item.note}` }) : null,
+        item.note ? el('p', { class: 'muted', text: t.note(item.note) }) : null,
       ),
       el('td', { text: TYPE_LABEL[item.type] || item.type }),
       requesterCell,
@@ -373,7 +373,7 @@ function renderQueue(panel, tab, { say, expired }) {
       if (expired(res)) return;
       if (res.ok) {
         paint();
-        toast(`“${item.title}” is now ${STATUS_LABEL[to]}.`, {
+        toast(t.statusChanged(item.title, STATUS_LABEL[to]), {
           undo: isUndo ? null : () => setStatus(from, true),
         });
         // A history that is open would otherwise miss the new event.
@@ -384,7 +384,7 @@ function renderQueue(panel, tab, { say, expired }) {
         else if (returns) row.remove();
         empty.hidden = tbody.children.length > 0;
         paint();
-        toast(`Couldn't update “${item.title}”. Nothing was changed.`, { kind: 'bad' });
+        toast(t.updateFailed(item.title), { kind: 'bad' });
       }
     };
 
@@ -397,7 +397,7 @@ function renderQueue(panel, tab, { say, expired }) {
           class: 'btn btn-small',
           type: 'button',
           text: action.label,
-          'aria-label': `${action.label}: ${item.title}`,
+          'aria-label': t.actionLabel(action.label, item.title),
           disabled: busy,
           onclick: () => {
             for (const open of actions.querySelectorAll('details[open]')) open.open = false;
@@ -413,19 +413,19 @@ function renderQueue(panel, tab, { say, expired }) {
               href: item.dmm_url,
               target: '_blank',
               rel: 'noopener noreferrer',
-              text: 'Open in DMM',
-              'aria-label': `Open in DMM: ${item.title}`,
+              text: t.openInDmm,
+              'aria-label': t.actionLabel(t.openInDmm, item.title),
             }),
           );
         }
         actions.append(
           button(byStatus('added')),
           button(byStatus('refused')),
-          menu('More', `More actions: ${item.title}`, [button(byStatus('already_had'))], busy),
+          menu(t.more, t.moreActions(item.title), [button(byStatus('already_had'))], busy),
         );
       } else {
         const others = ACTIONS.filter((a) => a.status !== item.status).map(button);
-        actions.append(menu('Change status', `Change status: ${item.title}`, others, busy));
+        actions.append(menu(t.changeStatus, t.changeStatusFor(item.title), others, busy));
       }
       if (archive) actions.append(toggle);
     };
@@ -436,16 +436,16 @@ function renderQueue(panel, tab, { say, expired }) {
       type: 'button',
       text: '›',
       'aria-expanded': 'false',
-      'aria-label': `History: ${item.title}`,
+      'aria-label': t.history(item.title),
     });
     const loadHistory = async () => {
       const cell = historyRow.firstChild;
-      if (!cell.firstChild) cell.append(el('span', { class: 'muted', text: 'Loading…' }));
+      if (!cell.firstChild) cell.append(el('span', { class: 'muted', text: t.loading }));
       const res = await get(`/api/admin/requests/${item.id}/events`);
       if (expired(res)) return;
       clear(cell);
       if (!res.ok) {
-        cell.append(el('span', { class: 'status-bad', text: "Couldn't load history." }));
+        cell.append(el('span', { class: 'status-bad', text: t.historyFailed }));
         return;
       }
       cell.append(
@@ -538,13 +538,13 @@ function renderQueue(panel, tab, { say, expired }) {
       if (previous) previous.after(...added.nodes);
       else tbody.prepend(...added.nodes);
       previous = added.nodes[added.nodes.length - 1];
-      if (tab.id === 'pending') toast(`New request: ${item.title}`);
+      if (tab.id === 'pending') toast(t.newOrder(item.title));
     }
     if (!cursor && res.data.next_cursor && tbody.children.length === items.length) {
       cursor = res.data.next_cursor;
     }
     more.hidden = !cursor;
-    empty.textContent = q ? 'No requests match.' : tab.empty;
+    empty.textContent = q ? t.noRequestsMatch : tab.empty;
     empty.hidden = tbody.children.length > 0;
   };
 
@@ -562,14 +562,14 @@ function renderQueue(panel, tab, { say, expired }) {
 }
 
 function imdbCell(item) {
-  if (!item.imdb_id) return el('span', { class: 'muted', text: 'none' });
+  if (!item.imdb_id) return el('span', { class: 'muted', text: t.none });
   const id = el('button', {
     class: 'code-btn',
     type: 'button',
     text: item.imdb_id,
-    'aria-label': `Copy IMDb ID ${item.imdb_id}`,
+    'aria-label': t.copyImdb(item.imdb_id),
   });
-  copyOnClick(id, item.imdb_id, `Couldn't copy. The ID is ${item.imdb_id}.`);
+  copyOnClick(id, item.imdb_id, t.copyImdbFailed(item.imdb_id));
   return id;
 }
 
@@ -579,21 +579,21 @@ function imdbCell(item) {
 
 // Shows a freshly issued code exactly once, with a copy button.
 function codeBox(name, code) {
-  const copy = el('button', { class: 'btn btn-primary', type: 'button', text: 'Copy code' });
-  copyOnClick(copy, code, "Couldn't copy. Select the code and copy it by hand.");
+  const copy = el('button', { class: 'btn btn-primary', type: 'button', text: t.copyCode });
+  copyOnClick(copy, code, t.copyCodeFailed);
   return el(
     'div',
     { class: 'code-box', role: 'alert' },
-    el('p', { text: `Access code for ${name}` }),
+    el('p', { text: t.codeFor(name) }),
     el('output', { text: code }),
-    el('p', { class: 'muted', text: 'You will not see this code again. Send it to them now; if it is lost, rotate it.' }),
+    el('p', { class: 'muted', text: t.codeOnce }),
     el('div', {}, copy),
   );
 }
 
 // A 409 from the member routes is either a taken name or a taken code.
 function codeTaken(res) {
-  return Boolean(res.data && /code/.test(res.data.message || ''));
+  return Boolean(res.data && /koden/.test(res.data.message || ''));
 }
 
 function numberOrNull(value) {
@@ -601,15 +601,15 @@ function numberOrNull(value) {
   return v === '' ? null : Number(v);
 }
 
-// "3 devices, last seen 2 h ago", with the list behind a disclosure.
+// "3 enheter, sist sett 2 t siden", with the list behind a disclosure.
 function devicesCell(m, deviceList) {
-  if (!m.devices.length) return el('span', { class: 'muted', text: 'None' });
+  if (!m.devices.length) return el('span', { class: 'muted', text: t.noDevices });
   const n = m.devices.length;
   const lastSeen = Math.max(...m.devices.map((d) => d.last_seen_at));
   return el(
     'details',
     {},
-    el('summary', { text: `${n} device${n === 1 ? '' : 's'}, last seen ${formatAgo(lastSeen)}` }),
+    el('summary', { text: t.devices(n, formatAgo(lastSeen)) }),
     deviceList,
   );
 }
@@ -619,22 +619,22 @@ function renderMembers(panel, { say, expired }) {
   const tbody = el('tbody');
 
   const name = el('input', { id: 'm-name', class: 'field', maxlength: 40, required: true });
-  const daily = el('input', { id: 'm-daily', class: 'field', type: 'number', min: 0, max: 1000, inputmode: 'numeric', placeholder: 'No limit' });
+  const daily = el('input', { id: 'm-daily', class: 'field', type: 'number', min: 0, max: 1000, inputmode: 'numeric', placeholder: t.noLimit });
   const code = el('input', { id: 'm-code', class: 'field', maxlength: 64, autocomplete: 'off', spellcheck: false });
   // Advice, not a block: the server accepts anything from 3 characters.
   const codeWarning = el('span', { class: 'muted', id: 'm-code-note' });
   code.setAttribute('aria-describedby', 'm-code-note');
   code.addEventListener('input', () => {
     const n = code.value.replace(/[\s-]/g, '').length;
-    codeWarning.textContent = n > 0 && n < 6 ? 'Short codes are easy to guess.' : '';
+    codeWarning.textContent = n > 0 && n < 6 ? t.shortCode : '';
   });
-  const add = el('button', { class: 'btn btn-primary', type: 'submit', text: 'Add member' });
+  const add = el('button', { class: 'btn btn-primary', type: 'submit', text: t.addUser });
   const form = el(
     'form',
-    { class: 'form-grid', 'aria-label': 'Add a member' },
-    el('label', { for: 'm-name' }, 'Name', name),
-    el('label', { for: 'm-daily' }, 'Daily limit (optional)', daily),
-    el('label', { for: 'm-code' }, 'Access code (optional, 3+ characters; blank generates one)', code),
+    { class: 'form-grid', 'aria-label': t.addUserLabel },
+    el('label', { for: 'm-name' }, t.name, name),
+    el('label', { for: 'm-daily' }, t.dailyLimitOptional, daily),
+    el('label', { for: 'm-code' }, t.codeOptional, code),
     codeWarning,
     add,
   );
@@ -652,25 +652,22 @@ function renderMembers(panel, { say, expired }) {
       if (res.data.code) {
         codeSlot.append(codeBox(res.data.name, res.data.code));
       } else {
-        toast(`Added ${res.data.name} with the code you chose.`);
+        toast(t.addedWithCode(res.data.name));
       }
       form.reset();
       codeWarning.textContent = '';
       load();
     } else if (res.status === 409) {
-      toast(
-        codeTaken(res) ? 'That code is already in use.' : 'A member with that name already exists.',
-        { kind: 'bad' },
-      );
+      toast(codeTaken(res) ? t.codeTaken : t.nameTaken, { kind: 'bad' });
     } else {
-      toast('Check the name (1 to 40 characters), the code (3 to 64 characters) and limits.', { kind: 'bad' });
+      toast(t.checkAddFields, { kind: 'bad' });
     }
   });
 
   const head = el(
     'tr',
     {},
-    ['Name', 'Last seen', 'Logged in', 'Requests', 'Limits', 'Actions'].map((h) => el('th', { scope: 'col', text: h })),
+    t.userHead.map((h) => el('th', { scope: 'col', text: h })),
   );
 
   const memberRow = (m) => {
@@ -679,23 +676,21 @@ function renderMembers(panel, { say, expired }) {
       const kill = el('button', {
         class: 'btn btn-small',
         type: 'button',
-        text: 'Log out',
-        'aria-label': `Log out ${m.name}'s device from ${formatDateTime(d.created_at)}`,
+        text: t.logOut,
+        'aria-label': t.deviceLogOutLabel(m.name, formatDateTime(d.created_at)),
       });
       kill.addEventListener('click', async () => {
         const res = await send('DELETE', `/api/admin/sessions/${d.id}`);
         if (expired(res)) return;
-        toast(res.ok ? `Logged out one of ${m.name}'s devices.` : "Couldn't log that device out.", { kind: res.ok ? 'ok' : 'bad' });
+        toast(res.ok ? t.deviceLoggedOut(m.name) : t.deviceLogOutFailed, { kind: res.ok ? 'ok' : 'bad' });
         load();
       });
-      deviceList.append(el('li', {}, `Since ${formatDateTime(d.created_at)}, seen ${formatDateTime(d.last_seen_at)} `, kill));
+      deviceList.append(el('li', {}, t.deviceLine(formatDateTime(d.created_at), formatDateTime(d.last_seen_at)), kill));
     }
     const revoked = m.revoked_at !== null;
-    const rotate = el('button', { class: 'btn btn-small', type: 'button', text: 'Rotate code', disabled: revoked });
+    const rotate = el('button', { class: 'btn btn-small', type: 'button', text: t.rotate, disabled: revoked });
     rotate.addEventListener('click', async () => {
-      const chosen = window.prompt(
-        `Give ${m.name} a new code? The old one and all their devices stop working.\n\nType the new code (3 to 64 characters), or leave blank to generate one.`,
-      );
+      const chosen = window.prompt(t.rotatePrompt(m.name));
       if (chosen === null) return;
       const res = await send('POST', `/api/admin/members/${m.id}/rotate`, chosen.trim() === '' ? {} : { code: chosen });
       if (expired(res)) return;
@@ -704,63 +699,56 @@ function renderMembers(panel, { say, expired }) {
         if (res.data.code) {
           codeSlot.append(codeBox(m.name, res.data.code));
         } else {
-          toast(`${m.name} now has the code you chose.`);
+          toast(t.rotatedToChosen(m.name));
         }
         load();
       } else if (res.status === 409 && codeTaken(res)) {
-        toast('That code is already in use.', { kind: 'bad' });
+        toast(t.codeTaken, { kind: 'bad' });
       } else if (res.status === 400) {
-        toast('The code must be 3 to 64 characters.', { kind: 'bad' });
+        toast(t.codeLength, { kind: 'bad' });
       } else {
-        toast("Couldn't rotate the code.", { kind: 'bad' });
+        toast(t.rotateFailed, { kind: 'bad' });
       }
     });
-    const revoke = el('button', { class: 'btn btn-small', type: 'button', text: revoked ? 'Restore' : 'Revoke' });
+    const revoke = el('button', { class: 'btn btn-small', type: 'button', text: revoked ? t.activate : t.deactivate });
     revoke.addEventListener('click', async () => {
-      if (
-        !revoked &&
-        !window.confirm(`Revoke ${m.name}? Their code and devices stop working until you restore them.`)
-      ) {
+      if (!revoked && !window.confirm(t.deactivateConfirm(m.name))) {
         return;
       }
       const res = await send('POST', `/api/admin/members/${m.id}/${revoked ? 'restore' : 'revoke'}`);
       if (expired(res)) return;
-      const done = revoked ? 'restored' : 'revoked';
-      toast(res.ok ? `${m.name} is ${done}.` : `Couldn't ${revoked ? 'restore' : 'revoke'}.`, {
+      const done = revoked ? t.activatedDone(m.name) : t.deactivatedDone(m.name);
+      toast(res.ok ? done : revoked ? t.activateFailed : t.deactivateFailed, {
         kind: res.ok ? 'ok' : 'bad',
       });
       load();
     });
-    // Only a revoked member can go; their requests stay under their name.
-    const remove = el('button', { class: 'btn btn-small', type: 'button', text: 'Delete' });
+    // Only a deactivated user can go; their requests stay under their name.
+    const remove = el('button', { class: 'btn btn-small', type: 'button', text: t.delete });
     remove.addEventListener('click', async () => {
-      if (
-        !window.confirm(
-          `Delete ${m.name} for good? Their code stops working for good and this can't be undone. Their requests stay in the queue under their name.`,
-        )
-      ) {
+      if (!window.confirm(t.deleteConfirm(m.name))) {
         return;
       }
       const res = await send('DELETE', `/api/admin/members/${m.id}`);
       if (expired(res)) return;
       toast(
-        res.ok ? `${m.name} is deleted.` : res.status === 409 ? `Revoke ${m.name} first.` : "Couldn't delete.",
+        res.ok ? t.deleted(m.name) : res.status === 409 ? t.deactivateFirst(m.name) : t.deleteFailed,
         { kind: res.ok ? 'ok' : 'bad' },
       );
       load();
     });
-    const edit = el('button', { class: 'btn btn-small', type: 'button', text: 'Edit', 'aria-label': `Edit ${m.name}` });
+    const edit = el('button', { class: 'btn btn-small', type: 'button', text: t.edit, 'aria-label': t.editLabel(m.name) });
     edit.addEventListener('click', () => editMember(m, edit));
     const limits = el(
       'td',
       {},
-      m.daily_limit === null ? el('span', { class: 'muted', text: 'No limit' }) : `${m.daily_limit} a day`,
+      m.daily_limit === null ? el('span', { class: 'muted', text: t.noLimit }) : t.perDay(m.daily_limit),
     );
     return el(
       'tr',
       {},
-      el('td', {}, el('strong', { text: m.name }), revoked ? el('p', {}, chip('refused', 'Revoked')) : null),
-      el('td', { text: m.last_seen_at ? formatDateTime(m.last_seen_at) : 'Never' }),
+      el('td', {}, el('strong', { text: m.name }), revoked ? el('p', {}, chip('refused', t.deactivated)) : null),
+      el('td', { text: m.last_seen_at ? formatDateTime(m.last_seen_at) : t.never }),
       el('td', {}, devicesCell(m, deviceList)),
       el('td', { text: String(m.request_count) }),
       limits,
@@ -779,19 +767,19 @@ function renderMembers(panel, { say, expired }) {
       min: 0,
       max: 1000,
       inputmode: 'numeric',
-      placeholder: 'No limit',
+      placeholder: t.noLimit,
       value: m.daily_limit === null ? null : String(m.daily_limit),
     });
     const message = el('p', { class: 'status', role: 'status' });
-    const cancel = el('button', { class: 'btn', type: 'button', text: 'Cancel', onclick: () => dialog.close() });
-    const save = el('button', { class: 'btn btn-primary', type: 'submit', text: 'Save' });
+    const cancel = el('button', { class: 'btn', type: 'button', text: t.cancel, onclick: () => dialog.close() });
+    const save = el('button', { class: 'btn btn-primary', type: 'submit', text: t.save });
     const form = el(
       'form',
       { method: 'dialog', class: 'form-grid' },
-      el('h2', { id: 'edit-title', text: `Edit ${m.name}` }),
-      el('label', { for: 'e-name' }, 'Name', eName),
-      el('p', { class: 'muted', text: 'Renaming a member can hide older duplicate requests from their list.' }),
-      el('label', { for: 'e-daily' }, 'Daily limit (blank for no limit)', eDaily),
+      el('h2', { id: 'edit-title', text: t.editLabel(m.name) }),
+      el('label', { for: 'e-name' }, t.name, eName),
+      el('p', { class: 'muted', text: t.renameWarning }),
+      el('label', { for: 'e-daily' }, t.dailyLimitBlank, eDaily),
       message,
       el('div', { class: 'actions' }, cancel, save),
     );
@@ -811,16 +799,12 @@ function renderMembers(panel, { say, expired }) {
       }
       if (res.ok) {
         dialog.close();
-        toast(`Saved ${eName.value.trim()}.`);
+        toast(t.saved(eName.value.trim()));
         load();
       } else {
         message.className = 'status status-bad';
         message.textContent =
-          res.status === 409
-            ? 'A member with that name already exists.'
-            : res.status === 400
-              ? 'Check the name (1 to 40 characters) and the limits.'
-              : "Couldn't save. Nothing was changed.";
+          res.status === 409 ? t.nameTaken : res.status === 400 ? t.checkEditFields : t.saveFailed;
       }
     });
     dialog.addEventListener('close', () => {
@@ -837,7 +821,7 @@ function renderMembers(panel, { say, expired }) {
     const res = await get('/api/admin/members');
     if (expired(res)) return;
     if (!res.ok) {
-      say("Couldn't load members.", 'status-bad');
+      say(t.loadUsersFailed, 'status-bad');
       return;
     }
     clear(tbody);
@@ -846,7 +830,7 @@ function renderMembers(panel, { say, expired }) {
 
   clear(panel);
   panel.append(
-    el('h2', { class: 'sr-only', text: 'Members' }),
+    el('h2', { class: 'sr-only', text: t.users }),
     form,
     codeSlot,
     el('div', { class: 'table-wrap' }, el('table', { class: 'table' }, el('thead', {}, head), tbody)),

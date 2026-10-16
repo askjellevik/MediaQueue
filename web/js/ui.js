@@ -1,6 +1,8 @@
 // DOM helpers shared by both pages. Text from the API only ever goes in
 // through textContent (via el()'s children or `text`), never as HTML.
 
+import { t } from './strings.js';
+
 export function el(tag, props = {}, ...children) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(props)) {
@@ -63,22 +65,12 @@ export function extLink(href, label, children, plain = false) {
   );
 }
 
-export const TYPE_LABEL = { movie: 'Movie', tv: 'Series' };
+export const TYPE_LABEL = t.type;
 
 // Search result states and request statuses, as shown to users.
-export const STATE_LABEL = {
-  requested: 'Requested',
-  added: 'Added',
-  have: 'In library',
-  unavailable: 'Declined',
-};
+export const STATE_LABEL = t.state;
 
-export const STATUS_LABEL = {
-  pending: 'Pending',
-  added: 'Added',
-  already_had: 'In library',
-  refused: 'Declined',
-};
+export const STATUS_LABEL = t.status;
 
 // Whole class strings, so the Tailwind build can see them.
 const CHIP_AMBER = 'bg-amber-50 text-amber-800 ring-amber-600/20 dark:bg-amber-400/10 dark:text-amber-300 dark:ring-amber-400/30';
@@ -109,35 +101,39 @@ export function badge(type) {
   });
 }
 
-// "45s", "14:59" or "3h 12m".
+// "45 s", "14:59" or "3 t 12 min".
 export function formatWait(totalSeconds) {
   const s = Math.max(0, Math.ceil(totalSeconds));
-  if (s < 60) return `${s}s`;
+  if (s < 60) return t.seconds(s);
   if (s < 3600) return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
-  return `${h}h ${m}m`;
+  return t.hoursMinutes(h, m);
 }
 
+const LOCALE = 'nb-NO';
+
+// "16. okt. 2026".
 export function formatDate(unixSeconds) {
-  return new Date(unixSeconds * 1000).toLocaleDateString(undefined, {
+  return new Date(unixSeconds * 1000).toLocaleDateString(LOCALE, {
     year: 'numeric',
     month: 'short',
     day: 'numeric',
   });
 }
 
-// "just now", "5 min ago", "2 h ago", "3 d ago".
+// "akkurat nå", "5 min siden", "2 t siden", "3 d siden".
 export function formatAgo(unixSeconds) {
   const secs = Math.max(0, Math.floor(Date.now() / 1000) - unixSeconds);
-  if (secs < 60) return 'just now';
-  if (secs < 3600) return `${Math.floor(secs / 60)} min ago`;
-  if (secs < 86400) return `${Math.floor(secs / 3600)} h ago`;
-  return `${Math.floor(secs / 86400)} d ago`;
+  if (secs < 60) return t.justNow;
+  if (secs < 3600) return t.minutesAgo(Math.floor(secs / 60));
+  if (secs < 86400) return t.hoursAgo(Math.floor(secs / 3600));
+  return t.daysAgo(Math.floor(secs / 86400));
 }
 
+// "16. okt. 2026, 14:05".
 export function formatDateTime(unixSeconds) {
-  return new Date(unixSeconds * 1000).toLocaleString(undefined, {
+  return new Date(unixSeconds * 1000).toLocaleString(LOCALE, {
     year: 'numeric',
     month: 'short',
     day: 'numeric',
@@ -186,7 +182,7 @@ function toastRegion() {
 
 toastRegion();
 
-// `kind` is 'ok' or 'bad'; `undo`, if given, adds an Undo button. The timer
+// `kind` is 'ok' or 'bad'; `undo`, if given, adds an undo button. The timer
 // pauses while the pointer or keyboard focus is on the toast.
 export function toast(text, { kind = 'ok', undo = null } = {}) {
   const region = toastRegion();
@@ -205,7 +201,7 @@ export function toast(text, { kind = 'ok', undo = null } = {}) {
       el('button', {
         class: 'btn btn-small',
         type: 'button',
-        text: 'Undo',
+        text: t.undo,
         onclick: () => {
           dismiss();
           undo();
@@ -249,7 +245,7 @@ export async function copyText(text) {
   return ok;
 }
 
-// Click copies `text`; the button says "Copied" for a moment. If copying is
+// Click copies `text`; the button says "Kopiert" for a moment. If copying is
 // impossible, `failText` goes into a toast.
 export function copyOnClick(button, text, failText) {
   const label = button.textContent;
@@ -260,19 +256,19 @@ export function copyOnClick(button, text, failText) {
       return;
     }
     clearTimeout(timer);
-    button.textContent = 'Copied';
+    button.textContent = t.copied;
     timer = setTimeout(() => {
       button.textContent = label;
     }, 1500);
   });
 }
 
-// System, Light and Dark as a small button group; the choice is kept by
+// System, Lys and Mørk as a small button group; the choice is kept by
 // js/theme.js, which also puts it on <html> before the page paints.
 const THEMES = [
-  { id: 'system', label: 'System' },
-  { id: 'light', label: 'Light' },
-  { id: 'dark', label: 'Dark' },
+  { id: 'system', label: t.theme.system },
+  { id: 'light', label: t.theme.light },
+  { id: 'dark', label: t.theme.dark },
 ];
 
 function themeToggle() {
@@ -293,7 +289,7 @@ function themeToggle() {
     buttons.forEach((button, i) => button.setAttribute('aria-pressed', THEMES[i].id === theme.get() ? 'true' : 'false'));
   };
   paint();
-  return el('div', { class: 'theme-toggle', role: 'group', 'aria-label': 'Theme' }, buttons);
+  return el('div', { class: 'theme-toggle', role: 'group', 'aria-label': t.theme.label }, buttons);
 }
 
 export function footer(onLogout) {
@@ -304,13 +300,13 @@ export function footer(onLogout) {
       'div',
       { class: 'attribution' },
       el('img', { class: 'tmdb-logo', src: LOGO_URL, alt: 'TMDB', width: 92, height: 12 }),
-      el('span', { text: 'This product uses the TMDB API but is not endorsed or certified by TMDB.' }),
+      el('span', { text: t.tmdbNotice }),
     ),
     el(
       'div',
       { class: 'flex items-center gap-3' },
       themeToggle(),
-      onLogout ? el('button', { class: 'btn-link', type: 'button', text: 'Log out', onclick: onLogout }) : null,
+      onLogout ? el('button', { class: 'btn-link', type: 'button', text: t.logOut, onclick: onLogout }) : null,
     ),
   );
 }
