@@ -194,7 +194,7 @@ async fn eleventh_request_in_a_day_is_429_and_writes_nothing() {
         json_of(&over),
         json!({
             "error": "quota_exceeded",
-            "message": "you have used up your requests for now",
+            "message": "grense nådd",
             "remaining_today": 0
         })
     );
@@ -336,7 +336,7 @@ async fn tmdb_failure_during_submit_is_a_clean_error_and_writes_nothing() {
     assert_eq!(missing.status, 404);
     assert_eq!(
         missing.body,
-        r#"{"error":"not_found","message":"not found"}"#
+        r#"{"error":"not_found","message":"ikke funnet"}"#
     );
 
     assert_eq!(count(&app, "requests").await, 0);
@@ -679,8 +679,8 @@ async fn new_titles_push_one_notification_and_duplicates_none() {
         .and(path("/"))
         .and(body_partial_json(json!({
             "topic": "requests-topic",
-            "title": "New request: Movie 7 (2021)",
-            "message": "Movie, requested by Alice\nNote: please\nIMDb: tt0000007",
+            "title": "Ny bestilling: Movie 7 (2021)",
+            "message": "Film, bestilt av Alice\nMerknad: please",
             "tags": ["movie_camera"],
             "click": "https://example.com/admin#pending",
         })))

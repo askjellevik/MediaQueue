@@ -494,9 +494,11 @@ pub async fn post_member(
                 let body = json!({ "id": id, "name": name, "code": null });
                 Ok((StatusCode::CREATED, Json(body)).into_response())
             }
-            Ok(_) => Err(AppError::Conflict("a member with that name exists")),
+            Ok(_) => Err(AppError::Conflict(
+                "en bruker med det navnet finnes allerede",
+            )),
             Err(e) if is_unique_violation(&e) => {
-                Err(AppError::Conflict("that code is already in use"))
+                Err(AppError::Conflict("den koden er allerede i bruk"))
             }
             Err(e) => Err(e.into()),
         };
@@ -514,7 +516,11 @@ pub async fn post_member(
                 });
                 return Ok((StatusCode::CREATED, Json(body)).into_response());
             }
-            Ok(_) => return Err(AppError::Conflict("a member with that name exists")),
+            Ok(_) => {
+                return Err(AppError::Conflict(
+                    "en bruker med det navnet finnes allerede",
+                ));
+            }
             Err(e) if is_unique_violation(&e) => continue,
             Err(e) => return Err(e.into()),
         }
@@ -563,7 +569,9 @@ pub async fn patch_member(
             Ok(Json(json!({ "ok": true })))
         }
         db::MemberWrite::NotFound => Err(AppError::NotFound),
-        _ => Err(AppError::Conflict("a member with that name exists")),
+        _ => Err(AppError::Conflict(
+            "en bruker med det navnet finnes allerede",
+        )),
     }
 }
 
@@ -595,9 +603,9 @@ pub async fn post_rotate(
                 Ok(Json(json!({ "code": null })))
             }
             Ok(db::MemberWrite::NotFound) => Err(AppError::NotFound),
-            Ok(_) => Err(AppError::Conflict("member is revoked")),
+            Ok(_) => Err(AppError::Conflict("brukeren er deaktivert")),
             Err(e) if is_unique_violation(&e) => {
-                Err(AppError::Conflict("that code is already in use"))
+                Err(AppError::Conflict("den koden er allerede i bruk"))
             }
             Err(e) => Err(e.into()),
         };
@@ -612,7 +620,7 @@ pub async fn post_rotate(
                 ));
             }
             Ok(db::MemberWrite::NotFound) => return Err(AppError::NotFound),
-            Ok(_) => return Err(AppError::Conflict("member is revoked")),
+            Ok(_) => return Err(AppError::Conflict("brukeren er deaktivert")),
             Err(e) if is_unique_violation(&e) => continue,
             Err(e) => return Err(e.into()),
         }
@@ -666,7 +674,7 @@ pub async fn delete_member(
             Ok(Json(json!({ "ok": true })))
         }
         db::MemberDelete::NotFound => Err(AppError::NotFound),
-        db::MemberDelete::NotRevoked => Err(AppError::Conflict("revoke the member first")),
+        db::MemberDelete::NotRevoked => Err(AppError::Conflict("deaktiver brukeren først")),
     }
 }
 

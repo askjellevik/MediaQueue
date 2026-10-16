@@ -443,7 +443,6 @@ pub async fn post_request(
             is_movie: body.media_type == MediaType::Movie,
             requester: &user.member_name,
             note: note.as_deref(),
-            imdb_id: detail.imdb_id.as_deref(),
         };
         state
             .notifier
@@ -478,7 +477,7 @@ pub async fn delete_request(
         }
         db::CancelOutcome::NotFound => Err(AppError::NotFound),
         db::CancelOutcome::Locked => Err(AppError::Conflict(
-            "this request can no longer be cancelled",
+            "denne bestillingen kan ikke lenger trekkes tilbake",
         )),
     }
 }

@@ -32,23 +32,21 @@ pub struct NewRequestInfo<'a> {
     pub is_movie: bool,
     pub requester: &'a str,
     pub note: Option<&'a str>,
-    pub imdb_id: Option<&'a str>,
 }
 
 impl Message {
-    /// `New request: Dune (2021)`, with type, requester, note and IMDb ID
-    /// in the body, and a click-through to the admin Pending tab.
+    /// `Ny bestilling: Dune (2021)`, with type, requester and note in the
+    /// body, and a click-through to the admin Pending tab.
     pub fn new_request(info: &NewRequestInfo<'_>, public_origin: &str) -> Self {
         let title = match info.year {
-            Some(year) => format!("New request: {} ({year})", info.title),
-            None => format!("New request: {}", info.title),
+            Some(year) => format!("Ny bestilling: {} ({year})", info.title),
+            None => format!("Ny bestilling: {}", info.title),
         };
-        let kind = if info.is_movie { "Movie" } else { "Series" };
-        let mut lines = vec![format!("{kind}, requested by {}", info.requester)];
+        let kind = if info.is_movie { "Film" } else { "Serie" };
+        let mut lines = vec![format!("{kind}, bestilt av {}", info.requester)];
         if let Some(note) = info.note {
-            lines.push(format!("Note: {note}"));
+            lines.push(format!("Merknad: {note}"));
         }
-        lines.push(format!("IMDb: {}", info.imdb_id.unwrap_or("unknown")));
         Message {
             title,
             message: lines.join("\n"),
@@ -158,14 +156,10 @@ mod tests {
             is_movie: true,
             requester: "Alice",
             note: Some("the 2021 one"),
-            imdb_id: Some("tt1160419"),
         };
         let m = Message::new_request(&info, "https://requests.example.com");
-        assert_eq!(m.title, "New request: Dune (2021)");
-        assert_eq!(
-            m.message,
-            "Movie, requested by Alice\nNote: the 2021 one\nIMDb: tt1160419"
-        );
+        assert_eq!(m.title, "Ny bestilling: Dune (2021)");
+        assert_eq!(m.message, "Film, bestilt av Alice\nMerknad: the 2021 one");
         assert_eq!(m.tags, ["movie_camera"]);
         assert_eq!(
             m.click.as_deref(),
@@ -178,11 +172,10 @@ mod tests {
             is_movie: false,
             requester: "Bob",
             note: None,
-            imdb_id: None,
         };
         let m = Message::new_request(&series, "https://r.example");
-        assert_eq!(m.title, "New request: Severance");
-        assert_eq!(m.message, "Series, requested by Bob\nIMDb: unknown");
+        assert_eq!(m.title, "Ny bestilling: Severance");
+        assert_eq!(m.message, "Serie, bestilt av Bob");
         assert_eq!(m.tags, ["tv"]);
     }
 

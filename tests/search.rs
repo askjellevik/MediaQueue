@@ -448,7 +448,7 @@ async fn bad_queries_are_rejected_before_any_upstream_call() {
         assert_eq!(response.status, 400, "{uri}");
         assert_eq!(
             response.body,
-            r#"{"error":"bad_request","message":"the request was malformed"}"#
+            r#"{"error":"bad_request","message":"forespørselen er ugyldig"}"#
         );
     }
     let max = "a".repeat(80);

@@ -528,10 +528,10 @@ impl LoginLimiter {
         };
         let (title, message, tag) = if change.active {
             (
-                format!("{} throttle on", self.label),
+                format!("{}: forsinkelse slått på", self.label),
                 format!(
-                    "{} failed attempts within {} minutes. Attempts are now delayed; \
-                     correct ones still succeed.",
+                    "{} mislykkede forsøk i løpet av {} minutter. Forsøk blir nå forsinket; \
+                     riktige koder fungerer fortsatt.",
                     change.failures,
                     self.throttle.cfg.window_secs / 60
                 ),
@@ -539,9 +539,9 @@ impl LoginLimiter {
             )
         } else {
             (
-                format!("{} throttle off", self.label),
+                format!("{}: forsinkelse slått av", self.label),
                 format!(
-                    "Failed attempts are back down to {}. Attempts are no longer delayed.",
+                    "Mislykkede forsøk er nede på {}. Forsøk blir ikke lenger forsinket.",
                     change.failures
                 ),
                 "white_check_mark",
@@ -590,13 +590,19 @@ impl RateLimits {
             api: KeyedLimiter::new(api_quota, cfg.key_cap, clock.clone()),
             search: KeyedLimiter::new(search_quota, cfg.key_cap, clock.clone()),
             code_login: LoginLimiter::new(
-                "Access code",
+                "Tilgangskode",
                 cfg.code_throttle,
                 cfg,
                 clock.clone(),
                 notifier.clone(),
             ),
-            admin_login: LoginLimiter::new("Admin login", cfg.admin_throttle, cfg, clock, notifier),
+            admin_login: LoginLimiter::new(
+                "Admin-innlogging",
+                cfg.admin_throttle,
+                cfg,
+                clock,
+                notifier,
+            ),
         }
     }
 

@@ -303,7 +303,7 @@ async fn bad_status_changes_are_rejected() {
     assert_eq!(not_an_id.status, 404);
     assert_eq!(
         not_an_id.body,
-        r#"{"error":"not_found","message":"not found"}"#
+        r#"{"error":"not_found","message":"ikke funnet"}"#
     );
     let no_history = call(
         &app,
@@ -861,7 +861,7 @@ async fn admin_can_choose_a_members_code_on_create_and_rotate() {
     )
     .await;
     assert_eq!(taken.status, 409);
-    assert!(taken.body.contains("code"));
+    assert!(taken.body.contains("koden"));
     assert_eq!(
         count(&app.pool, "SELECT COUNT(*) FROM members").await,
         1,
