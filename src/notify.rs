@@ -1,7 +1,9 @@
-//! Fire-and-forget ntfy pushes. Sending runs on its own task with a short
+//! Fire-and-forget ntfy pushes. Sending runs on its own task with a
 //! timeout, so a slow or broken ntfy server can never delay or fail the
-//! request that triggered it. Used for throttle alerts and for genuinely new
-//! requests (never duplicates).
+//! request that triggered it. A push that fails for a passing reason (a
+//! timeout, a connection error, a 5xx or 429 from the server) is tried again
+//! a little later, because the public ntfy.sh does have such moments. Used
+//! for throttle alerts and for genuinely new requests (never duplicates).
 
 use std::{sync::Arc, time::Duration};
 
@@ -9,7 +11,11 @@ use serde::Serialize;
 
 use crate::config::NtfyConfig;
 
-const SEND_TIMEOUT: Duration = Duration::from_secs(3);
+/// For each attempt. ntfy.sh from a small home server can take a few seconds.
+const SEND_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// How long to wait before the second and the third attempt.
+const RETRY_DELAYS: &[Duration] = &[Duration::from_secs(2), Duration::from_secs(10)];
 
 /// One push. Sent as ntfy's JSON publish format, so titles with
 /// non-ASCII characters need no header encoding.
@@ -57,6 +63,15 @@ impl Message {
     }
 }
 
+/// Is this failure worth another try? A timeout, a connection problem, a 5xx
+/// or a 429 may pass; a 4xx (wrong token, bad topic) will not.
+fn is_passing(error: &reqwest::Error) -> bool {
+    match error.status() {
+        Some(status) => status.is_server_error() || status.as_u16() == 429,
+        None => !error.is_builder(),
+    }
+}
+
 #[derive(Serialize)]
 struct Publish<'a> {
     topic: &'a str,
@@ -68,6 +83,7 @@ struct Publish<'a> {
 pub struct Notifier {
     client: reqwest::Client,
     config: Arc<NtfyConfig>,
+    retry_delays: &'static [Duration],
 }
 
 impl Notifier {
@@ -75,14 +91,24 @@ impl Notifier {
         Self {
             client,
             config: Arc::new(config),
+            retry_delays: RETRY_DELAYS,
         }
+    }
+
+    /// Different waits between attempts, so tests need not sit through the
+    /// real ones.
+    #[cfg(test)]
+    fn with_retry_delays(mut self, delays: &'static [Duration]) -> Self {
+        self.retry_delays = delays;
+        self
     }
 
     pub fn is_enabled(&self) -> bool {
         self.config.url.is_some()
     }
 
-    /// Queues `message` for sending and returns immediately. Failures are
+    /// Queues `message` for sending and returns immediately. A passing
+    /// failure is retried after the configured waits; a final failure is
     /// logged and otherwise ignored. A no-op when ntfy is not configured.
     pub fn send(&self, message: Message) {
         if !self.is_enabled() {
@@ -90,9 +116,24 @@ impl Notifier {
         }
         let notifier = self.clone();
         tokio::spawn(async move {
-            if let Err(error) = notifier.deliver(&message).await {
+            let mut attempt = 0;
+            loop {
+                let Err(error) = notifier.deliver(&message).await else {
+                    return;
+                };
                 // reqwest errors carry the URL, not the topic or token.
-                tracing::warn!(error = %error.without_url(), "ntfy notification failed");
+                let error = error.without_url();
+                match notifier.retry_delays.get(attempt) {
+                    Some(&wait) if is_passing(&error) => {
+                        tracing::info!(%error, attempt = attempt + 1, "ntfy notification failed; trying again");
+                        tokio::time::sleep(wait).await;
+                        attempt += 1;
+                    }
+                    _ => {
+                        tracing::warn!(%error, attempts = attempt + 1, "ntfy notification failed");
+                        return;
+                    }
+                }
             }
         });
     }
@@ -177,6 +218,84 @@ mod tests {
         assert_eq!(m.title, "Ny bestilling: Severance");
         assert_eq!(m.message, "Serie, bestilt av Bob");
         assert_eq!(m.tags, ["tv"]);
+    }
+
+    const FAST: &[Duration] = &[Duration::from_millis(10), Duration::from_millis(10)];
+
+    fn notifier_for(server: &wiremock::MockServer) -> Notifier {
+        let config = NtfyConfig {
+            url: Some(server.uri()),
+            topic: "t".into(),
+            token: None,
+        };
+        Notifier::new(reqwest::Client::new(), config).with_retry_delays(FAST)
+    }
+
+    fn push() -> Message {
+        Message {
+            title: "Ny bestilling: Dune".into(),
+            message: "Film, bestilt av Alice".into(),
+            tags: vec!["movie_camera"],
+            click: None,
+            priority: None,
+        }
+    }
+
+    /// How many pushes the server has received once it has gone quiet.
+    async fn received(server: &wiremock::MockServer, at_least: usize) -> usize {
+        for _ in 0..100 {
+            let n = server.received_requests().await.unwrap_or_default().len();
+            if n >= at_least {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        server.received_requests().await.unwrap_or_default().len()
+    }
+
+    #[tokio::test]
+    async fn a_push_that_hits_a_502_is_tried_again_and_delivered() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(502))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        notifier_for(&server).send(push());
+        assert_eq!(received(&server, 2).await, 2, "one failure, one retry");
+    }
+
+    #[tokio::test]
+    async fn a_push_gives_up_after_three_attempts() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+
+        notifier_for(&server).send(push());
+        assert_eq!(received(&server, 3).await, 3);
+    }
+
+    #[tokio::test]
+    async fn a_rejected_push_is_not_retried() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+
+        notifier_for(&server).send(push());
+        assert_eq!(received(&server, 2).await, 1, "a 403 will not pass");
     }
 
     #[test]

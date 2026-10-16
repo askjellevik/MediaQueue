@@ -108,7 +108,7 @@ ignored.
 | `CODE_PEPPER` | required | HMAC key for access codes, at least 32 bytes. Changing it invalidates every code. |
 | `ADMIN_USER`, `ADMIN_PASSWORD_HASH` | required | Admin login; make the hash with `mediaqueue hash-password`. |
 | `TMDB_TOKEN` | required | TMDB API read access token. |
-| `NTFY_URL`, `NTFY_TOPIC`, `NTFY_TOKEN` | off | Push notification for new requests. |
+| `NTFY_URL`, `NTFY_TOPIC`, `NTFY_TOKEN` | off | Push notification for new requests. A push that fails for a passing reason (timeout, connection error, 5xx, 429) is tried up to two more times, 2 s and 10 s later. |
 | `CF_ACCESS_ENABLED`, `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD`, `CF_ACCESS_CERTS_URL` | off | Cloudflare Access check (needs the `cf-access` build feature). |
 | `TRUSTED_PROXY_CIDRS` | loopback and `172.16.0.0/12` | Proxies trusted to send `X-Real-IP`. |
 | `RUST_LOG` | `info` | Log filter. |
