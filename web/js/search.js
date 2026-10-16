@@ -593,6 +593,9 @@ function renderApp(me) {
 
   const mineItem = (r, group) => {
     const status = chip(r.status, STATUS_LABEL[r.status] || r.status);
+    // The chip and the cancel button stay together: beside the text on wide
+    // screens, under it on narrow ones.
+    const side = el('div', { class: 'mine-side' }, status);
     // IMDb once the request has an ID, the TMDB page until then.
     const href = r.imdb_id ? imdbUrl(r.imdb_id) : tmdbUrl(r.type, r.tmdb_id);
     const site = r.imdb_id ? 'IMDb' : 'TMDB';
@@ -606,9 +609,9 @@ function renderApp(me) {
         el('p', { class: 'opt-title' }, extLink(href, t.onSite(r.title, site), r.title)),
         el('p', { class: 'opt-meta' }, r.year ? String(r.year) : null, badge(r.type), t.orderedOn(formatDate(r.created_at))),
       ),
-      status,
+      side,
     );
-    if (r.can_cancel) li.append(cancelButton(r, li));
+    if (r.can_cancel) side.append(cancelButton(r, li));
     const node = { id: r.id, li, status, state: r.status, group, key: keyOf(r) };
     mineNodes.set(r.id, node);
     return node;
