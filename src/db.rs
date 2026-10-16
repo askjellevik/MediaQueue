@@ -390,12 +390,14 @@ pub struct RequestState {
     pub tmdb_id: i64,
     pub media_type: String,
     pub status: String,
+    pub infuse_pro: bool,
 }
 
 /// Current status of every request matching any of `tmdb_ids`, in one
 /// SELECT however many IDs there are. The IDs are bound as one JSON array
 /// and expanded by `json_each`, so the statement text never changes.
-/// Callers match `media_type` themselves.
+/// Callers match `media_type` and `infuse_pro` themselves: a title can have
+/// one request per variant.
 pub async fn request_states(
     pool: &SqlitePool,
     tmdb_ids: &[u32],
@@ -406,7 +408,8 @@ pub async fn request_states(
     let ids_json = serde_json::to_string(tmdb_ids).map_err(|e| sqlx::Error::Encode(Box::new(e)))?;
     sqlx::query_as!(
         RequestState,
-        r#"SELECT tmdb_id AS "tmdb_id!", media_type AS "media_type!", status AS "status!"
+        r#"SELECT tmdb_id AS "tmdb_id!", media_type AS "media_type!", status AS "status!",
+                  infuse_pro AS "infuse_pro!: bool"
            FROM requests
            WHERE tmdb_id IN (SELECT value FROM json_each(?))"#,
         ids_json
@@ -478,6 +481,7 @@ pub struct NewRequest<'a> {
     pub year: Option<i64>,
     pub poster_path: Option<&'a str>,
     pub note: Option<&'a str>,
+    pub infuse_pro: bool,
     pub member_id: i64,
     pub member_name: &'a str,
     pub now: i64,
@@ -494,6 +498,7 @@ pub struct RequestRow {
     pub poster_path: Option<String>,
     pub status: String,
     pub created_at: i64,
+    pub infuse_pro: bool,
 }
 
 pub enum CreateOutcome {
@@ -504,7 +509,7 @@ pub enum CreateOutcome {
 }
 
 /// Inserts the request, or logs a `duplicate` event if the title is
-/// already queued, in one `BEGIN IMMEDIATE` transaction. `within_quota`
+/// already queued for the same Infuse PRO variant, in one `BEGIN IMMEDIATE` transaction. `within_quota`
 /// re-checks the quota under the write lock; if it says no, the
 /// transaction is rolled back and nothing is written.
 pub async fn create_request(
@@ -531,9 +536,9 @@ pub async fn create_request(
 
     let inserted = sqlx::query_scalar!(
         r#"INSERT INTO requests (tmdb_id, media_type, imdb_id, title, year, poster_path, note,
-                                 status, requested_by, created_at, status_changed_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
-           ON CONFLICT (tmdb_id, media_type) DO NOTHING
+                                 infuse_pro, status, requested_by, created_at, status_changed_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+           ON CONFLICT (tmdb_id, media_type, infuse_pro) DO NOTHING
            RETURNING id AS "id!""#,
         new.tmdb_id,
         new.media_type,
@@ -542,6 +547,7 @@ pub async fn create_request(
         new.year,
         new.poster_path,
         new.note,
+        new.infuse_pro,
         new.member_id,
         new.now,
         new.now
@@ -558,10 +564,11 @@ pub async fn create_request(
         RequestRow,
         r#"SELECT id AS "id!", tmdb_id AS "tmdb_id!", media_type AS "media_type!",
                   imdb_id, title AS "title!", year, poster_path, status AS "status!",
-                  created_at AS "created_at!"
-           FROM requests WHERE tmdb_id = ? AND media_type = ?"#,
+                  created_at AS "created_at!", infuse_pro AS "infuse_pro!: bool"
+           FROM requests WHERE tmdb_id = ? AND media_type = ? AND infuse_pro = ?"#,
         new.tmdb_id,
-        new.media_type
+        new.media_type,
+        new.infuse_pro
     )
     .fetch_one(&mut *tx)
     .await?;
@@ -597,6 +604,7 @@ pub struct MineRow {
     pub poster_path: Option<String>,
     pub status: String,
     pub created_at: i64,
+    pub infuse_pro: bool,
     pub can_cancel: bool,
 }
 
@@ -701,7 +709,7 @@ pub async fn requests_for_member(
         MineRow,
         r#"SELECT r.id AS "id!", r.tmdb_id AS "tmdb_id!", r.media_type AS "media_type!",
                   r.imdb_id, r.title AS "title!", r.year, r.poster_path, r.status AS "status!",
-                  r.created_at AS "created_at!",
+                  r.created_at AS "created_at!", r.infuse_pro AS "infuse_pro!: bool",
                   (r.requested_by = ?1 AND r.status = 'pending'
                    AND NOT EXISTS (SELECT 1 FROM request_events d
                                    WHERE d.request_id = r.id AND d.kind = 'duplicate'))
@@ -740,6 +748,7 @@ pub struct AdminRequestRow {
     pub year: Option<i64>,
     pub poster_path: Option<String>,
     pub note: Option<String>,
+    pub infuse_pro: bool,
     pub status: String,
     pub requester: String,
     pub created_at: i64,
@@ -766,6 +775,7 @@ pub async fn admin_requests(
         AdminRequestRow,
         r#"SELECT r.id AS "id!", r.tmdb_id AS "tmdb_id!", r.media_type AS "media_type!",
                   r.imdb_id, r.title AS "title!", r.year, r.poster_path, r.note,
+                  r.infuse_pro AS "infuse_pro!: bool",
                   r.status AS "status!", COALESCE(m.name, r.requested_by_name, '(deleted)') AS "requester!",
                   r.created_at AS "created_at!", r.status_changed_at AS "status_changed_at!",
                   (SELECT COUNT(*) FROM request_events e
@@ -896,6 +906,7 @@ pub struct ExportRow {
     pub times_requested: String,
     pub created_at: String,
     pub status_changed_at: String,
+    pub infuse_pro: String,
 }
 
 /// Neutralises spreadsheet formulas: a cell starting with `=`, `+`, `-`
@@ -925,6 +936,7 @@ impl From<ExportRow> for axum::body::Bytes {
             &row.times_requested,
             &row.created_at,
             &row.status_changed_at,
+            &row.infuse_pro,
         ];
         let mut writer = csv::Writer::from_writer(Vec::with_capacity(256));
         // Writing to a Vec cannot fail; an error would only drop the line.
@@ -945,14 +957,15 @@ pub fn export_csv(pool: &'static SqlitePool) -> axum::body::Body {
                   status AS "status!: String", requested_by AS "requested_by!: String",
                   note AS "note?: String", times_requested AS "times_requested!: String",
                   created_at AS "created_at!: String",
-                  status_changed_at AS "status_changed_at!: String"
+                  status_changed_at AS "status_changed_at!: String",
+                  infuse_pro AS "infuse_pro!: String"
            FROM (
              SELECT 0 AS sort_key, 0 AS sort_id,
                     'id' AS id, 'tmdb_id' AS tmdb_id, 'type' AS media_type, 'title' AS title,
                     'year' AS year, 'imdb_id' AS imdb_id, 'status' AS status,
                     'requested_by' AS requested_by, 'note' AS note,
                     'times_requested' AS times_requested, 'created_at' AS created_at,
-                    'status_changed_at' AS status_changed_at
+                    'status_changed_at' AS status_changed_at, 'infuse_pro' AS infuse_pro
              UNION ALL
              SELECT 1, r.id, CAST(r.id AS TEXT), CAST(r.tmdb_id AS TEXT), r.media_type, r.title,
                     CAST(r.year AS TEXT), r.imdb_id, r.status,
@@ -961,7 +974,8 @@ pub fn export_csv(pool: &'static SqlitePool) -> axum::body::Body {
                           WHERE e.request_id = r.id AND e.kind IN ('submitted', 'duplicate'))
                          AS TEXT),
                     strftime('%Y-%m-%dT%H:%M:%SZ', r.created_at, 'unixepoch'),
-                    strftime('%Y-%m-%dT%H:%M:%SZ', r.status_changed_at, 'unixepoch')
+                    strftime('%Y-%m-%dT%H:%M:%SZ', r.status_changed_at, 'unixepoch'),
+                    CAST(r.infuse_pro AS TEXT)
              FROM requests r LEFT JOIN members m ON m.id = r.requested_by
            )
            ORDER BY sort_key, sort_id"#
@@ -1382,6 +1396,19 @@ mod tests {
         .execute(&pool)
         .await;
         assert!(dup.is_err());
+        // Old rows are non-PRO, and the PRO variant of the same title is free.
+        let (pro,): (i64,) = sqlx::query_as("SELECT infuse_pro FROM requests WHERE id = 3")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(pro, 0);
+        sqlx::query(
+            "INSERT INTO requests (tmdb_id, media_type, title, infuse_pro, requested_by, created_at, status_changed_at)
+             VALUES (10, 'movie', 'Dune PRO', 1, 7, 6, 6)",
+        )
+        .execute(&pool)
+        .await
+        .expect("PRO variant of an existing title");
         let index: (i64,) = sqlx::query_as(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'requests_status_created'",
         )

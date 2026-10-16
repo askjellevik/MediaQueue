@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", tmdb_id AS \"tmdb_id!\", media_type AS \"media_type!\",\n                  imdb_id, title AS \"title!\", year, poster_path, status AS \"status!\",\n                  created_at AS \"created_at!\"\n           FROM requests WHERE tmdb_id = ? AND media_type = ?",
+  "query": "SELECT id AS \"id!\", tmdb_id AS \"tmdb_id!\", media_type AS \"media_type!\",\n                  imdb_id, title AS \"title!\", year, poster_path, status AS \"status!\",\n                  created_at AS \"created_at!\", infuse_pro AS \"infuse_pro!: bool\"\n           FROM requests WHERE tmdb_id = ? AND media_type = ? AND infuse_pro = ?",
   "describe": {
     "columns": [
       {
@@ -101,10 +101,21 @@
             "name": "created_at"
           }
         }
+      },
+      {
+        "name": "infuse_pro!: bool",
+        "ordinal": 9,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "infuse_pro"
+          }
+        }
       }
     ],
     "parameters": {
-      "Right": 2
+      "Right": 3
     },
     "nullable": [
       false,
@@ -115,8 +126,9 @@
       true,
       true,
       false,
+      false,
       false
     ]
   },
-  "hash": "769188c553fd62254af82679112482b6b0fea43733825dc2516d6d8e16260333"
+  "hash": "8845934ddc1de5f2073db8d2601f2633558a0a9749c9731172f4ddfd52d28c1a"
 }

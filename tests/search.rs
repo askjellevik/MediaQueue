@@ -326,7 +326,7 @@ async fn people_are_dropped_and_payload_is_slim_and_capped_at_eight() {
     assert_eq!(items.len(), 8);
 
     let expected: BTreeSet<&str> = [
-        "tmdb_id", "type", "title", "year", "poster", "overview", "state",
+        "tmdb_id", "type", "title", "year", "poster", "overview", "states",
     ]
     .into_iter()
     .collect();
@@ -408,11 +408,19 @@ async fn results_are_annotated_with_request_state() {
         .as_array()
         .unwrap()
         .iter()
-        .map(|r| r["state"].as_str().unwrap())
+        .map(|r| r["states"]["plain"].as_str().unwrap())
         .collect();
     assert_eq!(
         states,
         ["requested", "added", "have", "unavailable", "none", "none"]
+    );
+    // Nobody asked for the PRO variant of any of them.
+    assert!(
+        body["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["states"]["pro"] == "none")
     );
     // Who asked is never part of a search result.
     assert!(!response.body.contains("Bob"));

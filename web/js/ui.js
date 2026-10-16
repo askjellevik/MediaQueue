@@ -100,6 +100,11 @@ export function badge(type) {
   return el('span', { class: 'badge', text: TYPE_LABEL[type] || type });
 }
 
+// Which Infuse PRO answer a request was made with.
+export function proBadge(label) {
+  return el('span', { class: 'badge badge-pro', text: label });
+}
+
 // "45 s", "14:59" or "3 t 12 min".
 export function formatWait(totalSeconds) {
   const s = Math.max(0, Math.ceil(totalSeconds));

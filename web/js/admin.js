@@ -11,6 +11,7 @@ import {
   appBar,
   appIcon,
   badge,
+  proBadge,
   chip,
   clear,
   copyOnClick,
@@ -327,7 +328,7 @@ function renderQueue(panel, tab, { say, expired }) {
       el(
         'div',
         { class: 'min-w-0' },
-        el('p', { class: 'req-title' }, el('strong', {}, heading), item.year ? ` (${item.year})` : null, badge(item.type)),
+        el('p', { class: 'req-title' }, el('strong', {}, heading), item.year ? ` (${item.year})` : null, badge(item.type), proBadge(item.infuse_pro ? ta.withPro : ta.withoutPro)),
         meta,
         item.note ? el('p', { class: 'req-note', text: ta.note(item.note) }) : null,
       ),

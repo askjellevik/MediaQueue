@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT r.id AS \"id!\", r.tmdb_id AS \"tmdb_id!\", r.media_type AS \"media_type!\",\n                  r.imdb_id, r.title AS \"title!\", r.year, r.poster_path, r.note,\n                  r.status AS \"status!\", COALESCE(m.name, r.requested_by_name, '(deleted)') AS \"requester!\",\n                  r.created_at AS \"created_at!\", r.status_changed_at AS \"status_changed_at!\",\n                  (SELECT COUNT(*) FROM request_events e\n                   WHERE e.request_id = r.id AND e.kind IN ('submitted', 'duplicate'))\n                    AS \"times_requested!: i64\"\n           FROM requests r\n           LEFT JOIN members m ON m.id = r.requested_by\n           WHERE (?1 IS NULL OR r.status = ?1)\n             AND (?2 IS NULL OR r.title LIKE ?2 ESCAPE '\\'\n                  OR COALESCE(m.name, r.requested_by_name) LIKE ?2 ESCAPE '\\'\n                  OR r.imdb_id = ?3)\n             AND (r.created_at < ?4 OR (r.created_at = ?4 AND r.id < ?5))\n           ORDER BY r.created_at DESC, r.id DESC\n           LIMIT ?6",
+  "query": "SELECT r.id AS \"id!\", r.tmdb_id AS \"tmdb_id!\", r.media_type AS \"media_type!\",\n                  r.imdb_id, r.title AS \"title!\", r.year, r.poster_path, r.status AS \"status!\",\n                  r.created_at AS \"created_at!\", r.infuse_pro AS \"infuse_pro!: bool\",\n                  (r.requested_by = ?1 AND r.status = 'pending'\n                   AND NOT EXISTS (SELECT 1 FROM request_events d\n                                   WHERE d.request_id = r.id AND d.kind = 'duplicate'))\n                    AS \"can_cancel!: bool\"\n           FROM requests r\n           WHERE (r.requested_by = ?1\n                  OR EXISTS (SELECT 1 FROM request_events e\n                             WHERE e.request_id = r.id AND e.kind = 'duplicate'\n                               AND e.actor = ?2))\n             AND (r.created_at < ?3 OR (r.created_at = ?3 AND r.id < ?4))\n             AND (?6 = 0 OR (?6 = 1 AND r.status = 'pending')\n                  OR (?6 = 2 AND r.status <> 'pending'))\n           ORDER BY r.created_at DESC, r.id DESC\n           LIMIT ?5",
   "describe": {
     "columns": [
       {
@@ -81,19 +81,8 @@
         }
       },
       {
-        "name": "note",
-        "ordinal": 7,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "requests",
-            "name": "note"
-          }
-        }
-      },
-      {
         "name": "status!",
-        "ordinal": 8,
+        "ordinal": 7,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -103,14 +92,8 @@
         }
       },
       {
-        "name": "requester!",
-        "ordinal": 9,
-        "type_info": "Text",
-        "origin": "Expression"
-      },
-      {
         "name": "created_at!",
-        "ordinal": 10,
+        "ordinal": 8,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -120,19 +103,19 @@
         }
       },
       {
-        "name": "status_changed_at!",
-        "ordinal": 11,
+        "name": "infuse_pro!: bool",
+        "ordinal": 9,
         "type_info": "Integer",
         "origin": {
           "Table": {
             "table": "requests",
-            "name": "status_changed_at"
+            "name": "infuse_pro"
           }
         }
       },
       {
-        "name": "times_requested!: i64",
-        "ordinal": 12,
+        "name": "can_cancel!: bool",
+        "ordinal": 10,
         "type_info": "Integer",
         "origin": "Expression"
       }
@@ -148,13 +131,11 @@
       false,
       true,
       true,
-      true,
-      false,
       false,
       false,
       false,
       false
     ]
   },
-  "hash": "1ae7cda78ce1439b1bc50fa726cdff9ac4f90f7ed49af82c8ac2140a08b3e4bb"
+  "hash": "0501d967d5e39ef7e14cf6f11b213239e167c4a3a4de37fa33387443f76ce4f4"
 }

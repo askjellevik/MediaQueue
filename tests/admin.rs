@@ -497,6 +497,7 @@ async fn queue_rows_carry_requester_imdb_and_dmm_link_and_filter_by_text() {
     assert_eq!(items[0]["imdb_id"], "tt0438631");
     assert_eq!(items[0]["dmm_url"], "https://dmm.example/movie/tt0438631");
     assert_eq!(items[0]["times_requested"], 1);
+    assert_eq!(items[0]["infuse_pro"], false);
 
     // By requester name, by IMDb ID, and with LIKE wildcards taken literally.
     for (q, title) in [
@@ -657,7 +658,8 @@ async fn csv_export_streams_the_archive_and_neutralises_formulas() {
             "note",
             "times_requested",
             "created_at",
-            "status_changed_at"
+            "status_changed_at",
+            "infuse_pro"
         ]
     );
     let rows: Vec<csv::StringRecord> = reader.records().map(Result::unwrap).collect();

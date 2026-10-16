@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT tmdb_id AS \"tmdb_id!\", media_type AS \"media_type!\", status AS \"status!\"\n           FROM requests\n           WHERE tmdb_id IN (SELECT value FROM json_each(?))",
+  "query": "SELECT tmdb_id AS \"tmdb_id!\", media_type AS \"media_type!\", status AS \"status!\",\n                  infuse_pro AS \"infuse_pro!: bool\"\n           FROM requests\n           WHERE tmdb_id IN (SELECT value FROM json_each(?))",
   "describe": {
     "columns": [
       {
@@ -35,6 +35,17 @@
             "name": "status"
           }
         }
+      },
+      {
+        "name": "infuse_pro!: bool",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "infuse_pro"
+          }
+        }
       }
     ],
     "parameters": {
@@ -43,8 +54,9 @@
     "nullable": [
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "9fdd6b72f6a525c7b2df53ccd6932f973f3bb3030d43944fef48c2eb52446060"
+  "hash": "6d99f94b2b19a6f54c702f488bf2ae7f4c8c21706e6eba8016ee1780e275a746"
 }
