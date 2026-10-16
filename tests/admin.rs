@@ -103,7 +103,7 @@ async fn count(pool: &SqlitePool, sql: &'static str) -> i64 {
 async fn every_admin_route_is_401_anonymous_and_403_for_members() {
     let app = common::spawn_app().await;
     let user = login_new_member(&app, "Alice").await;
-    let routes: [(&str, &str, Option<&str>); 14] = [
+    let routes: [(&str, &str, Option<&str>); 15] = [
         ("POST", "/api/admin/logout", Some("{}")),
         ("GET", "/api/admin/requests", None),
         ("GET", "/api/admin/requests?status=all", None),
@@ -112,6 +112,7 @@ async fn every_admin_route_is_401_anonymous_and_403_for_members() {
             "/api/admin/requests/1",
             Some(r#"{"status":"added"}"#),
         ),
+        ("DELETE", "/api/admin/requests/1", None),
         ("GET", "/api/admin/requests/1/events", None),
         ("GET", "/api/admin/export.csv", None),
         ("GET", "/api/admin/members", None),
@@ -317,7 +318,7 @@ async fn bad_status_changes_are_rejected() {
 }
 
 #[tokio::test]
-async fn archive_lists_every_request_and_nothing_deletes_rows() {
+async fn archive_lists_every_request_and_events_cannot_be_deleted_on_their_own() {
     let app = common::spawn_app().await;
     let admin = login_admin(&app).await;
     let (alice, _) = common::create_member(&app.pool, &app.config, "Alice").await;
@@ -373,9 +374,9 @@ async fn archive_lists_every_request_and_nothing_deletes_rows() {
         "pending is the default"
     );
 
-    // There is no way to delete a request or an event over the API.
+    // A whole request can be deleted (see below), but a single event or
+    // the whole list cannot.
     for path in [
-        format!("/api/admin/requests/{}", ids[0]),
         format!("/api/admin/requests/{}/events", ids[0]),
         "/api/admin/requests".to_string(),
     ] {
@@ -391,6 +392,81 @@ async fn archive_lists_every_request_and_nothing_deletes_rows() {
         count(&app.pool, "SELECT COUNT(*) FROM request_events").await,
         5
     );
+}
+
+#[tokio::test]
+async fn admin_can_delete_a_request_of_any_status_with_its_history() {
+    let app = common::spawn_app().await;
+    let admin = login_admin(&app).await;
+    let (alice, _) = common::create_member(&app.pool, &app.config, "Alice").await;
+    common::create_member(&app.pool, &app.config, "Bob").await;
+    let keep = seed_request(&app.pool, (alice, "Alice"), 1, "Keep", "pending", 100).await;
+    let gone = seed_request(&app.pool, (alice, "Alice"), 2, "Gone", "added", 101).await;
+    for (kind, actor) in [("duplicate", "Bob"), ("status", "admin")] {
+        sqlx::query(
+            "INSERT INTO request_events (request_id, kind, actor, created_at) VALUES (?, ?, ?, 102)",
+        )
+        .bind(gone)
+        .bind(kind)
+        .bind(actor)
+        .execute(&app.pool)
+        .await
+        .unwrap();
+    }
+
+    let response = call(
+        &app,
+        Some(&admin),
+        "DELETE",
+        &format!("/api/admin/requests/{gone}"),
+        None,
+    )
+    .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    assert_eq!(json_of(&response), json!({ "ok": true }));
+
+    // The request and all three of its events are gone; the other stays.
+    assert_eq!(count(&app.pool, "SELECT COUNT(*) FROM requests").await, 1);
+    assert_eq!(
+        count(
+            &app.pool,
+            "SELECT COUNT(*) FROM request_events WHERE request_id = 1"
+        )
+        .await,
+        1
+    );
+    assert_eq!(
+        count(&app.pool, "SELECT COUNT(*) FROM request_events").await,
+        1
+    );
+    let all = call(
+        &app,
+        Some(&admin),
+        "GET",
+        "/api/admin/requests?status=all",
+        None,
+    )
+    .await;
+    let listed: Vec<i64> = json_of(&all)["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_i64().unwrap())
+        .collect();
+    assert_eq!(listed, [keep]);
+
+    // Deleting it again, or something that never existed, is a 404.
+    for id in [gone, 9999] {
+        let again = call(
+            &app,
+            Some(&admin),
+            "DELETE",
+            &format!("/api/admin/requests/{id}"),
+            None,
+        )
+        .await;
+        assert_eq!(again.status, 404, "{}", again.body);
+    }
 }
 
 #[tokio::test]

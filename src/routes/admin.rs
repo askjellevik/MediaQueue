@@ -266,6 +266,22 @@ pub async fn patch_request(
     Ok(Json(json!({ "id": id, "status": to, "changed": changed })))
 }
 
+/// `DELETE /api/admin/requests/{id}`: removes the request and its history,
+/// whatever its status. It disappears from the requester's list too.
+pub async fn delete_request(
+    State(state): State<AppState>,
+    _admin: RequireAdmin,
+    AppPath(id): AppPath<i64>,
+) -> Result<impl IntoResponse, AppError> {
+    if !db::delete_request(&state.pool, id).await? {
+        return Err(AppError::NotFound);
+    }
+    tracing::info!(request_id = id, "request deleted by admin");
+    state.events.publish(Tick::Members);
+    state.events.publish(Tick::Admin);
+    Ok(Json(json!({ "ok": true })))
+}
+
 /// `GET /api/admin/events`: a server-sent tick whenever requests change.
 pub async fn get_events(
     State(state): State<AppState>,
