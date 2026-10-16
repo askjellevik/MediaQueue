@@ -323,8 +323,10 @@ async fn admin_queue_archive_and_members_work_end_to_end() {
         ("js/live.js", "text/javascript"),
         ("js/ui.js", "text/javascript"),
         ("js/strings.js", "text/javascript"),
+        ("js/strings-admin.js", "text/javascript"),
         ("js/theme.js", "text/javascript"),
         ("css/app.css", "text/css"),
+        ("css/admin.css", "text/css"),
         ("img/tmdb.svg", "image/svg+xml"),
         ("img/icon.svg", "image/svg+xml"),
     ] {
@@ -403,6 +405,14 @@ async fn admin_queue_archive_and_members_work_end_to_end() {
             {"id": 1, "kind": "submitted", "actor": "Alice", "from_status": null, "to_status": null,
              "note": "the 2021 one", "created_at": 1700000000}
         ]}),
+    )
+    .await;
+    api_json(
+        &server,
+        "DELETE",
+        "/api/admin/requests/1",
+        200,
+        json!({"ok": true}),
     )
     .await;
     api_json(

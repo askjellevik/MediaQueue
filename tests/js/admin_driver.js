@@ -26,7 +26,8 @@ async function waitFor(find, ms = 3000) {
 }
 
 const button = (text) => [...document.querySelectorAll('button')].find((b) => b.textContent === text);
-const rowWith = (text) => [...document.querySelectorAll('tbody tr')].find((r) => r.textContent.includes(text));
+// Request cards and member table rows.
+const rowWith = (text) => [...document.querySelectorAll('.req-card, tbody tr')].find((r) => r.textContent.includes(text));
 
 async function run() {
   const tab = await waitFor(() => document.getElementById('tab-pending'));
@@ -39,12 +40,14 @@ async function run() {
   check(!!row, 'pending row not rendered');
   if (!row) return;
   check(row.textContent.includes('Alice'), 'requester missing');
-  check(row.textContent.includes('tt1160419'), 'IMDb ID missing');
+  check(!row.textContent.includes('null'), `stray "null" in the card: ${row.textContent}`);
+  check(!row.textContent.includes('tt1160419'), 'IMDb ID is shown on the card');
   const dmm = row.querySelector('a[aria-label^="Åpne i DMM"]');
   check(dmm && dmm.href === 'https://dmm.example/movie/tt1160419', `DMM link was ${dmm && dmm.href}`);
   check(dmm && dmm.rel.includes('noopener'), 'DMM link lacks rel=noopener');
   check(!row.querySelector('button[aria-label^="Åpne igjen"]'), 'pending row offers Åpne igjen');
-  check(!!row.querySelector('button.code-btn'), 'IMDb ID is not a button');
+  check(!!row.querySelector('details.menu button[aria-label^="Kopier IMDb-ID"]'), 'no Kopier IMDb-ID in the menu');
+  check(!row.querySelector('button[aria-label^="Slett"]'), 'pending row offers Slett');
   check(!!row.querySelector('details.menu button[aria-label^="Har fra før"]'), 'no Har fra før in the menu');
   check(!!button('Oppdater'), 'no Oppdater button');
 
@@ -71,9 +74,23 @@ async function run() {
   // Archive: history expands on demand.
   document.getElementById('tab-archive').click();
   const archived = await waitFor(() => rowWith('Dune'));
-  check(!!archived?.querySelector('details.menu summary[aria-label^="Endre status"]'), 'no Endre status menu');
+  check(!!archived?.querySelector('details.menu summary[aria-label^="Handlinger"]'), 'no Handlinger menu');
   check(!!archived, 'archive row not rendered');
   check(!!document.querySelector('a[href="/api/admin/export.csv"]'), 'no Export CSV link');
+
+  // The menu floats over what follows: opening it must not make the card
+  // taller, and the panel must stay on screen.
+  const menuEl = archived && archived.querySelector('details.menu');
+  if (menuEl) {
+    const before = archived.getBoundingClientRect().height;
+    menuEl.open = true;
+    await sleep(50);
+    check(Math.abs(archived.getBoundingClientRect().height - before) < 1, 'opening Handlinger changed the card height');
+    const panel = menuEl.querySelector('.menu-list').getBoundingClientRect();
+    check(panel.width > 100 && panel.left >= 0 && panel.right <= window.innerWidth, `menu panel was cut off: ${panel.left}..${panel.right}`);
+    check(!!menuEl.querySelector('button[aria-label^="Slett"]'), 'archive menu has no Slett');
+    menuEl.open = false;
+  }
   const history = archived && archived.querySelector('button[aria-label^="Historikk"]');
   check(!!history, 'no History button');
   if (history) {
@@ -87,6 +104,24 @@ async function run() {
     await waitFor(() => (window.__eventFetches || 0) > before);
     check((window.__eventFetches || 0) > before, 'open history was not refetched');
   }
+
+  // Delete: after a confirmation the card goes, with a toast.
+  const realConfirm = window.confirm;
+  let asked = '';
+  window.confirm = (text) => {
+    asked = text;
+    return true;
+  };
+  const del = archived && archived.querySelector('button[aria-label^="Slett"]');
+  if (del) {
+    del.click();
+    await waitFor(() => !archived.isConnected);
+    check(!archived.isConnected, 'deleted request stayed on screen');
+    check(asked.includes('Dune'), `confirm text was ${asked}`);
+    const gone = await waitFor(() => [...document.querySelectorAll('.toast-ok')].find((n) => n.textContent.includes('Slettet «Dune»')));
+    check(!!gone, 'no toast after deleting');
+  }
+  window.confirm = realConfirm;
 
   // Members: add one, see the code once.
   document.getElementById('tab-members').click();

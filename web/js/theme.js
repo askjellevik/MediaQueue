@@ -1,6 +1,7 @@
-// Light/dark choice. Loaded as a plain script in <head> on both pages so
-// data-theme is set before the first paint. The footer toggle in ui.js
-// uses window.mqTheme. "system" follows the OS setting and is the default.
+// Light/dark choice. Loaded as a plain script in <head> on both pages so the
+// "dark" class on <html> is set before the first paint. The footer toggle in
+// ui.js uses window.mqTheme. "system" follows the OS setting and is the
+// default.
 
 (() => {
   const KEY = 'mq-theme';
@@ -16,7 +17,7 @@
 
   const apply = () => {
     const theme = choice === 'system' ? (system.matches ? 'dark' : 'light') : choice;
-    document.documentElement.setAttribute('data-theme', theme);
+    document.documentElement.classList.toggle('dark', theme === 'dark');
   };
 
   const set = (next) => {

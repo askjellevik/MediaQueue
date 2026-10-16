@@ -5,9 +5,12 @@
 import { call } from './api.js';
 import { watch } from './live.js';
 import { t } from './strings.js';
+import { ta } from './strings-admin.js';
 import {
   STATUS_LABEL,
-  TYPE_LABEL,
+  appBar,
+  appIcon,
+  badge,
   chip,
   clear,
   copyOnClick,
@@ -24,28 +27,28 @@ import {
 } from './ui.js';
 
 const root = document.getElementById('app');
-const TITLE = t.adminTitle;
+const TITLE = ta.adminTitle;
 
 const TABS = [
-  { id: 'pending', label: t.tabs.pending, status: 'pending', empty: t.empty.pending },
-  { id: 'added', label: t.tabs.added, status: 'added', empty: t.empty.added },
-  { id: 'refused', label: t.tabs.refused, status: 'refused', empty: t.empty.refused },
-  { id: 'already_had', label: t.tabs.already_had, status: 'already_had', empty: t.empty.already_had },
-  { id: 'archive', label: t.tabs.archive, status: 'all', empty: t.empty.archive },
-  { id: 'members', label: t.tabs.members },
+  { id: 'pending', label: ta.tabs.pending, status: 'pending', empty: ta.empty.pending },
+  { id: 'added', label: ta.tabs.added, status: 'added', empty: ta.empty.added },
+  { id: 'refused', label: ta.tabs.refused, status: 'refused', empty: ta.empty.refused },
+  { id: 'already_had', label: ta.tabs.already_had, status: 'already_had', empty: ta.empty.already_had },
+  { id: 'archive', label: ta.tabs.archive, status: 'all', empty: ta.empty.archive },
+  { id: 'members', label: ta.tabs.members },
 ];
 
 // Status buttons: every status but the current one.
 const ACTIONS = [
-  { status: 'added', label: t.actions.added },
-  { status: 'refused', label: t.actions.refused },
-  { status: 'already_had', label: t.actions.already_had },
-  { status: 'pending', label: t.actions.pending },
+  { status: 'added', label: ta.actions.added },
+  { status: 'refused', label: ta.actions.refused },
+  { status: 'already_had', label: ta.actions.already_had },
+  { status: 'pending', label: ta.actions.pending },
 ];
 
 const EVENT_TEXT = {
-  submitted: (e) => t.orderedBy(e.actor),
-  duplicate: (e) => t.orderedAgainBy(e.actor),
+  submitted: (e) => ta.orderedBy(e.actor),
+  duplicate: (e) => ta.orderedAgainBy(e.actor),
   status: (e) => `${STATUS_LABEL[e.from_status] || e.from_status} → ${STATUS_LABEL[e.to_status] || e.to_status}`,
 };
 
@@ -66,21 +69,22 @@ function renderLogin() {
   document.title = TITLE;
   const user = el('input', { id: 'user', class: 'field', autocomplete: 'username', required: true });
   const pass = el('input', { id: 'pass', class: 'field', type: 'password', autocomplete: 'current-password', required: true });
-  const button = el('button', { class: 'btn btn-primary', type: 'submit', text: t.signIn });
+  const button = el('button', { class: 'btn btn-primary', type: 'submit', text: ta.signIn });
   const error = el('p', { class: 'error', role: 'alert' });
   const form = el(
     'form',
     { class: 'gate-form' },
+    appIcon('mx-auto size-14 rounded-2xl shadow-md ring-1 ring-black/10'),
     el('h1', { text: TITLE }),
-    el('label', { class: 'sr-only', for: 'user', text: t.username }),
+    el('label', { class: 'sr-only', for: 'user', text: ta.username }),
     user,
-    el('label', { class: 'sr-only', for: 'pass', text: t.password }),
+    el('label', { class: 'sr-only', for: 'pass', text: ta.password }),
     pass,
     button,
     error,
   );
-  user.placeholder = t.username;
-  pass.placeholder = t.password;
+  user.placeholder = ta.username;
+  pass.placeholder = ta.password;
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     button.disabled = true;
@@ -105,7 +109,7 @@ function renderLogin() {
       return;
     }
     button.disabled = false;
-    error.textContent = res.status === 0 ? t.noServer : t.wrongLogin;
+    error.textContent = res.status === 0 ? t.noServer : ta.wrongLogin;
   });
   clear(root);
   root.append(el('main', { class: 'gate' }, form));
@@ -119,9 +123,9 @@ function renderLogin() {
 function renderAdmin() {
   document.title = TITLE;
   const panel = el('div', { id: 'panel', role: 'tabpanel', tabindex: '-1' });
-  const notice = el('p', { class: 'status', role: 'status', 'aria-live': 'polite' });
+  const notice = el('p', { class: 'status notice', role: 'status', 'aria-live': 'polite' });
   const say = (text, cls = '') => {
-    notice.className = `status ${cls}`;
+    notice.className = `status notice ${cls}`;
     notice.textContent = text;
   };
   // Any 401 means the admin session ended (idle or absolute timeout).
@@ -158,7 +162,7 @@ function renderAdmin() {
     pendingCount.textContent = String(res.data.pending);
     pendingCount.hidden = res.data.pending === 0;
   };
-  const tablist = el('div', { class: 'tabs', role: 'tablist', 'aria-label': t.sections }, tabButtons);
+  const tablist = el('div', { class: 'tabs', role: 'tablist', 'aria-label': ta.sections }, tabButtons);
 
   const select = (index) => {
     tabButtons.forEach((b, i) => {
@@ -199,15 +203,10 @@ function renderAdmin() {
 
   clear(root);
   root.append(
-    el(
-      'div',
-      { class: 'page wide' },
-      el('header', { class: 'top' }, el('h1', { text: TITLE })),
-      el('main', {}, tablist, notice, panel),
-      footer(logout),
-    ),
+    appBar(TITLE, null, true),
+    el('div', { class: 'page wide' }, el('main', {}, tablist, notice, panel), footer(logout)),
   );
-  const fromHash = TABS.findIndex((t) => `#${t.id}` === location.hash);
+  const fromHash = TABS.findIndex((tab) => `#${tab.id}` === location.hash);
   select(fromHash >= 0 ? fromHash : 0);
   refreshCounts();
   if (stopLive) stopLive();
@@ -251,29 +250,21 @@ function renderQueue(panel, tab, { say, expired }) {
     id: 'filter',
     class: 'field',
     type: 'search',
-    placeholder: t.filterPlaceholder,
+    placeholder: ta.filterPlaceholder,
     maxlength: 100,
   });
-  const tbody = el('tbody');
+  const list = el('ul', { class: 'req-list' });
   const empty = el('p', { class: 'muted', text: tab.empty, hidden: true });
   const more = el('button', { class: 'btn btn-small', type: 'button', text: t.loadMore, hidden: true });
-  const refresh = el('button', { class: 'btn btn-small', type: 'button', text: t.refresh });
+  const refresh = el('button', { class: 'btn btn-small', type: 'button', text: ta.refresh });
   const toolbar = el(
     'div',
     { class: 'toolbar' },
-    el('label', { class: 'sr-only', for: 'filter', text: t.filter }),
+    el('label', { class: 'sr-only', for: 'filter', text: ta.filter }),
     filter,
     refresh,
-    archive ? el('a', { class: 'btn btn-small', href: '/api/admin/export.csv', download: 'mediaqueue.csv', text: t.exportCsv }) : null,
+    archive ? el('a', { class: 'btn btn-small', href: '/api/admin/export.csv', download: 'mediaqueue.csv', text: ta.exportCsv }) : null,
   );
-  const head = el(
-    'tr',
-    {},
-    ['', ...t.queueHead].map((h) =>
-      el('th', { scope: 'col' }, h ? h : el('span', { class: 'sr-only', text: t.poster })),
-    ),
-  );
-  const table = el('table', { class: 'table' }, el('thead', {}, head), tbody);
 
   // Rows on show, by request id, so a refresh can update them in place.
   const known = new Map();
@@ -296,55 +287,52 @@ function renderQueue(panel, tab, { say, expired }) {
     refresh.disabled = false;
     if (mine !== generation || expired(res)) return;
     if (!res.ok) {
-      say(t.loadRequestsFailed, 'status-bad');
+      say(ta.loadRequestsFailed, 'status-bad');
       return;
     }
     if (reset) {
-      clear(tbody);
+      clear(list);
       known.clear();
     }
     for (const item of res.data.items) {
       const shown = known.get(item.id);
       if (shown && shown.row.isConnected) continue;
-      tbody.append(...rowFor(item).nodes);
+      list.append(...rowFor(item).nodes);
     }
     loaded = true;
     cursor = res.data.next_cursor;
     more.hidden = !cursor;
-    empty.textContent = q ? t.noRequestsMatch : tab.empty;
-    empty.hidden = tbody.children.length > 0;
+    empty.textContent = q ? ta.noRequestsMatch : tab.empty;
+    empty.hidden = list.children.length > 0;
   };
 
-  // A request's table row, plus (in the archive) a hidden history row.
+  // A request's card. In the archive it also holds a hidden history block.
   const rowFor = (item) => {
-    const requesterCell = el('td');
-    const paintRequester = () => {
-      clear(requesterCell);
-      requesterCell.append(
-        item.requester,
-        item.times_requested > 1 ? el('span', { class: 'muted', text: ` +${item.times_requested - 1}` }) : null,
-      );
+    const meta = el('p', { class: 'req-meta' });
+    const paintMeta = () => {
+      const again = item.times_requested > 1 ? ` +${item.times_requested - 1}` : '';
+      meta.textContent = ta.orderedByOn(`${item.requester}${again}`, formatDateTime(item.created_at));
     };
-    paintRequester();
-    const statusCell = el('td', {}, chip(item.status, STATUS_LABEL[item.status] || item.status));
+    paintMeta();
+    const statusCell = el('span');
     const actions = el('div', { class: 'row-actions' });
+    const historyBox = el('div', { class: 'req-history', hidden: true });
+    const heading = item.imdb_id
+      ? extLink(imdbUrl(item.imdb_id), t.onSite(item.title, 'IMDb'), item.title)
+      : item.title;
     const row = el(
-      'tr',
-      {},
-      el('td', {}, posterSmall(item.poster)),
+      'li',
+      { class: 'req-card', 'data-id': item.id },
+      posterSmall(item.poster),
       el(
-        'td',
-        {},
-        el('strong', {}, item.imdb_id ? extLink(imdbUrl(item.imdb_id), t.onSite(item.title, 'IMDb'), item.title) : item.title),
-        item.year ? ` (${item.year})` : null,
-        item.note ? el('p', { class: 'muted', text: t.note(item.note) }) : null,
+        'div',
+        { class: 'min-w-0' },
+        el('p', { class: 'req-title' }, el('strong', {}, heading), item.year ? ` (${item.year})` : null, badge(item.type)),
+        meta,
+        item.note ? el('p', { class: 'req-note', text: ta.note(item.note) }) : null,
       ),
-      el('td', { text: TYPE_LABEL[item.type] || item.type }),
-      requesterCell,
-      el('td', { text: formatDateTime(item.created_at) }),
-      el('td', {}, imdbCell(item)),
-      statusCell,
-      el('td', {}, actions),
+      el('div', { class: 'req-side' }, statusCell, actions),
+      archive ? historyBox : null,
     );
 
     // True while a status change is in flight; the buttons stay disabled.
@@ -364,27 +352,47 @@ function renderQueue(panel, tab, { say, expired }) {
         anchor = row.nextSibling;
         row.remove();
       } else if (returns) {
-        tbody.insertBefore(row, anchor && anchor.parentNode === tbody ? anchor : null);
+        list.insertBefore(row, anchor && anchor.parentNode === list ? anchor : null);
       }
-      empty.hidden = tbody.children.length > 0;
+      empty.hidden = list.children.length > 0;
       paint();
       const res = await send('PATCH', `/api/admin/requests/${item.id}`, { status: to });
       busy = false;
       if (expired(res)) return;
       if (res.ok) {
         paint();
-        toast(t.statusChanged(item.title, STATUS_LABEL[to]), {
+        toast(ta.statusChanged(item.title, STATUS_LABEL[to]), {
           undo: isUndo ? null : () => setStatus(from, true),
         });
         // A history that is open would otherwise miss the new event.
         if (toggle.getAttribute('aria-expanded') === 'true') loadHistory();
       } else {
         item.status = from;
-        if (leaves) tbody.insertBefore(row, anchor && anchor.parentNode === tbody ? anchor : null);
+        if (leaves) list.insertBefore(row, anchor && anchor.parentNode === list ? anchor : null);
         else if (returns) row.remove();
-        empty.hidden = tbody.children.length > 0;
+        empty.hidden = list.children.length > 0;
         paint();
-        toast(t.updateFailed(item.title), { kind: 'bad' });
+        toast(ta.updateFailed(item.title), { kind: 'bad' });
+      }
+    };
+
+    // Deletes the whole request, history included. The server also sends a
+    // tick, so the other tabs and the counts catch up on their own.
+    const removeRequest = async () => {
+      if (!window.confirm(ta.deleteRequestConfirm(item.title))) return;
+      busy = true;
+      paint();
+      const res = await send('DELETE', `/api/admin/requests/${item.id}`);
+      busy = false;
+      if (expired(res)) return;
+      if (res.ok) {
+        row.remove();
+        known.delete(item.id);
+        empty.hidden = list.children.length > 0;
+        toast(ta.requestDeleted(item.title));
+      } else {
+        paint();
+        toast(ta.deleteRequestFailed, { kind: 'bad' });
       }
     };
 
@@ -392,12 +400,12 @@ function renderQueue(panel, tab, { say, expired }) {
       clear(statusCell);
       statusCell.append(chip(item.status, STATUS_LABEL[item.status] || item.status));
       clear(actions);
-      const button = (action) =>
+      const button = (action, cls) =>
         el('button', {
-          class: 'btn btn-small',
+          class: cls,
           type: 'button',
           text: action.label,
-          'aria-label': t.actionLabel(action.label, item.title),
+          'aria-label': ta.actionLabel(action.label, item.title),
           disabled: busy,
           onclick: () => {
             for (const open of actions.querySelectorAll('details[open]')) open.open = false;
@@ -405,50 +413,73 @@ function renderQueue(panel, tab, { say, expired }) {
           },
         });
       const byStatus = (status) => ACTIONS.find((a) => a.status === status);
+      const items = [];
       if (tab.id === 'pending') {
-        if (item.dmm_url) {
-          actions.append(
-            el('a', {
-              class: 'btn btn-small',
-              href: item.dmm_url,
-              target: '_blank',
-              rel: 'noopener noreferrer',
-              text: t.openInDmm,
-              'aria-label': t.actionLabel(t.openInDmm, item.title),
-            }),
-          );
-        }
-        actions.append(
-          button(byStatus('added')),
-          button(byStatus('refused')),
-          menu(t.more, t.moreActions(item.title), [button(byStatus('already_had'))], busy),
-        );
+        // The two usual answers stay one click away; the rest is in the menu.
+        actions.append(button(byStatus('added'), 'btn btn-small'), button(byStatus('refused'), 'btn btn-small'));
+        items.push(button(byStatus('already_had'), 'menu-item'));
       } else {
-        const others = ACTIONS.filter((a) => a.status !== item.status).map(button);
-        actions.append(menu(t.changeStatus, t.changeStatusFor(item.title), others, busy));
+        for (const action of ACTIONS.filter((a) => a.status !== item.status)) items.push(button(action, 'menu-item'));
       }
-      if (archive) actions.append(toggle);
+      if (item.dmm_url) {
+        items.push(
+          el('a', {
+            class: 'menu-item',
+            href: item.dmm_url,
+            target: '_blank',
+            rel: 'noopener noreferrer',
+            text: ta.openInDmm,
+            'aria-label': ta.actionLabel(ta.openInDmm, item.title),
+          }),
+        );
+      }
+      if (item.imdb_id) items.push(copyImdbItem());
+      if (archive) {
+        items.push(
+          toggle,
+          el('hr', { class: 'menu-sep' }),
+          el('button', {
+            class: 'menu-item menu-item-danger',
+            type: 'button',
+            text: ta.deleteRequest,
+            'aria-label': ta.actionLabel(ta.deleteRequest, item.title),
+            disabled: busy,
+            onclick: removeRequest,
+          }),
+        );
+      }
+      actions.append(menu(ta.actionsMenu, ta.actionsFor(item.title), items, busy));
     };
 
-    const historyRow = el('tr', { hidden: true }, el('td', { colspan: 8 }));
+    // Copies the IMDb ID; rarely needed, so it lives in the menu.
+    const copyImdbItem = () => {
+      const copy = el('button', {
+        class: 'menu-item',
+        type: 'button',
+        text: ta.copyImdbItem,
+        'aria-label': ta.copyImdb(item.imdb_id),
+      });
+      copyOnClick(copy, item.imdb_id, ta.copyImdbFailed(item.imdb_id));
+      return copy;
+    };
+
     const toggle = el('button', {
-      class: 'btn btn-small chevron',
+      class: 'menu-item',
       type: 'button',
-      text: '›',
+      text: ta.historyItem,
       'aria-expanded': 'false',
-      'aria-label': t.history(item.title),
+      'aria-label': ta.history(item.title),
     });
     const loadHistory = async () => {
-      const cell = historyRow.firstChild;
-      if (!cell.firstChild) cell.append(el('span', { class: 'muted', text: t.loading }));
+      if (!historyBox.firstChild) historyBox.append(el('span', { class: 'muted', text: ta.loading }));
       const res = await get(`/api/admin/requests/${item.id}/events`);
       if (expired(res)) return;
-      clear(cell);
+      clear(historyBox);
       if (!res.ok) {
-        cell.append(el('span', { class: 'status-bad', text: t.historyFailed }));
+        historyBox.append(el('span', { class: 'status-bad', text: ta.historyFailed }));
         return;
       }
-      cell.append(
+      historyBox.append(
         el(
           'ol',
           { class: 'events' },
@@ -466,10 +497,12 @@ function renderQueue(panel, tab, { say, expired }) {
     toggle.addEventListener('click', () => {
       const open = toggle.getAttribute('aria-expanded') === 'true';
       toggle.setAttribute('aria-expanded', open ? 'false' : 'true');
-      historyRow.hidden = open;
+      historyBox.hidden = open;
+      const menuEl = toggle.closest('details');
+      if (menuEl) menuEl.open = false;
       if (open) return;
       // Fetched again on every open, so it is never stale.
-      clear(historyRow.firstChild);
+      clear(historyBox);
       loadHistory();
     });
 
@@ -477,7 +510,7 @@ function renderQueue(panel, tab, { say, expired }) {
     const update = (fresh) => {
       if (fresh.times_requested !== item.times_requested) {
         item.times_requested = fresh.times_requested;
-        paintRequester();
+        paintMeta();
       }
       if (!busy && fresh.status !== item.status) {
         item.status = fresh.status;
@@ -486,7 +519,7 @@ function renderQueue(panel, tab, { say, expired }) {
     };
 
     paint();
-    const entry = { item, row, nodes: archive ? [row, historyRow] : [row], update };
+    const entry = { item, row, nodes: [row], update };
     known.set(item.id, entry);
     return entry;
   };
@@ -536,16 +569,16 @@ function renderQueue(panel, tab, { say, expired }) {
       }
       const added = rowFor(item);
       if (previous) previous.after(...added.nodes);
-      else tbody.prepend(...added.nodes);
+      else list.prepend(...added.nodes);
       previous = added.nodes[added.nodes.length - 1];
-      if (tab.id === 'pending') toast(t.newOrder(item.title));
+      if (tab.id === 'pending') toast(ta.newOrder(item.title));
     }
-    if (!cursor && res.data.next_cursor && tbody.children.length === items.length) {
+    if (!cursor && res.data.next_cursor && list.children.length === items.length) {
       cursor = res.data.next_cursor;
     }
     more.hidden = !cursor;
-    empty.textContent = q ? t.noRequestsMatch : tab.empty;
-    empty.hidden = tbody.children.length > 0;
+    empty.textContent = q ? ta.noRequestsMatch : tab.empty;
+    empty.hidden = list.children.length > 0;
   };
 
   filter.addEventListener('input', () => {
@@ -556,21 +589,9 @@ function renderQueue(panel, tab, { say, expired }) {
   more.addEventListener('click', () => load(false));
 
   clear(panel);
-  panel.append(toolbar, el('div', { class: 'table-wrap' }, table), empty, more);
+  panel.append(toolbar, list, empty, more);
   load(true);
   return { refresh: merge };
-}
-
-function imdbCell(item) {
-  if (!item.imdb_id) return el('span', { class: 'muted', text: t.none });
-  const id = el('button', {
-    class: 'code-btn',
-    type: 'button',
-    text: item.imdb_id,
-    'aria-label': t.copyImdb(item.imdb_id),
-  });
-  copyOnClick(id, item.imdb_id, t.copyImdbFailed(item.imdb_id));
-  return id;
 }
 
 // ---------------------------------------------------------------------
@@ -579,14 +600,14 @@ function imdbCell(item) {
 
 // Shows a freshly issued code exactly once, with a copy button.
 function codeBox(name, code) {
-  const copy = el('button', { class: 'btn btn-primary', type: 'button', text: t.copyCode });
-  copyOnClick(copy, code, t.copyCodeFailed);
+  const copy = el('button', { class: 'btn btn-primary', type: 'button', text: ta.copyCode });
+  copyOnClick(copy, code, ta.copyCodeFailed);
   return el(
     'div',
     { class: 'code-box', role: 'alert' },
-    el('p', { text: t.codeFor(name) }),
+    el('p', { text: ta.codeFor(name) }),
     el('output', { text: code }),
-    el('p', { class: 'muted', text: t.codeOnce }),
+    el('p', { class: 'muted', text: ta.codeOnce }),
     el('div', {}, copy),
   );
 }
@@ -603,13 +624,13 @@ function numberOrNull(value) {
 
 // "3 enheter, sist sett 2 t siden", with the list behind a disclosure.
 function devicesCell(m, deviceList) {
-  if (!m.devices.length) return el('span', { class: 'muted', text: t.noDevices });
+  if (!m.devices.length) return el('span', { class: 'muted', text: ta.noDevices });
   const n = m.devices.length;
   const lastSeen = Math.max(...m.devices.map((d) => d.last_seen_at));
   return el(
     'details',
     {},
-    el('summary', { text: t.devices(n, formatAgo(lastSeen)) }),
+    el('summary', { text: ta.devices(n, formatAgo(lastSeen)) }),
     deviceList,
   );
 }
@@ -619,22 +640,22 @@ function renderMembers(panel, { say, expired }) {
   const tbody = el('tbody');
 
   const name = el('input', { id: 'm-name', class: 'field', maxlength: 40, required: true });
-  const daily = el('input', { id: 'm-daily', class: 'field', type: 'number', min: 0, max: 1000, inputmode: 'numeric', placeholder: t.noLimit });
+  const daily = el('input', { id: 'm-daily', class: 'field', type: 'number', min: 0, max: 1000, inputmode: 'numeric', placeholder: ta.noLimit });
   const code = el('input', { id: 'm-code', class: 'field', maxlength: 64, autocomplete: 'off', spellcheck: false });
   // Advice, not a block: the server accepts anything from 3 characters.
   const codeWarning = el('span', { class: 'muted', id: 'm-code-note' });
   code.setAttribute('aria-describedby', 'm-code-note');
   code.addEventListener('input', () => {
     const n = code.value.replace(/[\s-]/g, '').length;
-    codeWarning.textContent = n > 0 && n < 6 ? t.shortCode : '';
+    codeWarning.textContent = n > 0 && n < 6 ? ta.shortCode : '';
   });
-  const add = el('button', { class: 'btn btn-primary', type: 'submit', text: t.addUser });
+  const add = el('button', { class: 'btn btn-primary', type: 'submit', text: ta.addUser });
   const form = el(
     'form',
-    { class: 'form-grid', 'aria-label': t.addUserLabel },
-    el('label', { for: 'm-name' }, t.name, name),
-    el('label', { for: 'm-daily' }, t.dailyLimitOptional, daily),
-    el('label', { for: 'm-code' }, t.codeOptional, code),
+    { class: 'form-grid card mb-4 p-4', 'aria-label': ta.addUserLabel },
+    el('label', { for: 'm-name' }, ta.name, name),
+    el('label', { for: 'm-daily' }, ta.dailyLimitOptional, daily),
+    el('label', { for: 'm-code' }, ta.codeOptional, code),
     codeWarning,
     add,
   );
@@ -652,22 +673,22 @@ function renderMembers(panel, { say, expired }) {
       if (res.data.code) {
         codeSlot.append(codeBox(res.data.name, res.data.code));
       } else {
-        toast(t.addedWithCode(res.data.name));
+        toast(ta.addedWithCode(res.data.name));
       }
       form.reset();
       codeWarning.textContent = '';
       load();
     } else if (res.status === 409) {
-      toast(codeTaken(res) ? t.codeTaken : t.nameTaken, { kind: 'bad' });
+      toast(codeTaken(res) ? ta.codeTaken : ta.nameTaken, { kind: 'bad' });
     } else {
-      toast(t.checkAddFields, { kind: 'bad' });
+      toast(ta.checkAddFields, { kind: 'bad' });
     }
   });
 
   const head = el(
     'tr',
     {},
-    t.userHead.map((h) => el('th', { scope: 'col', text: h })),
+    ta.userHead.map((h) => el('th', { scope: 'col', text: h })),
   );
 
   const memberRow = (m) => {
@@ -677,20 +698,20 @@ function renderMembers(panel, { say, expired }) {
         class: 'btn btn-small',
         type: 'button',
         text: t.logOut,
-        'aria-label': t.deviceLogOutLabel(m.name, formatDateTime(d.created_at)),
+        'aria-label': ta.deviceLogOutLabel(m.name, formatDateTime(d.created_at)),
       });
       kill.addEventListener('click', async () => {
         const res = await send('DELETE', `/api/admin/sessions/${d.id}`);
         if (expired(res)) return;
-        toast(res.ok ? t.deviceLoggedOut(m.name) : t.deviceLogOutFailed, { kind: res.ok ? 'ok' : 'bad' });
+        toast(res.ok ? ta.deviceLoggedOut(m.name) : ta.deviceLogOutFailed, { kind: res.ok ? 'ok' : 'bad' });
         load();
       });
-      deviceList.append(el('li', {}, t.deviceLine(formatDateTime(d.created_at), formatDateTime(d.last_seen_at)), kill));
+      deviceList.append(el('li', {}, ta.deviceLine(formatDateTime(d.created_at), formatDateTime(d.last_seen_at)), kill));
     }
     const revoked = m.revoked_at !== null;
-    const rotate = el('button', { class: 'btn btn-small', type: 'button', text: t.rotate, disabled: revoked });
+    const rotate = el('button', { class: 'btn btn-small', type: 'button', text: ta.rotate, disabled: revoked });
     rotate.addEventListener('click', async () => {
-      const chosen = window.prompt(t.rotatePrompt(m.name));
+      const chosen = window.prompt(ta.rotatePrompt(m.name));
       if (chosen === null) return;
       const res = await send('POST', `/api/admin/members/${m.id}/rotate`, chosen.trim() === '' ? {} : { code: chosen });
       if (expired(res)) return;
@@ -699,56 +720,56 @@ function renderMembers(panel, { say, expired }) {
         if (res.data.code) {
           codeSlot.append(codeBox(m.name, res.data.code));
         } else {
-          toast(t.rotatedToChosen(m.name));
+          toast(ta.rotatedToChosen(m.name));
         }
         load();
       } else if (res.status === 409 && codeTaken(res)) {
-        toast(t.codeTaken, { kind: 'bad' });
+        toast(ta.codeTaken, { kind: 'bad' });
       } else if (res.status === 400) {
-        toast(t.codeLength, { kind: 'bad' });
+        toast(ta.codeLength, { kind: 'bad' });
       } else {
-        toast(t.rotateFailed, { kind: 'bad' });
+        toast(ta.rotateFailed, { kind: 'bad' });
       }
     });
-    const revoke = el('button', { class: 'btn btn-small', type: 'button', text: revoked ? t.activate : t.deactivate });
+    const revoke = el('button', { class: 'btn btn-small', type: 'button', text: revoked ? ta.activate : ta.deactivate });
     revoke.addEventListener('click', async () => {
-      if (!revoked && !window.confirm(t.deactivateConfirm(m.name))) {
+      if (!revoked && !window.confirm(ta.deactivateConfirm(m.name))) {
         return;
       }
       const res = await send('POST', `/api/admin/members/${m.id}/${revoked ? 'restore' : 'revoke'}`);
       if (expired(res)) return;
-      const done = revoked ? t.activatedDone(m.name) : t.deactivatedDone(m.name);
-      toast(res.ok ? done : revoked ? t.activateFailed : t.deactivateFailed, {
+      const done = revoked ? ta.activatedDone(m.name) : ta.deactivatedDone(m.name);
+      toast(res.ok ? done : revoked ? ta.activateFailed : ta.deactivateFailed, {
         kind: res.ok ? 'ok' : 'bad',
       });
       load();
     });
     // Only a deactivated user can go; their requests stay under their name.
-    const remove = el('button', { class: 'btn btn-small', type: 'button', text: t.delete });
+    const remove = el('button', { class: 'btn btn-small', type: 'button', text: ta.delete });
     remove.addEventListener('click', async () => {
-      if (!window.confirm(t.deleteConfirm(m.name))) {
+      if (!window.confirm(ta.deleteConfirm(m.name))) {
         return;
       }
       const res = await send('DELETE', `/api/admin/members/${m.id}`);
       if (expired(res)) return;
       toast(
-        res.ok ? t.deleted(m.name) : res.status === 409 ? t.deactivateFirst(m.name) : t.deleteFailed,
+        res.ok ? ta.deleted(m.name) : res.status === 409 ? ta.deactivateFirst(m.name) : ta.deleteFailed,
         { kind: res.ok ? 'ok' : 'bad' },
       );
       load();
     });
-    const edit = el('button', { class: 'btn btn-small', type: 'button', text: t.edit, 'aria-label': t.editLabel(m.name) });
+    const edit = el('button', { class: 'btn btn-small', type: 'button', text: ta.edit, 'aria-label': ta.editLabel(m.name) });
     edit.addEventListener('click', () => editMember(m, edit));
     const limits = el(
       'td',
       {},
-      m.daily_limit === null ? el('span', { class: 'muted', text: t.noLimit }) : t.perDay(m.daily_limit),
+      m.daily_limit === null ? el('span', { class: 'muted', text: ta.noLimit }) : ta.perDay(m.daily_limit),
     );
     return el(
       'tr',
       {},
-      el('td', {}, el('strong', { text: m.name }), revoked ? el('p', {}, chip('refused', t.deactivated)) : null),
-      el('td', { text: m.last_seen_at ? formatDateTime(m.last_seen_at) : t.never }),
+      el('td', {}, el('strong', { text: m.name }), revoked ? el('p', {}, chip('refused', ta.deactivated)) : null),
+      el('td', { text: m.last_seen_at ? formatDateTime(m.last_seen_at) : ta.never }),
       el('td', {}, devicesCell(m, deviceList)),
       el('td', { text: String(m.request_count) }),
       limits,
@@ -767,19 +788,19 @@ function renderMembers(panel, { say, expired }) {
       min: 0,
       max: 1000,
       inputmode: 'numeric',
-      placeholder: t.noLimit,
+      placeholder: ta.noLimit,
       value: m.daily_limit === null ? null : String(m.daily_limit),
     });
     const message = el('p', { class: 'status', role: 'status' });
     const cancel = el('button', { class: 'btn', type: 'button', text: t.cancel, onclick: () => dialog.close() });
-    const save = el('button', { class: 'btn btn-primary', type: 'submit', text: t.save });
+    const save = el('button', { class: 'btn btn-primary', type: 'submit', text: ta.save });
     const form = el(
       'form',
       { method: 'dialog', class: 'form-grid' },
-      el('h2', { id: 'edit-title', text: t.editLabel(m.name) }),
-      el('label', { for: 'e-name' }, t.name, eName),
-      el('p', { class: 'muted', text: t.renameWarning }),
-      el('label', { for: 'e-daily' }, t.dailyLimitBlank, eDaily),
+      el('h2', { id: 'edit-title', text: ta.editLabel(m.name) }),
+      el('label', { for: 'e-name' }, ta.name, eName),
+      el('p', { class: 'muted', text: ta.renameWarning }),
+      el('label', { for: 'e-daily' }, ta.dailyLimitBlank, eDaily),
       message,
       el('div', { class: 'actions' }, cancel, save),
     );
@@ -799,12 +820,12 @@ function renderMembers(panel, { say, expired }) {
       }
       if (res.ok) {
         dialog.close();
-        toast(t.saved(eName.value.trim()));
+        toast(ta.saved(eName.value.trim()));
         load();
       } else {
         message.className = 'status status-bad';
         message.textContent =
-          res.status === 409 ? t.nameTaken : res.status === 400 ? t.checkEditFields : t.saveFailed;
+          res.status === 409 ? ta.nameTaken : res.status === 400 ? ta.checkEditFields : ta.saveFailed;
       }
     });
     dialog.addEventListener('close', () => {
@@ -821,7 +842,7 @@ function renderMembers(panel, { say, expired }) {
     const res = await get('/api/admin/members');
     if (expired(res)) return;
     if (!res.ok) {
-      say(t.loadUsersFailed, 'status-bad');
+      say(ta.loadUsersFailed, 'status-bad');
       return;
     }
     clear(tbody);
@@ -830,7 +851,7 @@ function renderMembers(panel, { say, expired }) {
 
   clear(panel);
   panel.append(
-    el('h2', { class: 'sr-only', text: t.users }),
+    el('h2', { class: 'sr-only', text: ta.users }),
     form,
     codeSlot,
     el('div', { class: 'table-wrap' }, el('table', { class: 'table' }, el('thead', {}, head), tbody)),

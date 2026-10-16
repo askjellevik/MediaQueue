@@ -1,0 +1,13 @@
+/* Tailwind entry point for the admin-only styles, compiled into
+   web/css/admin.css and loaded after app.css (which brings the reset and
+   the shared components) on the admin page only. */
+@layer theme, base, components, utilities;
+
+@import "tailwindcss/theme.css" layer(theme);
+@import "./admin-base.css" layer(components);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+@source "../web/admin.html";
+@source "../web/js/admin.js";
+
+@custom-variant dark (&:where(.dark *));

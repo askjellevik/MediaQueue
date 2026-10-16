@@ -1,34 +1,85 @@
 /* Shared component rules for both pages, written with Tailwind's own
-   utilities. Anything used once lives as a utility class in web/js. */
+   utilities. Anything used once lives as a utility class in web/js.
+   Palette: slate surfaces with a sky accent (the app icon is cyan). */
 
 html {
   color-scheme: light;
+  /* Two shadows, defined once: a card resting on the page, and a panel
+     (menu, dialog, toast) floating above it. */
+  --shadow-card: 0 1px 2px rgb(15 23 42 / 8%), 0 1px 3px rgb(15 23 42 / 10%);
+  --shadow-pop: 0 10px 24px -6px rgb(15 23 42 / 25%), 0 4px 8px -4px rgb(15 23 42 / 15%);
 }
 
-html[data-theme="dark"] {
+html.dark {
   color-scheme: dark;
 }
 
 body {
-  @apply min-h-screen bg-zinc-50 text-base text-zinc-900 antialiased dark:bg-zinc-950 dark:text-zinc-100;
+  @apply min-h-screen bg-slate-100 text-base text-slate-900 antialiased dark:bg-slate-900 dark:text-slate-100;
+}
+
+#app {
+  @apply flex min-h-screen flex-col;
 }
 
 :focus-visible {
-  @apply outline-2 outline-offset-2 outline-indigo-600 dark:outline-indigo-400;
+  @apply outline-2 outline-offset-2 outline-sky-600 dark:outline-sky-400;
 }
 
 [hidden] {
   display: none !important;
 }
 
+/* ---------- App bar ---------- */
+
+.appbar {
+  @apply bg-sky-700 text-white dark:border-b dark:border-sky-900 dark:bg-sky-950;
+  box-shadow: var(--shadow-card);
+}
+
+.appbar-inner {
+  @apply mx-auto flex h-14 w-full max-w-2xl items-center justify-between gap-4 px-4;
+}
+
+.brand {
+  @apply flex items-center gap-2.5 text-lg font-semibold tracking-tight;
+}
+
+.brand img {
+  @apply size-8 rounded-lg;
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 30%);
+}
+
+.appbar-meta {
+  @apply truncate text-sm text-sky-100;
+}
+
+/* ---------- Surfaces and shared transitions ---------- */
+
+/* One rule for everything that looks like a raised card. */
+.card,
+.gate-form,
+.mine-item {
+  @apply rounded-xl border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800;
+  box-shadow: var(--shadow-card);
+}
+
+.btn,
+.field,
+.option,
+.theme-toggle button,
+.mine-item {
+  @apply transition-colors;
+}
+
 /* ---------- Buttons and fields ---------- */
 
 .btn {
-  @apply inline-flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-md border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-900 shadow-xs hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:hover:bg-zinc-700;
+  @apply inline-flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100 dark:hover:bg-slate-600;
 }
 
 .btn-primary {
-  @apply border-indigo-600 bg-indigo-600 text-white hover:bg-indigo-700 dark:border-indigo-500 dark:bg-indigo-500 dark:text-white dark:hover:bg-indigo-400;
+  @apply border-sky-700 bg-sky-700 text-white hover:bg-sky-800 hover:text-white dark:border-sky-400 dark:bg-sky-400 dark:text-slate-950 dark:hover:border-sky-300 dark:hover:bg-sky-300 dark:hover:text-slate-950;
 }
 
 .btn-small {
@@ -36,11 +87,40 @@ body {
 }
 
 .btn-link {
-  @apply min-h-11 cursor-pointer px-1 text-sm text-indigo-600 underline hover:text-indigo-800 dark:text-indigo-400 dark:hover:text-indigo-300;
+  @apply min-h-11 cursor-pointer px-1 text-sm text-sky-700 underline hover:text-sky-900 dark:text-sky-300 dark:hover:text-sky-200;
 }
 
 .field {
-  @apply min-h-12 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-zinc-900 placeholder:text-zinc-400 focus:border-indigo-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder:text-zinc-500;
+  @apply min-h-12 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-slate-900 placeholder:text-slate-400 focus:border-sky-600 focus-visible:outline-offset-0 focus-visible:outline-sky-600/40 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500 dark:focus:border-sky-400 dark:focus-visible:outline-sky-400/40;
+}
+
+.chip {
+  @apply inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium whitespace-nowrap text-slate-700 ring-1 ring-slate-500/20 ring-inset dark:bg-slate-700 dark:text-slate-300 dark:ring-slate-500;
+}
+
+.chip::before {
+  content: "";
+  @apply mr-1.5 size-1.5 rounded-full bg-current;
+}
+
+.chip-requested,
+.chip-pending {
+  @apply bg-amber-50 text-amber-800 ring-amber-600/20 dark:bg-amber-400/10 dark:text-amber-300 dark:ring-amber-400/30;
+}
+
+.chip-added,
+.chip-have,
+.chip-already_had {
+  @apply bg-green-50 text-green-800 ring-green-600/20 dark:bg-green-400/10 dark:text-green-300 dark:ring-green-400/30;
+}
+
+.chip-unavailable,
+.chip-refused {
+  @apply bg-red-50 text-red-800 ring-red-600/20 dark:bg-red-400/10 dark:text-red-300 dark:ring-red-400/30;
+}
+
+.badge {
+  @apply inline-block rounded border border-slate-300 px-1.5 text-[0.7rem] font-medium tracking-wide whitespace-nowrap text-slate-500 uppercase dark:border-slate-600 dark:text-slate-400;
 }
 
 .spinner {
@@ -50,15 +130,16 @@ body {
 /* ---------- Access gate ---------- */
 
 .gate {
-  @apply grid min-h-screen place-items-center p-6;
+  @apply grid flex-1 place-items-center p-6;
 }
 
 .gate-form {
-  @apply grid w-full max-w-sm gap-4 rounded-lg border border-zinc-200 bg-white p-8 text-center shadow-sm dark:border-zinc-800 dark:bg-zinc-900;
+  @apply grid w-full max-w-sm gap-4 p-8 text-center;
+  box-shadow: var(--shadow-pop);
 }
 
 .gate-form h1 {
-  @apply text-2xl font-semibold;
+  @apply text-2xl font-semibold tracking-tight;
 }
 
 .code-input {
@@ -72,27 +153,15 @@ body {
 /* ---------- Main layout ---------- */
 
 .page {
-  @apply mx-auto flex min-h-screen w-full max-w-2xl flex-col gap-8 px-4 py-6 sm:py-10;
-}
-
-.wide {
-  @apply max-w-6xl;
-}
-
-.top {
-  @apply flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1;
-}
-
-.top h1 {
-  @apply text-xl font-semibold;
+  @apply mx-auto flex w-full max-w-2xl flex-1 flex-col gap-8 px-4 py-6 sm:py-8;
 }
 
 .muted {
-  @apply text-zinc-500 dark:text-zinc-400;
+  @apply text-slate-500 dark:text-slate-400;
 }
 
 .status {
-  @apply mt-2 min-h-6 text-sm text-zinc-500 dark:text-zinc-400;
+  @apply mt-2 min-h-6 text-sm text-slate-500 dark:text-slate-400;
 }
 
 .status-ok {
@@ -109,20 +178,27 @@ body {
   @apply relative;
 }
 
+.search-field {
+  @apply min-h-14 px-4 text-lg;
+  box-shadow: var(--shadow-card);
+}
+
 .results {
-  @apply absolute inset-x-0 top-full z-10 mt-1 max-h-[min(70vh,34rem)] overflow-y-auto rounded-lg border border-zinc-200 bg-white p-1 shadow-lg dark:border-zinc-800 dark:bg-zinc-900;
+  @apply absolute inset-x-0 top-full z-10 mt-2 max-h-[min(70vh,34rem)] overflow-y-auto rounded-xl border border-slate-200 bg-white p-1.5 dark:border-slate-600 dark:bg-slate-800;
+  box-shadow: var(--shadow-pop);
 }
 
 .option {
-  @apply grid min-h-[77px] cursor-pointer grid-cols-[46px_1fr_auto_auto] items-center gap-3 rounded-md px-2 py-1 hover:bg-zinc-100 aria-selected:bg-zinc-100 aria-selected:outline-2 aria-selected:-outline-offset-2 aria-selected:outline-indigo-600 aria-disabled:cursor-default dark:hover:bg-zinc-800 dark:aria-selected:bg-zinc-800 dark:aria-selected:outline-indigo-400;
+  @apply grid min-h-[77px] cursor-pointer grid-cols-[46px_1fr_auto_auto] items-center gap-3 rounded-lg px-2 py-1 hover:bg-sky-50 aria-selected:bg-sky-50 aria-selected:outline-2 aria-selected:-outline-offset-2 aria-selected:outline-sky-600 aria-disabled:cursor-default dark:hover:bg-slate-700 dark:aria-selected:bg-slate-700 dark:aria-selected:outline-sky-400;
 }
 
 .option[aria-disabled="true"] .opt-title {
-  @apply text-zinc-500 dark:text-zinc-400;
+  @apply text-slate-500 dark:text-slate-400;
 }
 
 .poster {
-  @apply block flex-none rounded bg-zinc-200 object-cover dark:bg-zinc-800;
+  @apply block flex-none rounded-md bg-slate-200 object-cover dark:bg-slate-700;
+  box-shadow: var(--shadow-card);
 }
 
 .poster-sm {
@@ -142,31 +218,40 @@ body {
 }
 
 .opt-meta {
-  @apply flex items-center gap-2 text-sm text-zinc-500 dark:text-zinc-400;
+  @apply flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400;
 }
 
 .skeleton {
-  @apply mx-2 my-1 h-[69px] animate-pulse rounded-md bg-zinc-200 motion-reduce:animate-none dark:bg-zinc-800;
+  @apply mx-2 my-1 h-[69px] animate-pulse rounded-lg bg-slate-200 motion-reduce:animate-none dark:bg-slate-700;
 }
 
 /* ---------- My requests ---------- */
+
+.section-title {
+  @apply mb-3 text-lg font-semibold tracking-tight;
+}
+
+.group-title {
+  @apply mb-2 text-xs font-semibold tracking-wide text-slate-500 uppercase dark:text-slate-400;
+}
 
 .mine-group + .mine-group {
   @apply mt-6;
 }
 
 .mine-list {
-  @apply mb-3 grid gap-2;
+  @apply mb-3 grid gap-2.5;
 }
 
 .mine-item {
-  @apply grid grid-cols-[46px_1fr_auto_auto] items-center gap-3 rounded-lg border border-zinc-200 bg-white p-2 dark:border-zinc-800 dark:bg-zinc-900;
+  @apply grid grid-cols-[46px_1fr_auto_auto] items-center gap-3 p-2.5 hover:border-sky-300 dark:hover:border-sky-700;
 }
 
 /* ---------- Confirm sheet ---------- */
 
 .sheet {
-  @apply m-auto max-h-[calc(100vh-2rem)] w-[min(100%-1rem,30rem)] rounded-lg border border-zinc-200 bg-white p-5 text-zinc-900 shadow-xl backdrop:bg-black/50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-100;
+  @apply m-auto max-h-[calc(100vh-2rem)] w-[min(100%-1rem,30rem)] rounded-2xl border border-slate-200 bg-white p-5 text-slate-900 backdrop:bg-slate-950/60 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100;
+  box-shadow: var(--shadow-pop);
 }
 
 .sheet-body {
@@ -174,7 +259,7 @@ body {
 }
 
 .overview {
-  @apply mt-2 text-sm text-zinc-500 dark:text-zinc-400;
+  @apply mt-2 text-sm text-slate-500 dark:text-slate-400;
 }
 
 .note-label {
@@ -186,7 +271,7 @@ body {
 }
 
 .counter {
-  @apply mt-1 text-right text-sm text-zinc-500 dark:text-zinc-400;
+  @apply mt-1 text-right text-sm text-slate-500 dark:text-slate-400;
 }
 
 .actions {
@@ -196,7 +281,7 @@ body {
 /* ---------- Footer ---------- */
 
 .foot {
-  @apply mt-auto flex flex-wrap items-center justify-between gap-3 border-t border-zinc-200 pt-4 text-sm text-zinc-500 dark:border-zinc-800 dark:text-zinc-400;
+  @apply mt-auto flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4 text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400;
 }
 
 .attribution {
@@ -208,83 +293,15 @@ body {
 }
 
 .theme-toggle {
-  @apply inline-flex overflow-hidden rounded-md border border-zinc-300 dark:border-zinc-700;
+  @apply inline-flex overflow-hidden rounded-lg border border-slate-300 bg-white dark:border-slate-600 dark:bg-slate-800;
 }
 
 .theme-toggle button {
-  @apply min-h-9 cursor-pointer px-3 text-sm text-zinc-600 hover:bg-zinc-100 aria-pressed:bg-zinc-200 aria-pressed:font-medium aria-pressed:text-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800 dark:aria-pressed:bg-zinc-700 dark:aria-pressed:text-white;
+  @apply min-h-9 cursor-pointer px-3 text-sm text-slate-600 hover:bg-slate-100 aria-pressed:bg-sky-700 aria-pressed:font-medium aria-pressed:text-white dark:text-slate-300 dark:hover:bg-slate-700 dark:aria-pressed:bg-sky-400 dark:aria-pressed:text-slate-950;
 }
 
 .theme-toggle button + button {
-  @apply border-l border-zinc-300 dark:border-zinc-700;
-}
-
-/* ---------- Admin ---------- */
-
-.tabs {
-  @apply flex flex-wrap gap-1 border-b border-zinc-200 dark:border-zinc-800;
-}
-
-.tab {
-  @apply -mb-px min-h-11 cursor-pointer border-b-2 border-transparent px-3 py-2 text-sm text-zinc-600 hover:text-zinc-900 aria-selected:border-indigo-600 aria-selected:font-medium aria-selected:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 dark:aria-selected:border-indigo-400 dark:aria-selected:text-zinc-100;
-}
-
-.count {
-  @apply ml-2 inline-block min-w-5 rounded-full bg-indigo-600 px-1.5 text-center text-xs leading-5 font-medium text-white dark:bg-indigo-500;
-}
-
-.toolbar {
-  @apply my-3 flex flex-wrap items-center gap-2;
-}
-
-.toolbar .field {
-  @apply w-auto flex-[1_1_14rem];
-}
-
-.table-wrap {
-  @apply overflow-x-auto;
-}
-
-.table {
-  @apply w-full border-collapse text-sm;
-}
-
-.table th,
-.table td {
-  @apply border-b border-zinc-200 p-2 text-left align-middle dark:border-zinc-800;
-}
-
-.table th {
-  @apply font-medium text-zinc-500 dark:text-zinc-400;
-}
-
-.row-actions {
-  @apply flex flex-wrap gap-1;
-}
-
-.menu summary {
-  @apply list-none;
-}
-
-.menu summary::-webkit-details-marker {
-  display: none;
-}
-
-.menu summary::after {
-  content: "▾";
-  @apply ml-2 text-xs;
-}
-
-.menu-list {
-  @apply mt-1 flex flex-wrap gap-1;
-}
-
-.chevron {
-  @apply min-w-9 text-lg leading-none aria-expanded:rotate-90;
-}
-
-.code-btn {
-  @apply min-h-9 cursor-pointer rounded-md border border-dashed border-zinc-300 px-2 py-1 font-mono text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800;
+  @apply border-l border-slate-300 dark:border-slate-600;
 }
 
 .toasts {
@@ -292,37 +309,18 @@ body {
 }
 
 .toast {
-  @apply pointer-events-auto flex max-w-[min(100%,32rem)] items-center gap-3 rounded-lg border border-l-4 border-zinc-200 bg-white py-2 pr-2 pl-4 text-sm shadow-lg dark:border-zinc-700 dark:bg-zinc-800;
+  @apply pointer-events-auto flex max-w-[min(100%,32rem)] items-center gap-3 rounded-xl border border-l-4 border-slate-200 bg-white py-2 pr-2 pl-4 text-sm dark:border-slate-600 dark:bg-slate-700;
+  box-shadow: var(--shadow-pop);
 }
 
 .toast-ok {
-  @apply border-l-green-600 dark:border-l-green-500;
+  @apply border-l-green-600 dark:border-l-green-400;
 }
 
 .toast-bad {
-  @apply border-l-red-600 dark:border-l-red-500;
-}
-
-.events {
-  @apply list-disc pl-5 text-zinc-500 dark:text-zinc-400;
-}
-
-.code-box {
-  @apply grid gap-2 rounded-lg border-2 border-dashed border-indigo-500 p-4 text-center;
-}
-
-.code-box output {
-  @apply font-mono text-3xl tracking-widest;
-}
-
-.form-grid {
-  @apply grid grid-cols-[repeat(auto-fit,minmax(10rem,1fr))] items-end gap-3;
-}
-
-.form-grid label {
-  @apply grid gap-1 text-sm;
+  @apply border-l-red-600 dark:border-l-red-400;
 }
 
 .ext-link {
-  @apply text-inherit no-underline hover:underline focus-visible:underline;
+  @apply text-inherit no-underline hover:text-sky-700 hover:underline focus-visible:underline dark:hover:text-sky-300;
 }
