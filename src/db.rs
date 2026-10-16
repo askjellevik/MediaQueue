@@ -651,6 +651,25 @@ pub async fn cancel_request(
     Ok(CancelOutcome::Cancelled)
 }
 
+/// Removes a request and its whole history, whatever its status. Returns
+/// false if there was no such request. For the admin; members use
+/// [`cancel_request`].
+pub async fn delete_request(pool: &SqlitePool, request_id: i64) -> Result<bool, sqlx::Error> {
+    let mut tx = begin_immediate(pool).await?;
+    sqlx::query!(
+        "DELETE FROM request_events WHERE request_id = ?",
+        request_id
+    )
+    .execute(&mut *tx)
+    .await?;
+    let removed = sqlx::query!("DELETE FROM requests WHERE id = ?", request_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    tx.commit().await?;
+    Ok(removed > 0)
+}
+
 /// Which of a member's requests to list.
 #[derive(Clone, Copy)]
 pub enum MineFilter {

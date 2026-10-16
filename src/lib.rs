@@ -63,7 +63,10 @@ fn api_router(state: AppState) -> Router<()> {
         .route("/admin/events", get(routes::admin::get_events))
         .route("/admin/counts", get(routes::admin::get_counts))
         .route("/admin/requests", get(routes::admin::get_requests))
-        .route("/admin/requests/{id}", patch(routes::admin::patch_request))
+        .route(
+            "/admin/requests/{id}",
+            patch(routes::admin::patch_request).delete(routes::admin::delete_request),
+        )
         .route(
             "/admin/requests/{id}/events",
             get(routes::admin::get_request_events),
