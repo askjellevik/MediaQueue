@@ -8,8 +8,9 @@ mod common;
 use common::TestApp;
 use mediaqueue::routes::static_files::asset_version;
 
-const PAGE_ASSETS: [&str; 7] = [
+const PAGE_ASSETS: [&str; 8] = [
     "css/app.css",
+    "js/theme.js",
     "js/search.js",
     "js/api.js",
     "js/live.js",
@@ -77,6 +78,7 @@ async fn index_references_assets_by_current_version_and_has_no_inline_code() {
     assert!(!html.contains("__V__"), "placeholder left in page");
     assert!(html.contains(&versioned("js/search.js")));
     assert!(html.contains(&versioned("css/app.css")));
+    assert!(html.contains(&versioned("js/theme.js")));
 
     // CSP allows no inline script or style: every script has a src, and
     // there are no style blocks or attributes.
@@ -97,6 +99,7 @@ async fn index_references_assets_by_current_version_and_has_no_inline_code() {
 async fn scripts_never_write_html() {
     let app = common::spawn_app().await;
     for asset in [
+        "js/theme.js",
         "js/search.js",
         "js/api.js",
         "js/live.js",
