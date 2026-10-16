@@ -72,9 +72,9 @@ function renderLogin() {
     'form',
     { class: 'gate-form' },
     el('h1', { text: TITLE }),
-    el('label', { class: 'vh', for: 'user', text: 'Username' }),
+    el('label', { class: 'sr-only', for: 'user', text: 'Username' }),
     user,
-    el('label', { class: 'vh', for: 'pass', text: 'Password' }),
+    el('label', { class: 'sr-only', for: 'pass', text: 'Password' }),
     pass,
     button,
     error,
@@ -261,7 +261,7 @@ function renderQueue(panel, tab, { say, expired }) {
   const toolbar = el(
     'div',
     { class: 'toolbar' },
-    el('label', { class: 'vh', for: 'filter', text: 'Filter' }),
+    el('label', { class: 'sr-only', for: 'filter', text: 'Filter' }),
     filter,
     refresh,
     archive ? el('a', { class: 'btn btn-small', href: '/api/admin/export.csv', download: 'mediaqueue.csv', text: 'Export CSV' }) : null,
@@ -270,7 +270,7 @@ function renderQueue(panel, tab, { say, expired }) {
     'tr',
     {},
     ['', 'Title', 'Type', 'Requested by', 'Requested', 'IMDb', 'Status', 'Actions'].map((h) =>
-      el('th', { scope: 'col' }, h ? h : el('span', { class: 'vh', text: 'Poster' })),
+      el('th', { scope: 'col' }, h ? h : el('span', { class: 'sr-only', text: 'Poster' })),
     ),
   );
   const table = el('table', { class: 'table' }, el('thead', {}, head), tbody);
@@ -846,7 +846,7 @@ function renderMembers(panel, { say, expired }) {
 
   clear(panel);
   panel.append(
-    el('h2', { class: 'vh', text: 'Members' }),
+    el('h2', { class: 'sr-only', text: 'Members' }),
     form,
     codeSlot,
     el('div', { class: 'table-wrap' }, el('table', { class: 'table' }, el('thead', {}, head), tbody)),

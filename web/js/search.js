@@ -46,7 +46,7 @@ function renderGate() {
   document.title = APP_NAME;
   const input = el('input', {
     id: 'code',
-    class: 'field code-input rounded-2xl border-line bg-surface/80 shadow-lg shadow-black/30 outline-none transition focus:border-accent focus:ring-4 focus:ring-accent/20',
+    class: 'field code-input',
     type: 'text',
     inputmode: 'text',
     autocapitalize: 'characters',
@@ -58,7 +58,7 @@ function renderGate() {
     placeholder: 'Access code',
     'aria-describedby': 'code-error',
   });
-  const button = el('button', { class: 'btn btn-primary rounded-xl shadow-lg shadow-accent/25 transition hover:brightness-110 active:scale-[0.98]', type: 'submit', text: 'Continue' });
+  const button = el('button', { class: 'btn btn-primary', type: 'submit', text: 'Continue' });
   const error = el('p', { id: 'code-error', class: 'error', role: 'alert' });
   let stopCountdown = null;
 
@@ -82,9 +82,9 @@ function renderGate() {
 
   const form = el(
     'form',
-    { class: 'gate-form rounded-3xl border border-line bg-surface/70 p-8 shadow-2xl shadow-black/40 backdrop-blur', novalidate: true },
-    el('h1', { class: 'bg-gradient-to-r from-accent to-sky-300 bg-clip-text text-3xl font-bold tracking-tight text-transparent', text: APP_NAME }),
-    el('label', { class: 'vh', for: 'code', text: 'Access code' }),
+    { class: 'gate-form', novalidate: true },
+    el('h1', { text: APP_NAME }),
+    el('label', { class: 'sr-only', for: 'code', text: 'Access code' }),
     input,
     button,
     error,
@@ -146,15 +146,15 @@ function renderApp(me) {
   updateRemaining();
   const header = el(
     'header',
-    { class: 'top items-center' },
-    el('h1', { class: 'bg-gradient-to-r from-accent to-sky-300 bg-clip-text text-2xl font-bold tracking-tight text-transparent', text: APP_NAME }),
+    { class: 'top' },
+    el('h1', { text: APP_NAME }),
     el('p', { class: 'muted text-sm' }, `Hi ${me.name}`, remainingText),
   );
 
   // ----- Search combobox -----
   const input = el('input', {
     id: 'q',
-    class: 'field rounded-2xl border-line bg-surface/80 px-4 shadow-lg shadow-black/30 outline-none transition focus:border-accent focus:ring-4 focus:ring-accent/20',
+    class: 'field',
     type: 'text',
     role: 'combobox',
     'aria-autocomplete': 'list',
@@ -167,12 +167,12 @@ function renderApp(me) {
     maxlength: 80,
     placeholder: 'Search movies and series',
   });
-  const list = el('ul', { id: 'results', class: 'results rounded-2xl border-line bg-surface/95 p-1.5 shadow-2xl shadow-black/50 backdrop-blur', role: 'listbox', 'aria-label': 'Search results', hidden: true });
+  const list = el('ul', { id: 'results', class: 'results', role: 'listbox', 'aria-label': 'Search results', hidden: true });
   const status = el('p', { class: 'status', role: 'status', 'aria-live': 'polite' });
   const combo = el(
     'div',
     { class: 'combo' },
-    el('label', { class: 'vh', for: 'q', text: 'Search movies and series' }),
+    el('label', { class: 'sr-only', for: 'q', text: 'Search movies and series' }),
     input,
     list,
   );
@@ -211,7 +211,7 @@ function renderApp(me) {
 
   const renderSkeleton = () => {
     clear(list);
-    for (let i = 0; i < 3; i++) list.append(el('li', { class: 'skeleton rounded-xl', 'aria-hidden': 'true' }));
+    for (let i = 0; i < 3; i++) list.append(el('li', { class: 'skeleton', 'aria-hidden': 'true' }));
     openList();
   };
 
@@ -232,7 +232,7 @@ function renderApp(me) {
         'li',
         {
           id: `opt-${i}`,
-          class: 'option rounded-xl transition-colors hover:bg-surface-2',
+          class: 'option',
           role: 'option',
           'aria-selected': 'false',
           'aria-disabled': disabled ? 'true' : null,
@@ -390,7 +390,7 @@ function renderApp(me) {
 
   // ----- Confirm sheet -----
   const sheet = el('dialog', {
-    class: 'sheet rounded-3xl border-line bg-surface p-5 shadow-2xl shadow-black/60 backdrop:bg-black/70 backdrop:backdrop-blur-sm',
+    class: 'sheet',
     'aria-labelledby': 'sheet-title',
   });
   sheet.addEventListener('close', () => {
@@ -412,7 +412,7 @@ function renderApp(me) {
     clear(sheet);
     const note = el('textarea', {
       id: 'note',
-      class: 'field note rounded-xl border-line bg-bg/60 outline-none transition focus:border-accent focus:ring-4 focus:ring-accent/20',
+      class: 'field note',
       maxlength: NOTE_MAX,
       rows: 3,
       placeholder: 'Anything I should know? (optional)',
@@ -423,8 +423,8 @@ function renderApp(me) {
       counter.textContent = `${note.value.length} / ${NOTE_MAX}`;
     });
     const message = el('p', { class: 'status', role: 'status' });
-    const cancel = el('button', { class: 'btn rounded-xl transition hover:brightness-110 active:scale-[0.98]', type: 'button', text: 'Cancel', onclick: () => sheet.close() });
-    const add = el('button', { class: 'btn btn-primary rounded-xl shadow-lg shadow-accent/25 transition hover:brightness-110 active:scale-[0.98]', type: 'submit', autofocus: true }, 'Add to queue');
+    const cancel = el('button', { class: 'btn', type: 'button', text: 'Cancel', onclick: () => sheet.close() });
+    const add = el('button', { class: 'btn btn-primary', type: 'submit', autofocus: true }, 'Add to queue');
     const overview = item.overview && item.overview.length > 240 ? `${item.overview.slice(0, 240).trimEnd()}…` : item.overview;
 
     const form = el(
@@ -437,7 +437,7 @@ function renderApp(me) {
         el(
           'div',
           {},
-          el('h2', { id: 'sheet-title', class: 'text-xl font-semibold tracking-tight' }, extLink(tmdbUrl(item.type, item.tmdb_id), `${item.title} on TMDB`, item.title)),
+          el('h2', { id: 'sheet-title', class: 'text-lg font-semibold' }, extLink(tmdbUrl(item.type, item.tmdb_id), `${item.title} on TMDB`, item.title)),
           el('p', { class: 'opt-meta' }, item.year ? String(item.year) : null, badge(item.type)),
           overview ? el('p', { class: 'overview', text: overview }) : null,
         ),
@@ -516,9 +516,9 @@ function renderApp(me) {
   const makeGroup = (key, title, emptyText) => {
     const group = {
       key,
-      list: el('ul', { class: 'mine-list gap-2.5' }),
+      list: el('ul', { class: 'mine-list' }),
       empty: el('p', { class: 'muted', text: emptyText, hidden: true }),
-      more: el('button', { class: 'btn btn-small rounded-xl transition hover:brightness-110 active:scale-[0.98]', type: 'button', text: 'Load more', hidden: true }),
+      more: el('button', { class: 'btn btn-small', type: 'button', text: 'Load more', hidden: true }),
       cursor: null,
       // Newest-first key of the last loaded row; rows older than this are
       // not loaded yet.
@@ -528,7 +528,7 @@ function renderApp(me) {
     group.section = el(
       'div',
       { class: 'mine-group' },
-      el('h3', { class: 'text-xs font-semibold uppercase tracking-wider', text: title }),
+      el('h3', { class: 'mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400', text: title }),
       group.empty,
       group.list,
       group.more,
@@ -557,7 +557,7 @@ function renderApp(me) {
   // for. The server decides; a refusal just reloads the list.
   const cancelButton = (r, li) => {
     const button = el('button', {
-      class: 'btn btn-small rounded-xl transition hover:brightness-110 active:scale-[0.98]',
+      class: 'btn btn-small',
       type: 'button',
       text: 'Cancel',
       'data-cancel': '',
@@ -604,7 +604,7 @@ function renderApp(me) {
     const site = r.imdb_id ? 'IMDb' : 'TMDB';
     const li = el(
       'li',
-      { class: 'mine-item rounded-2xl border-line bg-surface/70 p-2.5 shadow-sm shadow-black/20 transition-colors hover:border-accent/40', 'data-id': r.id },
+      { class: 'mine-item', 'data-id': r.id },
       extLink(href, `${r.title} on ${site}`, posterSmall(r.poster), true),
       el(
         'div',
@@ -755,7 +755,7 @@ function renderApp(me) {
   const mine = el(
     'section',
     { class: 'mine', 'aria-labelledby': 'mine-title' },
-    el('h2', { id: 'mine-title', class: 'mb-3 text-lg font-semibold tracking-tight', text: 'My requests' }),
+    el('h2', { id: 'mine-title', class: 'mb-3 text-lg font-semibold', text: 'My requests' }),
     pendingGroup.section,
     earlierGroup.section,
     mineStatus,
@@ -770,7 +770,7 @@ function renderApp(me) {
   root.append(
     el(
       'div',
-      { class: 'page mx-auto max-w-2xl gap-8 px-4 py-6 sm:py-10' },
+      { class: 'page' },
       header,
       el('main', {}, el('section', { class: 'search', 'aria-label': 'Search' }, combo, status), mine),
       footer(logout),
@@ -801,7 +801,7 @@ async function boot() {
       el(
         'main',
         { class: 'gate' },
-        el('div', { class: 'gate-form rounded-3xl border border-line bg-surface/70 p-8 shadow-2xl' }, el('h1', { text: APP_NAME }), el('p', { text: "Can't reach the server right now." }), retry),
+        el('div', { class: 'gate-form' }, el('h1', { text: APP_NAME }), el('p', { text: "Can't reach the server right now." }), retry),
       ),
     );
   }

@@ -27,9 +27,9 @@ const POSTER_BASE = 'https://image.tmdb.org/t/p/';
 
 // Fixed width and height on every poster so nothing shifts as images load.
 export function poster(path, size, cls, width, height) {
-  if (!path) return el('div', { class: `poster ${cls} rounded-lg ring-1 ring-white/10`, 'aria-hidden': 'true' });
+  if (!path) return el('div', { class: `poster ${cls}`, 'aria-hidden': 'true' });
   return el('img', {
-    class: `poster ${cls} rounded-lg shadow-md shadow-black/40 ring-1 ring-white/10`,
+    class: `poster ${cls}`,
     src: `${POSTER_BASE}${size}${path}`,
     alt: '',
     width,
@@ -81,27 +81,30 @@ export const STATUS_LABEL = {
 };
 
 // Whole class strings, so the Tailwind build can see them.
+const CHIP_AMBER = 'bg-amber-50 text-amber-800 ring-amber-600/20 dark:bg-amber-400/10 dark:text-amber-300 dark:ring-amber-400/30';
+const CHIP_GREEN = 'bg-green-50 text-green-800 ring-green-600/20 dark:bg-green-400/10 dark:text-green-300 dark:ring-green-400/30';
+const CHIP_RED = 'bg-red-50 text-red-800 ring-red-600/20 dark:bg-red-400/10 dark:text-red-300 dark:ring-red-400/30';
 const CHIP_STYLE = {
-  requested: 'bg-warn/15 text-warn ring-warn/30',
-  pending: 'bg-warn/15 text-warn ring-warn/30',
-  added: 'bg-ok/15 text-ok ring-ok/30',
-  have: 'bg-ok/15 text-ok ring-ok/30',
-  already_had: 'bg-ok/15 text-ok ring-ok/30',
-  unavailable: 'bg-bad/15 text-bad ring-bad/30',
-  refused: 'bg-bad/15 text-bad ring-bad/30',
+  requested: CHIP_AMBER,
+  pending: CHIP_AMBER,
+  added: CHIP_GREEN,
+  have: CHIP_GREEN,
+  already_had: CHIP_GREEN,
+  unavailable: CHIP_RED,
+  refused: CHIP_RED,
 };
 
 export function chip(key, label) {
-  const style = CHIP_STYLE[key] || 'bg-surface-2 text-muted ring-line';
+  const style = CHIP_STYLE[key] || 'bg-zinc-100 text-zinc-700 ring-zinc-500/20 dark:bg-zinc-800 dark:text-zinc-300 dark:ring-zinc-600';
   return el('span', {
-    class: `chip chip-${key} rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset ${style}`,
+    class: `chip chip-${key} inline-block whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${style}`,
     text: label,
   });
 }
 
 export function badge(type) {
   return el('span', {
-    class: 'badge rounded-md border-line px-1.5 text-[0.68rem] font-medium uppercase tracking-wide',
+    class: 'badge inline-block whitespace-nowrap rounded border border-zinc-300 px-1.5 text-[0.7rem] font-medium uppercase tracking-wide dark:border-zinc-700',
     text: TYPE_LABEL[type] || type,
   });
 }
@@ -231,7 +234,7 @@ export async function copyText(text) {
     // Insecure context or permission denied: try the fallback.
   }
   const active = document.activeElement;
-  const field = el('textarea', { class: 'vh', readonly: true, 'aria-hidden': 'true', tabindex: '-1' });
+  const field = el('textarea', { class: 'sr-only', readonly: true, 'aria-hidden': 'true', tabindex: '-1' });
   field.value = text;
   document.body.append(field);
   field.select();
@@ -264,16 +267,50 @@ export function copyOnClick(button, text, failText) {
   });
 }
 
+// System, Light and Dark as a small button group; the choice is kept by
+// js/theme.js, which also puts it on <html> before the page paints.
+const THEMES = [
+  { id: 'system', label: 'System' },
+  { id: 'light', label: 'Light' },
+  { id: 'dark', label: 'Dark' },
+];
+
+function themeToggle() {
+  const theme = window.mqTheme;
+  if (!theme) return null;
+  const buttons = THEMES.map(({ id, label }) =>
+    el('button', {
+      type: 'button',
+      text: label,
+      'aria-pressed': 'false',
+      onclick: () => {
+        theme.set(id);
+        paint();
+      },
+    }),
+  );
+  const paint = () => {
+    buttons.forEach((button, i) => button.setAttribute('aria-pressed', THEMES[i].id === theme.get() ? 'true' : 'false'));
+  };
+  paint();
+  return el('div', { class: 'theme-toggle', role: 'group', 'aria-label': 'Theme' }, buttons);
+}
+
 export function footer(onLogout) {
   return el(
     'footer',
-    { class: 'foot border-t border-line pt-4 text-muted' },
+    { class: 'foot' },
     el(
       'div',
       { class: 'attribution' },
       el('img', { class: 'tmdb-logo', src: LOGO_URL, alt: 'TMDB', width: 92, height: 12 }),
       el('span', { text: 'This product uses the TMDB API but is not endorsed or certified by TMDB.' }),
     ),
-    onLogout ? el('button', { class: 'btn-link rounded-md hover:text-ink', type: 'button', text: 'Log out', onclick: onLogout }) : null,
+    el(
+      'div',
+      { class: 'flex items-center gap-3' },
+      themeToggle(),
+      onLogout ? el('button', { class: 'btn-link', type: 'button', text: 'Log out', onclick: onLogout }) : null,
+    ),
   );
 }
