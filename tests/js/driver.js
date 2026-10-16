@@ -29,7 +29,7 @@ async function waitFor(find, ms = 3000) {
 }
 
 async function unitTests() {
-  check(formatWait(45) === '45s' && formatWait(899) === '14:59' && formatWait(3700) === '1h 1m', 'formatWait');
+  check(formatWait(45) === '45 s' && formatWait(899) === '14:59' && formatWait(3700) === '1 t 1 min', 'formatWait');
 
   // A slow first run and a fast second run: only the second is current,
   // and the first one's request is aborted.
@@ -101,17 +101,17 @@ async function e2e() {
   check(!!sheet, 'Enter did not open the confirm sheet');
   if (!sheet) return;
   const add = document.activeElement;
-  check(add && add.textContent === 'Add to queue', `focus in sheet was on ${add && add.textContent}`);
+  check(add && add.textContent === 'Bestill', `focus in sheet was on ${add && add.textContent}`);
 
   // Enter on the focused button submits.
   add.click();
   await waitFor(() => !document.querySelector('dialog[open]'));
   check(!document.querySelector('dialog[open]'), 'sheet stayed open after submit');
   const status = document.querySelector('.status-ok');
-  check(status && status.textContent.includes('Requested “Dune”'), `status was ${status && status.textContent}`);
+  check(status && status.textContent.includes('Bestilte «Dune»'), `status was ${status && status.textContent}`);
   check(document.activeElement === input, 'focus did not return to the search input');
   const mine = await waitFor(() => document.querySelector('.mine-item'));
-  check(mine && mine.textContent.includes('Pending'), 'my requests not refreshed');
+  check(mine && mine.textContent.includes('Venter'), 'my requests not refreshed');
 
   // Escape closes the list, a second Escape clears the input.
   type(input, 'dun');
