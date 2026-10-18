@@ -139,7 +139,7 @@ fn result(title: &str, id: u32, state: &str) -> serde_json::Value {
     json!({
         "tmdb_id": id, "type": "movie", "title": title, "year": 2021,
         "poster": null, "overview": "Spice.",
-        "states": { "plain": state, "pro": "none" }
+        "states": { "plain": state, "pro": state }
     })
 }
 
@@ -238,7 +238,11 @@ async fn typing_race_and_keyboard_flow_work_end_to_end() {
     Mock::given(method("GET"))
         .and(path("/api/requests/mine"))
         .and(query_param("status", "earlier"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(empty))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"items": [
+            {"id": 2, "tmdb_id": 329865, "type": "movie", "title": "Arrival", "year": 2016,
+             "poster": null, "status": "refused", "created_at": 1600000000,
+             "reason": "Ikke ute på disk ennå"}
+        ], "next_cursor": null})))
         .mount(&server)
         .await;
     quiet_event_stream(&server, "/api/events").await;
@@ -276,7 +280,10 @@ async fn typing_race_and_keyboard_flow_work_end_to_end() {
     assert_eq!(posts.len(), 1);
     assert_eq!(posts[0].headers.get("x-requested-with").unwrap(), "mp");
     let body: serde_json::Value = serde_json::from_slice(&posts[0].body).unwrap();
-    assert_eq!(body, json!({"tmdb_id": 438631, "media_type": "movie"}));
+    assert_eq!(
+        body,
+        json!({"tmdb_id": 438631, "media_type": "movie", "infuse_pro": false})
+    );
     // The version placeholder is what the real server substitutes.
     assert_eq!(asset_version().len(), 12);
 }

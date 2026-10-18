@@ -89,6 +89,8 @@ export const t = {
   withdrawn: (title) => `Trakk tilbake «${title}».`,
   cannotWithdraw: 'Den bestillingen kan ikke lenger trekkes tilbake.',
   withdrawFailed: 'Kunne ikke trekke tilbake. Ingenting ble endret.',
+  showReason: 'Vis begrunnelse',
+  hideReason: 'Skjul begrunnelse',
   orderedOn: (date) => `Bestilt ${date}`,
   nowStatus: (title, status) => `«${title}» er nå ${status.toLowerCase()}.`,
   loadMineFailed: 'Kunne ikke laste bestillingene dine.',

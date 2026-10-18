@@ -126,7 +126,11 @@ the same source file. For the overall design, see
   inherit the old history, and SQLite reusing a member id cannot either.
   The name stays as plain text in the archive and CSV.
 - **Same-status PATCH is a no-op.** It returns `changed: false` and writes
-  no event, so a double click never adds noise to the archive.
+  no event, so a double click never adds noise to the archive. The one
+  exception is `refused` with a different reason (or none, which clears it):
+  that updates the reason and logs one event. The reason is cleaned like a
+  member's note (control characters stripped, at most 300 characters) and
+  reaches the page through `textContent` only.
 - **TV details use one call.** `/tv/{id}?append_to_response=external_ids`
   returns the same IMDb ID as `/tv/{id}/external_ids` in a single request.
 - **`GLIBC_TUNABLES` in the Dockerfile.** Without a fixed mmap threshold,

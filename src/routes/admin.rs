@@ -11,7 +11,7 @@ use axum::{
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::json;
 
-use super::{next_page, page_limit, parse_cursor};
+use super::{next_page, page_limit, parse_cursor, public::clean_text};
 use crate::{
     auth::{self, RequireAdmin},
     clientip::ClientIp,
@@ -174,6 +174,7 @@ struct AdminRequestView {
     note: Option<String>,
     infuse_pro: bool,
     status: String,
+    reason: Option<String>,
     requester: String,
     times_requested: i64,
     created_at: i64,
@@ -227,6 +228,7 @@ pub async fn get_requests(
             note: r.note,
             infuse_pro: r.infuse_pro,
             status: r.status,
+            reason: r.reject_reason,
             requester: r.requester,
             times_requested: r.times_requested,
             created_at: r.created_at,
@@ -240,11 +242,17 @@ pub async fn get_requests(
 #[serde(deny_unknown_fields)]
 pub struct StatusBody {
     status: Status,
+    /// Why it was refused; only kept with `refused`.
+    reason: Option<String>,
 }
+
+/// Longest reason an admin can give for refusing a request.
+const MAX_REASON_CHARS: usize = 300;
 
 /// `PATCH /api/admin/requests/{id}`: any status to any other, logged as a
 /// `status` event in the same transaction. Setting the current status
-/// again is a no-op.
+/// again is a no-op, except that `refused` with a different reason
+/// replaces the reason.
 pub async fn patch_request(
     State(state): State<AppState>,
     _admin: RequireAdmin,
@@ -252,8 +260,9 @@ pub async fn patch_request(
     AppJson(body): AppJson<StatusBody>,
 ) -> Result<impl IntoResponse, AppError> {
     let to = body.status.as_str();
+    let reason = clean_text(body.reason.as_deref(), MAX_REASON_CHARS)?;
     let now = now(&state);
-    let changed = match db::set_request_status(&state.pool, id, to, now).await? {
+    let changed = match db::set_request_status(&state.pool, id, to, reason.as_deref(), now).await? {
         db::StatusChange::NotFound => return Err(AppError::NotFound),
         db::StatusChange::Unchanged => false,
         db::StatusChange::Changed { from } => {

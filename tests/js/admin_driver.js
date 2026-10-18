@@ -101,8 +101,34 @@ async function run() {
     // A status change while History is open refetches it.
     const before = window.__eventFetches || 0;
     archived.querySelector('details.menu button[aria-label^="Avvis"]').click();
+    // Avvis asks for a reason first; it is optional, and the counter starts at 0.
+    const asking = await waitFor(() => document.querySelector('dialog[open] textarea#reason'));
+    check(!!asking, 'Avvis did not ask for a reason');
+    if (asking) {
+      check(document.getElementById('reason-count')?.textContent === '0 / 300', 'reason counter did not start at 0');
+      asking.value = 'Ikke ute på disk ennå';
+      asking.dispatchEvent(new Event('input'));
+      check(document.getElementById('reason-count')?.textContent === '21 / 300', 'reason counter did not follow the text');
+      document.querySelector('dialog[open] button[type="submit"]').click();
+    }
     await waitFor(() => (window.__eventFetches || 0) > before);
     check((window.__eventFetches || 0) > before, 'open history was not refetched');
+    check(archived.textContent.includes('Begrunnelse: Ikke ute på disk ennå'), 'reason not shown on the card');
+    check(!document.querySelector('dialog'), 'reason dialog stayed in the page');
+
+    // The reason can be edited afterwards; the dialog opens filled in, with
+    // the counter already showing its length.
+    const edit = archived.querySelector('details.menu button[aria-label^="Rediger begrunnelse"]');
+    check(!!edit, 'refused card has no Rediger begrunnelse');
+    if (edit) {
+      edit.click();
+      const again = await waitFor(() => document.querySelector('dialog[open] textarea#reason'));
+      check(again?.value === 'Ikke ute på disk ennå', `edit dialog was not prefilled: ${again?.value}`);
+      check(document.getElementById('reason-count')?.textContent === '21 / 300', 'counter not updated for the prefilled text');
+      document.querySelector('dialog[open] button.btn:not(.btn-primary)').click();
+      await waitFor(() => !document.querySelector('dialog'));
+      check(!document.querySelector('dialog'), 'Avbryt left the dialog open');
+    }
   }
 
   // Delete: after a confirmation the card goes, with a toast.

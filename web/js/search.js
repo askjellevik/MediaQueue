@@ -660,9 +660,39 @@ function renderApp(me) {
       side,
     );
     if (r.can_cancel) side.append(cancelButton(r, li));
-    const node = { id: r.id, li, status, state: r.status, group, key: keyOf(r) };
+    const node = { id: r.id, li, side, status, state: r.status, group, key: keyOf(r), reason: null };
+    syncReason(node, r);
     mineNodes.set(r.id, node);
     return node;
+  };
+
+  // "Vis begrunnelse" and the text it opens, on a refused request the admin
+  // explained. Rebuilt when the reason changes, keeping it open if it was.
+  const syncReason = (node, r) => {
+    const reason = r.reason || null;
+    if (reason === node.reason) return;
+    const wasOpen = node.toggle ? node.toggle.getAttribute('aria-expanded') === 'true' : false;
+    if (node.toggle) node.toggle.remove();
+    if (node.box) node.box.remove();
+    node.reason = reason;
+    node.toggle = null;
+    node.box = null;
+    if (!reason) return;
+    const id = `reason-${r.id}`;
+    const box = el('p', { id, class: 'mine-reason', text: reason, hidden: !wasOpen });
+    const toggle = el('button', { class: 'btn-link', type: 'button', 'aria-controls': id });
+    const show = (open) => {
+      toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      toggle.textContent = open ? t.hideReason : t.showReason;
+      toggle.setAttribute('aria-label', `${open ? t.hideReason : t.showReason}: ${r.title}`);
+      box.hidden = !open;
+    };
+    toggle.addEventListener('click', () => show(box.hidden));
+    show(wasOpen);
+    node.side.append(toggle);
+    node.li.append(box);
+    node.toggle = toggle;
+    node.box = box;
   };
 
   // Puts a row into its group at its newest-first position. A row older
@@ -765,6 +795,7 @@ function renderApp(me) {
             known.status = chipNow;
             toast(t.nowStatus(r.title, STATUS_LABEL[r.status] || r.status));
           }
+          syncReason(known, r);
           if (known.group !== group) {
             known.li.remove();
             place(group, known);

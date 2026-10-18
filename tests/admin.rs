@@ -265,6 +265,159 @@ async fn status_change_writes_exactly_one_event_and_updates_status_changed_at() 
 }
 
 #[tokio::test]
+async fn a_refusal_can_carry_a_reason_that_the_member_sees() {
+    let app = common::spawn_app().await;
+    let admin = login_admin(&app).await;
+    let cookie = login_new_member(&app, "Alice").await;
+    let alice = member_id(&app.pool, "Alice").await;
+    let id = seed_request(&app.pool, (alice, "Alice"), 1, "Dune", "pending", 100).await;
+    // Refused before reasons existed: starts without one.
+    let old = seed_request(&app.pool, (alice, "Alice"), 2, "Arrival", "refused", 90).await;
+    let path = format!("/api/admin/requests/{id}");
+    let patch = |path: &str, body: &str| {
+        let (app, admin) = (&app, &admin);
+        let (path, body) = (path.to_string(), body.to_string());
+        async move { json_of(&call(app, Some(admin), "PATCH", &path, Some(&body)).await) }
+    };
+    let stored = |id: i64| {
+        let pool = &app.pool;
+        async move {
+            sqlx::query_scalar::<_, Option<String>>(
+                "SELECT reject_reason FROM requests WHERE id = ?",
+            )
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+        }
+    };
+    let status_events = |id: i64| {
+        let pool = &app.pool;
+        async move {
+            sqlx::query_as::<_, (String, Option<String>)>(
+                "SELECT to_status, note FROM request_events WHERE request_id = ? AND kind = 'status'
+                 ORDER BY id",
+            )
+            .bind(id)
+            .fetch_all(pool)
+            .await
+            .unwrap()
+        }
+    };
+    let seen_by_member = |id: i64| {
+        let (app, cookie) = (&app, &cookie);
+        async move {
+            let mine = app
+                .request(
+                    "GET",
+                    "/api/requests/mine?limit=50",
+                    &[("Cookie", cookie)],
+                    None,
+                )
+                .await;
+            json_of(&mine)["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|i| i["id"] == id)
+                .unwrap()["reason"]
+                .clone()
+        }
+    };
+
+    // Control characters and padding are stripped, and the reason is
+    // stored, logged and shown to the member.
+    let done = patch(
+        &path,
+        r#"{"status":"refused","reason":"  Ikke ute på\u0007 disk ennå \n"}"#,
+    )
+    .await;
+    assert_eq!(done["changed"], true);
+    assert_eq!(stored(id).await.as_deref(), Some("Ikke ute på disk ennå"));
+    assert_eq!(
+        status_events(id).await,
+        [("refused".into(), Some("Ikke ute på disk ennå".into()))]
+    );
+    assert_eq!(seen_by_member(id).await, "Ikke ute på disk ennå");
+    let listed = call(
+        &app,
+        Some(&admin),
+        "GET",
+        "/api/admin/requests?status=refused",
+        None,
+    )
+    .await;
+    let listed = json_of(&listed);
+    let reasons: Vec<(i64, Value)> = listed["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| (i["id"].as_i64().unwrap(), i["reason"].clone()))
+        .collect();
+    assert_eq!(
+        reasons,
+        [(id, json!("Ikke ute på disk ennå")), (old, Value::Null)]
+    );
+
+    // The same reason again changes nothing and logs nothing.
+    let again = patch(
+        &path,
+        r#"{"status":"refused","reason":"Ikke ute på disk ennå"}"#,
+    )
+    .await;
+    assert_eq!(again["changed"], false);
+    assert_eq!(status_events(id).await.len(), 1);
+
+    // A different one replaces it, with one more event.
+    let edited = patch(
+        &path,
+        r#"{"status":"refused","reason":"Kommer i 4K senere"}"#,
+    )
+    .await;
+    assert_eq!(edited["changed"], true);
+    assert_eq!(stored(id).await.as_deref(), Some("Kommer i 4K senere"));
+    assert_eq!(status_events(id).await.len(), 2);
+
+    // An empty reason clears it.
+    let cleared = patch(&path, r#"{"status":"refused","reason":""}"#).await;
+    assert_eq!(cleared["changed"], true);
+    assert_eq!(stored(id).await, None);
+    assert_eq!(seen_by_member(id).await, Value::Null);
+    assert_eq!(status_events(id).await.last().unwrap().1, None);
+
+    // A request refused before can get a reason afterwards.
+    assert_eq!(seen_by_member(old).await, Value::Null);
+    let old_path = format!("/api/admin/requests/{old}");
+    let late = patch(
+        &old_path,
+        r#"{"status":"refused","reason":"Vi har ikke plass"}"#,
+    )
+    .await;
+    assert_eq!(late["changed"], true);
+    assert_eq!(seen_by_member(old).await, "Vi har ikke plass");
+
+    // Leaving `refused` drops the reason, and only `refused` takes one.
+    patch(&path, r#"{"status":"refused","reason":"Nei"}"#).await;
+    assert_eq!(
+        patch(&path, r#"{"status":"pending"}"#).await["changed"],
+        true
+    );
+    assert_eq!(stored(id).await, None);
+    assert_eq!(seen_by_member(id).await, Value::Null);
+    patch(&path, r#"{"status":"added","reason":"ignored"}"#).await;
+    assert_eq!(stored(id).await, None);
+    assert_eq!(status_events(id).await.last().unwrap().1, None);
+
+    // 300 characters fit; 301 do not.
+    let long = |n: usize| format!(r#"{{"status":"refused","reason":"{}"}}"#, "æ".repeat(n));
+    let ok = call(&app, Some(&admin), "PATCH", &path, Some(&long(300))).await;
+    assert_eq!(ok.status, 200, "{}", ok.body);
+    let too_long = call(&app, Some(&admin), "PATCH", &path, Some(&long(301))).await;
+    assert_eq!(too_long.status, 400);
+    assert_eq!(stored(id).await.unwrap().chars().count(), 300);
+}
+
+#[tokio::test]
 async fn bad_status_changes_are_rejected() {
     let app = common::spawn_app().await;
     let admin = login_admin(&app).await;
@@ -621,6 +774,10 @@ async fn csv_export_streams_the_archive_and_neutralises_formulas() {
         .execute(&app.pool)
         .await
         .unwrap();
+    sqlx::query("UPDATE requests SET reject_reason = '=bad, \"reason\"' WHERE tmdb_id = 2")
+        .execute(&app.pool)
+        .await
+        .unwrap();
 
     let response = call(&app, Some(&admin), "GET", "/api/admin/export.csv", None).await;
     assert_eq!(response.status, 200);
@@ -659,7 +816,8 @@ async fn csv_export_streams_the_archive_and_neutralises_formulas() {
             "times_requested",
             "created_at",
             "status_changed_at",
-            "infuse_pro"
+            "infuse_pro",
+            "reject_reason"
         ]
     );
     let rows: Vec<csv::StringRecord> = reader.records().map(Result::unwrap).collect();
@@ -675,6 +833,8 @@ async fn csv_export_streams_the_archive_and_neutralises_formulas() {
         assert_eq!(&row[10], "2023-11-14T22:13:20Z");
     }
     assert_eq!(&rows[0][8], "'=1+1");
+    assert_eq!(&rows[0][13], "");
+    assert_eq!(&rows[1][13], "'=bad, \"reason\"");
     assert_eq!(&rows[0][6], "refused");
     for row in &rows {
         for cell in row.iter() {

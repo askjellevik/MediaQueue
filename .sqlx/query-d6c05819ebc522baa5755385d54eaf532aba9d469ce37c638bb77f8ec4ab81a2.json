@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!: String\", tmdb_id AS \"tmdb_id!: String\",\n                  media_type AS \"media_type!: String\", title AS \"title!: String\",\n                  year AS \"year?: String\", imdb_id AS \"imdb_id?: String\",\n                  status AS \"status!: String\", requested_by AS \"requested_by!: String\",\n                  note AS \"note?: String\", times_requested AS \"times_requested!: String\",\n                  created_at AS \"created_at!: String\",\n                  status_changed_at AS \"status_changed_at!: String\",\n                  infuse_pro AS \"infuse_pro!: String\"\n           FROM (\n             SELECT 0 AS sort_key, 0 AS sort_id,\n                    'id' AS id, 'tmdb_id' AS tmdb_id, 'type' AS media_type, 'title' AS title,\n                    'year' AS year, 'imdb_id' AS imdb_id, 'status' AS status,\n                    'requested_by' AS requested_by, 'note' AS note,\n                    'times_requested' AS times_requested, 'created_at' AS created_at,\n                    'status_changed_at' AS status_changed_at, 'infuse_pro' AS infuse_pro\n             UNION ALL\n             SELECT 1, r.id, CAST(r.id AS TEXT), CAST(r.tmdb_id AS TEXT), r.media_type, r.title,\n                    CAST(r.year AS TEXT), r.imdb_id, r.status,\n                    COALESCE(m.name, r.requested_by_name, '(deleted)'), r.note,\n                    CAST((SELECT COUNT(*) FROM request_events e\n                          WHERE e.request_id = r.id AND e.kind IN ('submitted', 'duplicate'))\n                         AS TEXT),\n                    strftime('%Y-%m-%dT%H:%M:%SZ', r.created_at, 'unixepoch'),\n                    strftime('%Y-%m-%dT%H:%M:%SZ', r.status_changed_at, 'unixepoch'),\n                    CAST(r.infuse_pro AS TEXT)\n             FROM requests r LEFT JOIN members m ON m.id = r.requested_by\n           )\n           ORDER BY sort_key, sort_id",
+  "query": "SELECT id AS \"id!: String\", tmdb_id AS \"tmdb_id!: String\",\n                  media_type AS \"media_type!: String\", title AS \"title!: String\",\n                  year AS \"year?: String\", imdb_id AS \"imdb_id?: String\",\n                  status AS \"status!: String\", requested_by AS \"requested_by!: String\",\n                  note AS \"note?: String\", times_requested AS \"times_requested!: String\",\n                  created_at AS \"created_at!: String\",\n                  status_changed_at AS \"status_changed_at!: String\",\n                  infuse_pro AS \"infuse_pro!: String\",\n                  reject_reason AS \"reject_reason?: String\"\n           FROM (\n             SELECT 0 AS sort_key, 0 AS sort_id,\n                    'id' AS id, 'tmdb_id' AS tmdb_id, 'type' AS media_type, 'title' AS title,\n                    'year' AS year, 'imdb_id' AS imdb_id, 'status' AS status,\n                    'requested_by' AS requested_by, 'note' AS note,\n                    'times_requested' AS times_requested, 'created_at' AS created_at,\n                    'status_changed_at' AS status_changed_at, 'infuse_pro' AS infuse_pro,\n                    'reject_reason' AS reject_reason\n             UNION ALL\n             SELECT 1, r.id, CAST(r.id AS TEXT), CAST(r.tmdb_id AS TEXT), r.media_type, r.title,\n                    CAST(r.year AS TEXT), r.imdb_id, r.status,\n                    COALESCE(m.name, r.requested_by_name, '(deleted)'), r.note,\n                    CAST((SELECT COUNT(*) FROM request_events e\n                          WHERE e.request_id = r.id AND e.kind IN ('submitted', 'duplicate'))\n                         AS TEXT),\n                    strftime('%Y-%m-%dT%H:%M:%SZ', r.created_at, 'unixepoch'),\n                    strftime('%Y-%m-%dT%H:%M:%SZ', r.status_changed_at, 'unixepoch'),\n                    CAST(r.infuse_pro AS TEXT), r.reject_reason\n             FROM requests r LEFT JOIN members m ON m.id = r.requested_by\n           )\n           ORDER BY sort_key, sort_id",
   "describe": {
     "columns": [
       {
@@ -105,6 +105,17 @@
         "ordinal": 12,
         "type_info": "Text",
         "origin": "Expression"
+      },
+      {
+        "name": "reject_reason?: String",
+        "ordinal": 13,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "reject_reason"
+          }
+        }
       }
     ],
     "parameters": {
@@ -123,8 +134,9 @@
       false,
       true,
       true,
-      false
+      false,
+      true
     ]
   },
-  "hash": "772b56506c21a5b78166a460651521546001efa7da901334ab95a2a26bd16b18"
+  "hash": "d6c05819ebc522baa5755385d54eaf532aba9d469ce37c638bb77f8ec4ab81a2"
 }

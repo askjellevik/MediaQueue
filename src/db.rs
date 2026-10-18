@@ -605,6 +605,8 @@ pub struct MineRow {
     pub status: String,
     pub created_at: i64,
     pub infuse_pro: bool,
+    /// Why the admin refused it, if they said.
+    pub reject_reason: Option<String>,
     pub can_cancel: bool,
 }
 
@@ -710,6 +712,7 @@ pub async fn requests_for_member(
         r#"SELECT r.id AS "id!", r.tmdb_id AS "tmdb_id!", r.media_type AS "media_type!",
                   r.imdb_id, r.title AS "title!", r.year, r.poster_path, r.status AS "status!",
                   r.created_at AS "created_at!", r.infuse_pro AS "infuse_pro!: bool",
+                  r.reject_reason,
                   (r.requested_by = ?1 AND r.status = 'pending'
                    AND NOT EXISTS (SELECT 1 FROM request_events d
                                    WHERE d.request_id = r.id AND d.kind = 'duplicate'))
@@ -750,6 +753,7 @@ pub struct AdminRequestRow {
     pub note: Option<String>,
     pub infuse_pro: bool,
     pub status: String,
+    pub reject_reason: Option<String>,
     pub requester: String,
     pub created_at: i64,
     pub status_changed_at: i64,
@@ -776,7 +780,8 @@ pub async fn admin_requests(
         r#"SELECT r.id AS "id!", r.tmdb_id AS "tmdb_id!", r.media_type AS "media_type!",
                   r.imdb_id, r.title AS "title!", r.year, r.poster_path, r.note,
                   r.infuse_pro AS "infuse_pro!: bool",
-                  r.status AS "status!", COALESCE(m.name, r.requested_by_name, '(deleted)') AS "requester!",
+                  r.status AS "status!", r.reject_reason,
+                  COALESCE(m.name, r.requested_by_name, '(deleted)') AS "requester!",
                   r.created_at AS "created_at!", r.status_changed_at AS "status_changed_at!",
                   (SELECT COUNT(*) FROM request_events e
                    WHERE e.request_id = r.id AND e.kind IN ('submitted', 'duplicate'))
@@ -812,41 +817,51 @@ pub enum StatusChange {
 
 /// Moves a request to `to` and logs a `status` event in the same
 /// transaction, so the archive always explains the current status.
+/// `reason` is why the admin refused it: kept (and logged as the event's
+/// note) only when `to` is `refused`, and cleared when it leaves
+/// `refused`. Setting `refused` again with a different reason (or none,
+/// which clears it) replaces it and logs one more event; with the same
+/// reason nothing is written.
 pub async fn set_request_status(
     pool: &SqlitePool,
     request_id: i64,
     to: &str,
+    reason: Option<&str>,
     now: i64,
 ) -> Result<StatusChange, sqlx::Error> {
     let mut tx = begin_immediate(pool).await?;
-    let current = sqlx::query_scalar!(
-        r#"SELECT status AS "status!" FROM requests WHERE id = ?"#,
+    let current = sqlx::query!(
+        r#"SELECT status AS "status!", reject_reason FROM requests WHERE id = ?"#,
         request_id
     )
     .fetch_optional(&mut *tx)
     .await?;
-    let Some(from) = current else {
+    let Some(current) = current else {
         tx.rollback().await?;
         return Ok(StatusChange::NotFound);
     };
-    if from == to {
+    let from = current.status;
+    let reason = reason.filter(|_| to == "refused");
+    if from == to && (to != "refused" || reason == current.reject_reason.as_deref()) {
         tx.rollback().await?;
         return Ok(StatusChange::Unchanged);
     }
     sqlx::query!(
-        "UPDATE requests SET status = ?, status_changed_at = ? WHERE id = ?",
+        "UPDATE requests SET status = ?, reject_reason = ?, status_changed_at = ? WHERE id = ?",
         to,
+        reason,
         now,
         request_id
     )
     .execute(&mut *tx)
     .await?;
     sqlx::query!(
-        "INSERT INTO request_events (request_id, kind, actor, from_status, to_status, created_at)
-         VALUES (?, 'status', 'admin', ?, ?, ?)",
+        "INSERT INTO request_events (request_id, kind, actor, from_status, to_status, note, created_at)
+         VALUES (?, 'status', 'admin', ?, ?, ?, ?)",
         request_id,
         from,
         to,
+        reason,
         now
     )
     .execute(&mut *tx)
@@ -907,6 +922,7 @@ pub struct ExportRow {
     pub created_at: String,
     pub status_changed_at: String,
     pub infuse_pro: String,
+    pub reject_reason: Option<String>,
 }
 
 /// Neutralises spreadsheet formulas: a cell starting with `=`, `+`, `-`
@@ -937,6 +953,7 @@ impl From<ExportRow> for axum::body::Bytes {
             &row.created_at,
             &row.status_changed_at,
             &row.infuse_pro,
+            row.reject_reason.as_deref().unwrap_or(""),
         ];
         let mut writer = csv::Writer::from_writer(Vec::with_capacity(256));
         // Writing to a Vec cannot fail; an error would only drop the line.
@@ -958,14 +975,16 @@ pub fn export_csv(pool: &'static SqlitePool) -> axum::body::Body {
                   note AS "note?: String", times_requested AS "times_requested!: String",
                   created_at AS "created_at!: String",
                   status_changed_at AS "status_changed_at!: String",
-                  infuse_pro AS "infuse_pro!: String"
+                  infuse_pro AS "infuse_pro!: String",
+                  reject_reason AS "reject_reason?: String"
            FROM (
              SELECT 0 AS sort_key, 0 AS sort_id,
                     'id' AS id, 'tmdb_id' AS tmdb_id, 'type' AS media_type, 'title' AS title,
                     'year' AS year, 'imdb_id' AS imdb_id, 'status' AS status,
                     'requested_by' AS requested_by, 'note' AS note,
                     'times_requested' AS times_requested, 'created_at' AS created_at,
-                    'status_changed_at' AS status_changed_at, 'infuse_pro' AS infuse_pro
+                    'status_changed_at' AS status_changed_at, 'infuse_pro' AS infuse_pro,
+                    'reject_reason' AS reject_reason
              UNION ALL
              SELECT 1, r.id, CAST(r.id AS TEXT), CAST(r.tmdb_id AS TEXT), r.media_type, r.title,
                     CAST(r.year AS TEXT), r.imdb_id, r.status,
@@ -975,7 +994,7 @@ pub fn export_csv(pool: &'static SqlitePool) -> axum::body::Body {
                          AS TEXT),
                     strftime('%Y-%m-%dT%H:%M:%SZ', r.created_at, 'unixepoch'),
                     strftime('%Y-%m-%dT%H:%M:%SZ', r.status_changed_at, 'unixepoch'),
-                    CAST(r.infuse_pro AS TEXT)
+                    CAST(r.infuse_pro AS TEXT), r.reject_reason
              FROM requests r LEFT JOIN members m ON m.id = r.requested_by
            )
            ORDER BY sort_key, sort_id"#
@@ -1402,6 +1421,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(pro, 0);
+        // And have no refusal reason until the admin gives one.
+        let (reason,): (Option<String>,) =
+            sqlx::query_as("SELECT reject_reason FROM requests WHERE id = 3")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(reason, None);
         sqlx::query(
             "INSERT INTO requests (tmdb_id, media_type, title, infuse_pro, requested_by, created_at, status_changed_at)
              VALUES (10, 'movie', 'Dune PRO', 1, 7, 6, 6)",

@@ -55,6 +55,56 @@ const EVENT_TEXT = {
 
 const get = (path) => call('GET', path);
 
+// Matches the server's limit on a reason.
+const REASON_MAX = 300;
+
+// Asks why a request is refused; the answer is optional. Resolves with the
+// text ('' for none), or null if the admin backs out.
+const askReason = (item, opener, current, confirmLabel) =>
+  new Promise((resolve) => {
+    const dialog = el('dialog', { class: 'sheet', 'aria-labelledby': 'reason-title' });
+    const field = el('textarea', {
+      id: 'reason',
+      class: 'field note',
+      maxlength: REASON_MAX,
+      rows: 3,
+      placeholder: ta.reasonPlaceholder,
+      'aria-describedby': 'reason-count',
+    });
+    field.value = current;
+    const counter = el('p', { id: 'reason-count', class: 'counter' });
+    const count = () => {
+      counter.textContent = `${field.value.length} / ${REASON_MAX}`;
+    };
+    field.addEventListener('input', count);
+    count();
+    let answer = null;
+    const cancel = el('button', { class: 'btn', type: 'button', text: t.cancel, onclick: () => dialog.close() });
+    const form = el(
+      'form',
+      { method: 'dialog', class: 'form-grid' },
+      el('h2', { id: 'reason-title', text: ta.reasonTitle(item.title) }),
+      el('label', { for: 'reason' }, ta.reasonLabel, field),
+      counter,
+      el('p', { class: 'muted', text: ta.reasonHelp }),
+      el('div', { class: 'actions' }, cancel, el('button', { class: 'btn btn-primary', type: 'submit', text: confirmLabel })),
+    );
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      answer = field.value.trim();
+      dialog.close();
+    });
+    dialog.addEventListener('close', () => {
+      dialog.remove();
+      opener.focus();
+      resolve(answer);
+    });
+    dialog.append(form);
+    document.body.append(dialog);
+    dialog.showModal();
+    field.focus();
+  });
+
 // Stops the live updates of the signed-in page when it goes away.
 let stopLive = null;
 
@@ -315,6 +365,7 @@ function renderQueue(panel, tab, { say, expired }) {
       meta.textContent = ta.orderedByOn(`${item.requester}${again}`, formatDateTime(item.created_at));
     };
     paintMeta();
+    const reasonLine = el('p', { class: 'req-note', hidden: true });
     const statusCell = el('span');
     const actions = el('div', { class: 'row-actions' });
     const historyBox = el('div', { class: 'req-history', hidden: true });
@@ -331,6 +382,7 @@ function renderQueue(panel, tab, { say, expired }) {
         el('p', { class: 'req-title' }, el('strong', {}, heading), item.year ? ` (${item.year})` : null, badge(item.type), proBadge(item.infuse_pro ? ta.withPro : ta.withoutPro)),
         meta,
         item.note ? el('p', { class: 'req-note', text: ta.note(item.note) }) : null,
+        reasonLine,
       ),
       el('div', { class: 'req-side' }, statusCell, actions),
       archive ? historyBox : null,
@@ -341,14 +393,16 @@ function renderQueue(panel, tab, { say, expired }) {
     // Where the row was before it left the tab, so Undo can put it back.
     let anchor = null;
 
-    const setStatus = async (to, isUndo = false) => {
+    const setStatus = async (to, isUndo = false, reason = '') => {
       const from = item.status;
+      const fromReason = item.reason;
       if (busy || from === to) return;
       // Optimistic: update at once, put it back if the server says no.
       const leaves = !archive && to !== tab.status;
       const returns = !archive && !row.isConnected && to === tab.status;
       busy = true;
       item.status = to;
+      item.reason = to === 'refused' && reason ? reason : null;
       if (leaves) {
         anchor = row.nextSibling;
         row.remove();
@@ -357,24 +411,45 @@ function renderQueue(panel, tab, { say, expired }) {
       }
       empty.hidden = list.children.length > 0;
       paint();
-      const res = await send('PATCH', `/api/admin/requests/${item.id}`, { status: to });
+      const res = await send('PATCH', `/api/admin/requests/${item.id}`, to === 'refused' && reason ? { status: to, reason } : { status: to });
       busy = false;
       if (expired(res)) return;
       if (res.ok) {
         paint();
         toast(ta.statusChanged(item.title, STATUS_LABEL[to]), {
-          undo: isUndo ? null : () => setStatus(from, true),
+          undo: isUndo ? null : () => setStatus(from, true, fromReason || ''),
         });
         // A history that is open would otherwise miss the new event.
         if (toggle.getAttribute('aria-expanded') === 'true') loadHistory();
       } else {
         item.status = from;
+        item.reason = fromReason;
         if (leaves) list.insertBefore(row, anchor && anchor.parentNode === list ? anchor : null);
         else if (returns) row.remove();
         empty.hidden = list.children.length > 0;
         paint();
         toast(ta.updateFailed(item.title), { kind: 'bad' });
       }
+    };
+
+    // Adds, changes or removes the reason on a request that is already
+    // refused. An empty answer removes it.
+    const saveReason = async (opener) => {
+      const reason = await askReason(item, opener, item.reason || '', ta.save);
+      if (reason === null || busy || reason === (item.reason || '')) return;
+      busy = true;
+      paint();
+      const res = await send('PATCH', `/api/admin/requests/${item.id}`, { status: 'refused', reason });
+      busy = false;
+      if (expired(res)) return;
+      if (res.ok) {
+        item.reason = reason || null;
+        toast(ta.reasonSaved(item.title));
+        if (toggle.getAttribute('aria-expanded') === 'true') loadHistory();
+      } else {
+        toast(ta.reasonFailed(item.title), { kind: 'bad' });
+      }
+      paint();
     };
 
     // Deletes the whole request, history included. The server also sends a
@@ -400,6 +475,8 @@ function renderQueue(panel, tab, { say, expired }) {
     const paint = () => {
       clear(statusCell);
       statusCell.append(chip(item.status, STATUS_LABEL[item.status] || item.status));
+      reasonLine.hidden = !item.reason;
+      reasonLine.textContent = item.reason ? ta.reasonNote(item.reason) : '';
       clear(actions);
       const button = (action, cls) =>
         el('button', {
@@ -408,9 +485,14 @@ function renderQueue(panel, tab, { say, expired }) {
           text: action.label,
           'aria-label': ta.actionLabel(action.label, item.title),
           disabled: busy,
-          onclick: () => {
+          onclick: async (event) => {
             for (const open of actions.querySelectorAll('details[open]')) open.open = false;
-            setStatus(action.status);
+            if (action.status !== 'refused') {
+              setStatus(action.status);
+              return;
+            }
+            const reason = await askReason(item, event.currentTarget, '', ta.actions.refused);
+            if (reason !== null) setStatus('refused', false, reason);
           },
         });
       const byStatus = (status) => ACTIONS.find((a) => a.status === status);
@@ -421,6 +503,21 @@ function renderQueue(panel, tab, { say, expired }) {
         items.push(button(byStatus('already_had'), 'menu-item'));
       } else {
         for (const action of ACTIONS.filter((a) => a.status !== item.status)) items.push(button(action, 'menu-item'));
+      }
+      if (item.status === 'refused') {
+        items.push(
+          el('button', {
+            class: 'menu-item',
+            type: 'button',
+            text: item.reason ? ta.editReason : ta.addReason,
+            'aria-label': ta.actionLabel(item.reason ? ta.editReason : ta.addReason, item.title),
+            disabled: busy,
+            onclick: (event) => {
+              for (const open of actions.querySelectorAll('details[open]')) open.open = false;
+              saveReason(event.currentTarget);
+            },
+          }),
+        );
       }
       if (item.dmm_url) {
         items.push(
@@ -513,8 +610,9 @@ function renderQueue(panel, tab, { say, expired }) {
         item.times_requested = fresh.times_requested;
         paintMeta();
       }
-      if (!busy && fresh.status !== item.status) {
+      if (!busy && (fresh.status !== item.status || (fresh.reason || null) !== (item.reason || null))) {
         item.status = fresh.status;
+        item.reason = fresh.reason;
         paint();
       }
     };

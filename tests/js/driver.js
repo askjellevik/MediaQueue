@@ -112,8 +112,26 @@ async function e2e() {
   const status = document.querySelector('.status-ok');
   check(status && status.textContent.includes('Bestilte «Dune»'), `status was ${status && status.textContent}`);
   check(document.activeElement !== input, 'search input kept focus after the sheet closed');
-  const mine = await waitFor(() => document.querySelector('.mine-item'));
-  check(mine && mine.textContent.includes('Venter'), 'my requests not refreshed');
+  const mineItems = () => [...document.querySelectorAll('.mine-item')];
+  const mine = await waitFor(() => mineItems().find((i) => i.textContent.includes('Venter')));
+  check(!!mine, 'my requests not refreshed');
+  check(!mine?.querySelector('.mine-reason'), 'a pending request shows a reason');
+
+  // A refused request with a reason has a toggle, closed at first.
+  const refused = mineItems().find((i) => i.textContent.includes('Arrival'));
+  const reasonToggle = refused?.querySelector('button[aria-controls]');
+  const reasonBox = refused?.querySelector('.mine-reason');
+  check(!!reasonToggle && !!reasonBox, 'refused request has no Vis begrunnelse');
+  if (reasonToggle && reasonBox) {
+    check(reasonToggle.textContent === 'Vis begrunnelse', `toggle said ${reasonToggle.textContent}`);
+    check(reasonToggle.getAttribute('aria-expanded') === 'false' && reasonBox.hidden, 'reason is not closed at first');
+    check(reasonToggle.getAttribute('aria-controls') === reasonBox.id && !!reasonBox.id, 'toggle does not point at the reason');
+    reasonToggle.click();
+    check(!reasonBox.hidden && reasonBox.textContent === 'Ikke ute på disk ennå', `reason showed ${reasonBox.textContent}`);
+    check(reasonToggle.getAttribute('aria-expanded') === 'true' && reasonToggle.textContent === 'Skjul begrunnelse', 'toggle did not flip');
+    reasonToggle.click();
+    check(reasonBox.hidden && reasonToggle.getAttribute('aria-expanded') === 'false', 'second click did not close the reason');
+  }
 
   // The clear button shows while there is text, and empties the field.
   const clearButton = document.querySelector('.search-clear');

@@ -327,18 +327,23 @@ pub struct CreateRequestBody {
     infuse_pro: bool,
 }
 
-/// Strips control characters and surrounding whitespace; an empty note is
-/// no note. `Err` if what remains is longer than 200 characters.
-fn clean_note(note: Option<&str>) -> Result<Option<String>, AppError> {
-    let Some(note) = note else {
+/// Strips control characters and surrounding whitespace; empty text is
+/// no text. `Err` if what remains is longer than `max` characters.
+pub fn clean_text(text: Option<&str>, max: usize) -> Result<Option<String>, AppError> {
+    let Some(text) = text else {
         return Ok(None);
     };
-    let cleaned: String = note.chars().filter(|c| !c.is_control()).collect();
+    let cleaned: String = text.chars().filter(|c| !c.is_control()).collect();
     let cleaned = cleaned.trim();
-    if cleaned.chars().count() > MAX_NOTE_CHARS {
+    if cleaned.chars().count() > max {
         return Err(AppError::BadRequest);
     }
     Ok((!cleaned.is_empty()).then(|| cleaned.to_string()))
+}
+
+/// A member's note on a request, at most 200 characters.
+fn clean_note(note: Option<&str>) -> Result<Option<String>, AppError> {
+    clean_text(note, MAX_NOTE_CHARS)
 }
 
 #[derive(Serialize)]
@@ -517,6 +522,8 @@ struct MineView {
     request: RequestView,
     /// Theirs, still pending, and nobody else asked for it.
     can_cancel: bool,
+    /// Why the admin refused it, if they said.
+    reason: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -556,6 +563,7 @@ pub async fn get_requests_mine(
             .into_iter()
             .map(|r| MineView {
                 can_cancel: r.can_cancel,
+                reason: r.reject_reason.filter(|_| r.status == "refused"),
                 request: RequestView::from(db::RequestRow {
                     id: r.id,
                     tmdb_id: r.tmdb_id,
