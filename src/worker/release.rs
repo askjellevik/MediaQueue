@@ -1192,7 +1192,7 @@ mod tests {
             H::Hdr,
         ),
         case(
-            "Example Movie (1994) RM4K (1080p BluRay x265 afm72)",
+            "Example Movie (1994) RM4K (1080p BluRay x265 GrpTwo)",
             R::R1080,
             S::BluRay,
             V::H265,
@@ -1583,13 +1583,13 @@ mod tests {
         let p = parse_release("Example Writer Pack PACK (1985 - 2003) [GRPONE]");
         assert_eq!(p.flags.pack_words, ["pack"]);
         assert_eq!(
-            parse_release("Official Movies Collection 6/17/2011")
+            parse_release("Example Pictures Collection (1985 - 2003)")
                 .flags
                 .pack_words,
             ["collection"]
         );
         assert_eq!(
-            parse_release("IMDB TOP 001-050 BluRay 1080p")
+            parse_release("Example IMDB Top List 01-50 BluRay 1080p")
                 .flags
                 .pack_words,
             ["top list"]

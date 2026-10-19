@@ -59,7 +59,7 @@ Example.Movie.1994.1080p.Blu-ray.x264-GRPONE	1080	bluray	h264	-	no	none	unknown	
 Example Movie (1994) 4K Remastered 1080p 10bit Bluray x265 HEVC	1080	bluray	h265	-	no	none	unknown	an explicit 1080p beats the word 4K
 Example.Movie.1994.4K.HDR.2160p.BDRemux.x265-GRPONE	2160	remux	h265	-	no	hdr	unknown	4K and 2160p agree
 Example Movie (1994) UHD BDRip 1440p HDR10	1440	bluray	unknown	-	no	hdr	unknown	1440p
-Example Movie (1994) RM4K (1080p BluRay x265 afm72)	1080	bluray	h265	-	no	none	unknown	RM4K is not 4K
+Example Movie (1994) RM4K (1080p BluRay x265 GrpTwo)	1080	bluray	h265	-	no	none	unknown	RM4K is not 4K
 Example Movie 1994 UHD BluRay HDR	2160	bluray	unknown	-	no	hdr	unknown	UHD without a number
 Example.Movie.1994.2160p.WEB-DL.DV.HDR.H265-GRPONE	2160	web-dl	h265	-	yes	hdr	no	DV
 Example Movie 1994 REPACK UHD BluRay 1080p DDP 5 1 DoVi HDR10 x265-GRPONE	1080	bluray	h265	eac3	yes	hdr	no	DoVi

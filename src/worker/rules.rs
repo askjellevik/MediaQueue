@@ -152,7 +152,7 @@ pub fn passes_hard_filters(
     };
     // A torrent with several files is a collection of other titles unless
     // its own name is the film's: "Film (1994) RM4K (1080p ...)" holding the
-    // film and some extras is a fine candidate, "Great Films 3" is not.
+    // film and some extras is a fine candidate, "Great Examples 3" is not.
     let collection = raw.multi_file && name_run.is_none();
     if collection || outside_title(&release.flags.pack_words) {
         return Err(DropReason::Pack);
