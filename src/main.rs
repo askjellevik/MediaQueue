@@ -9,7 +9,19 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
-use mediaqueue::{auth, build_router, config::Config, db, internal_router, state::AppState, tasks};
+use mediaqueue::{
+    auth, build_router,
+    config::Config,
+    db, internal_router,
+    state::AppState,
+    tasks,
+    worker::{
+        config::WorkerConfig,
+        portal::PortalClient,
+        run::{Shutdown, run},
+        torrentio::TorrentioSource,
+    },
+};
 use tokio::signal::unix::{SignalKind, signal};
 
 #[derive(Parser)]
@@ -42,6 +54,9 @@ enum Command {
     /// Write a consistent snapshot of the database to the backups directory
     /// next to it (e.g. `/data/backups`), keeping the newest 14.
     Backup,
+    /// Run the fetch worker (dry run): claim jobs from the portal and
+    /// report a ranked shortlist for each.
+    Worker,
 }
 
 fn main() -> ExitCode {
@@ -56,6 +71,7 @@ fn main() -> ExitCode {
             daily_limit,
         } => run_add_member(name, code, daily_limit),
         Command::Backup => run_backup(),
+        Command::Worker => run_worker(),
     }
 }
 
@@ -101,6 +117,62 @@ fn run_serve() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn run_worker() -> ExitCode {
+    init_tracing();
+
+    let config = match WorkerConfig::from_env() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("configuration error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("failed to start tokio runtime: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match runtime.block_on(worker_async(config)) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("worker error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn worker_async(config: WorkerConfig) -> anyhow::Result<()> {
+    let portal = PortalClient::new(&config.portal_url, &config.internal_token)?;
+    let source = TorrentioSource::new(&config.torrentio_base_url)?;
+    let (stop_tx, shutdown) = Shutdown::channel();
+    tokio::spawn(async move {
+        stop_signal().await;
+        let _ = stop_tx.send(true);
+    });
+    tracing::info!(
+        portal = %config.portal_url,
+        source = %config.torrentio_base_url,
+        poll_secs = config.poll_secs,
+        "worker starting (dry run)"
+    );
+    run(
+        portal,
+        source,
+        config.rank,
+        Duration::from_secs(config.poll_secs),
+        shutdown,
+    )
+    .await?;
+    Ok(())
 }
 
 /// Plain http is only sensible on the machine itself; elsewhere the session
@@ -184,6 +256,13 @@ async fn stopped(mut stop: tokio::sync::watch::Receiver<bool>) {
 /// never finish on their own, and graceful shutdown would wait for them
 /// forever) and tells every listener to stop.
 async fn shutdown_signal(events: mediaqueue::events::Hub, stop: tokio::sync::watch::Sender<bool>) {
+    stop_signal().await;
+    events.shutdown();
+    let _ = stop.send(true);
+}
+
+/// Resolves on ctrl-c or SIGTERM.
+async fn stop_signal() {
     // A handler that fails to install must wait forever, not resolve: a
     // resolved branch would count as a signal and stop the server at startup.
     let ctrl_c = async {
@@ -209,8 +288,6 @@ async fn shutdown_signal(events: mediaqueue::events::Hub, stop: tokio::sync::wat
         _ = ctrl_c => {},
         _ = terminate => {},
     }
-    events.shutdown();
-    let _ = stop.send(true);
 }
 
 /// Plain stdlib HTTP GET to the local server's `/healthz`, for use as the

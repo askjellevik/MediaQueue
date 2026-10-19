@@ -3,11 +3,13 @@
 //! `torrentio` talk to a candidate source and only `portal` talks to the
 //! portal; every rule elsewhere can be tested with plain strings.
 
+pub mod backoff;
 pub mod candidate;
 pub mod config;
 pub mod portal;
 pub mod release;
 pub mod rules;
+pub mod run;
 pub mod score;
 pub mod settings;
 pub mod source;
