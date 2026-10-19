@@ -19,6 +19,7 @@ pub mod routes;
 pub mod state;
 pub mod tasks;
 pub mod tmdb;
+pub mod worker;
 
 use axum::{
     Json, Router,
