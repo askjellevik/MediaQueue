@@ -1,0 +1,93 @@
+# Invented release names with the tags a person reads off each one. Written by hand, not generated.
+# name	resolution	source	video	audio	dv	hdr	free_badge	note
+Example.Movie.1994.1080p.BluRay.x264.AAC-GRPONE	1080	bluray	h264	aac	no	none	yes	plain
+Example.Movie.1994.1080p.BluRay.x265.10bit.AAC5.1-GRPONE	1080	bluray	h265	aac	no	none	yes	channels glued to the codec
+Example.Movie.1994.1080p.BluRay.x265.AAC.5.1-GRPONE	1080	bluray	h265	aac	no	none	yes	channels as separate tokens
+Example Movie (1994) (1080p BluRay x265 HEVC 10bit AAC 5.1 GrpTwo)	1080	bluray	h265	aac	no	none	yes	spaces and brackets
+Example.Movie.1994.720p.WEB-DL.AAC2.0.H.264-GRPONE	720	web-dl	h264	aac	no	none	yes	H.264 as two tokens
+Example.Movie.1994.1080p.BluRay.x264.AAC.2.0-GRPONE	1080	bluray	h264	aac	no	none	yes	stereo
+Example.Movie.1994.720p.HDTV.x264.AAC-GRPONE	720	hdtv	h264	aac	no	none	yes	hdtv
+Example.Movie.1994.1080p.WEBRip.x265.10bit.AAC-GRPONE	1080	webrip	h265	aac	no	none	yes	webrip
+EXAMPLE.MOVIE.1994.1080P.BLURAY.X264.AAC-GRPONE	1080	bluray	h264	aac	no	none	yes	upper case
+example movie 1994 1080p bluray x264 aac	1080	bluray	h264	aac	no	none	yes	lower case
+Example_Movie_1994_1080p_BluRay_x264_AAC	1080	bluray	h264	aac	no	none	yes	underscores
+Example Movie (1994) [1080p] [BluRay] [x264] [AAC] [GRPONE]	1080	bluray	h264	aac	no	none	yes	square brackets
+Example.Movie.1994.1080p.BluRay.x264.HE-AAC-GRPONE	1080	bluray	h264	aac	no	none	yes	HE-AAC
+Example.Movie.1994.2160p.BluRay.x265.10bit.HDR.AAC5.1-GRPONE	2160	bluray	h265	aac	no	hdr	yes	HDR10 is not Dolby Vision
+Example.Movie.1994.1080p.WEB-DL.DDP5.1.H264-GRPONE	1080	web-dl	h264	eac3	no	none	no	DDP
+Example Movie 1994 1080p WEB-DL DDP 5 1 H 264-GRPONE	1080	web-dl	h264	eac3	no	none	no	DDP with spaces
+Example.Movie.1994.1080p.AMZN.WEB-DL.DD+5.1.H.264-GRPONE	1080	web-dl	h264	eac3	no	none	no	DD+
+Example.Movie.1994.1080p.BluRay.DD5.1.x264-GRPONE	1080	bluray	h264	ac3	no	none	no	DD5.1
+Example Movie 1994 1080p BluRay DD 5.1 x265-GRPONE	1080	bluray	h265	ac3	no	none	no	DD 5.1
+Example.Movie.1994.1080p.BluRay.AC3.x264-GRPONE	1080	bluray	h264	ac3	no	none	no	AC3
+Example.Movie.1994.1080p.BluRay.AC-3.x264-GRPONE	1080	bluray	h264	ac3	no	none	no	AC-3
+Example.Movie.1994.1080p.BluRay.E-AC-3.x264-GRPONE	1080	bluray	h264	eac3	no	none	no	E-AC-3 is not AC-3
+Example.Movie.1994.1080p.BluRay.EAC3.x264-GRPONE	1080	bluray	h264	eac3	no	none	no	EAC3
+Example.Movie.1994.1080p.BluRay.DDP5.1.Atmos.x265-GRPONE	1080	bluray	h265	eac3,atmos	no	none	no	Atmos on DDP
+Example Movie 1994 1080p Dolby Digital x264-GRPONE	1080	unknown	h264	ac3	no	none	no	spelled out
+Example Movie 1994 1080p Dolby Digital Plus x264-GRPONE	1080	unknown	h264	eac3	no	none	no	spelled out, plus
+Example.Movie.1994.1080p.BluRay.AAC.AC3.x264-GRPONE	1080	bluray	h264	aac,ac3	no	none	no	one safe and one unsafe track
+Example.Movie.1994.2160p.UHD.BluRay.x265.10bit.HDR.DTS-HD.MA.5.1-GRPONE	2160	bluray	h265	dts,dtshd	no	hdr	no	DTS-HD MA
+Example.Movie.1994.1080p.BluRay.DTS-HDMA.5.1.x264-GRPONE	1080	bluray	h264	dts,dtshd	no	none	no	DTS-HDMA
+Example.Movie.1994.1080p.BluRay.DTSHD-MA.x264-GRPONE	1080	bluray	h264	dts,dtshd	no	none	no	DTSHD-MA
+Example.Movie.1994.1080p.BluRay.DTS.x264-GRPONE	1080	bluray	h264	dts	no	none	no	DTS
+Example.Movie.1994.2160p.BluRay.DTS-X.7.1.HEVC-GRPONE	2160	bluray	h265	dts	no	none	no	DTS-X
+Example Movie (1994) 2160p H265 HDR10 DV ITA DTS-DH MA 5.1 ITA ENG AC3 5.1	2160	unknown	h265	ac3,dts,dtshd	yes	hdr	no	DTS-DH typo, two tracks, Dolby Vision
+Example.Movie.1994.1080p.BluRay.TrueHD.7.1.Atmos.x264-GRPONE	1080	bluray	h264	truehd,atmos	no	none	no	TrueHD
+Example.Movie.1994.1080p.BluRay.FLAC.2.0.x264-GRPONE	1080	bluray	h264	flac	no	none	no	FLAC
+Example.Movie.1994.1080p.BluRay.LPCM.x264-GRPONE	1080	bluray	h264	lpcm	no	none	no	LPCM
+Example.Movie.1994.bluray.hdr.2160p.av1.5.1.opus.subs-GRPONE	2160	bluray	av1	opus	no	hdr	no	the 5.1 after av1 is channels
+Example Movie 1994 Bluray 1080p AV1 EN/FR/ES OPUS5.1-GRPONE	1080	bluray	av1	opus	no	none	no	OPUS5.1
+Example.Movie.1994.1080p.BluRay.MP3.x264-GRPONE	1080	bluray	h264	mp3	no	none	no	MP3
+Example.Movie.1994.1080p.BluRay.Vorbis.x264-GRPONE	1080	bluray	h264	vorbis	no	none	no	Vorbis
+Example Movie (1994) 1080p BrRip x264 - GRPTWO	1080	bluray	h264	-	no	none	unknown	the popular untagged shape
+Example.Movie.1994.REMASTERED.1080p.10bit.BluRay.6CH.x265.HEVC-GRPTWO	1080	bluray	h265	-	no	none	unknown	6CH is not a codec
+Example.Movie.1994.BluRay.1080p.x265.10bit.5Audio.GRPTWO	1080	bluray	h265	-	no	none	unknown	5Audio is not a codec
+Example Movie (1994) 1080p Surround	1080	unknown	unknown	-	no	none	unknown	nothing at all
+Example.Movie.1994.1080p.AAC-GRPONE	1080	unknown	unknown	aac	no	none	unknown	AAC but no video tag
+Example.Movie.1994.2160p.BluRay.REMUX.HEVC.DTS-HD.MA.5.1-GRPONE	2160	remux	h265	dts,dtshd	no	none	no	remux
+Example Movie (1994) BD REMUX (AVC DTSHD-MA) - GRPONE	0	remux	h264	dts,dtshd	no	none	no	no resolution
+Example Movie 1994 UHD BDRemux 2160p HDR10	2160	remux	unknown	-	no	hdr	unknown	BDRemux
+Example.Movie.1994.UHDRip.2160p.Hevc.HDR-GRPONE	2160	bluray	h265	-	no	hdr	unknown	UHDRip
+Example Movie [1994 BDRip-AVC]	0	bluray	h264	-	no	none	unknown	BDRip-AVC
+Example Movie [1994 HDRip]	0	hdrip	unknown	-	no	none	unknown	HDRip
+Example Movie [1994 DVDRip] XviD	480	dvd	xvid	-	no	none	no	XviD is not free-safe
+Example Movie 1994 DVDRip XviD AC3-GRPONE	480	dvd	xvid	ac3	no	none	no	xvid and ac3
+Example.Movie.1994.1080p.WEBRip.x264-GRPONE	1080	webrip	h264	-	no	none	unknown	webrip
+Example.Movie.1994.1080p.WEB.H264-GRPONE	1080	web-dl	h264	-	no	none	unknown	bare WEB
+Example.Movie.1994.1080p.Blu-ray.x264-GRPONE	1080	bluray	h264	-	no	none	unknown	Blu-ray with a hyphen
+Example Movie (1994) 4K Remastered 1080p 10bit Bluray x265 HEVC	1080	bluray	h265	-	no	none	unknown	an explicit 1080p beats the word 4K
+Example.Movie.1994.4K.HDR.2160p.BDRemux.x265-GRPONE	2160	remux	h265	-	no	hdr	unknown	4K and 2160p agree
+Example Movie (1994) UHD BDRip 1440p HDR10	1440	bluray	unknown	-	no	hdr	unknown	1440p
+Example Movie (1994) RM4K (1080p BluRay x265 afm72)	1080	bluray	h265	-	no	none	unknown	RM4K is not 4K
+Example Movie 1994 UHD BluRay HDR	2160	bluray	unknown	-	no	hdr	unknown	UHD without a number
+Example.Movie.1994.2160p.WEB-DL.DV.HDR.H265-GRPONE	2160	web-dl	h265	-	yes	hdr	no	DV
+Example Movie 1994 REPACK UHD BluRay 1080p DDP 5 1 DoVi HDR10 x265-GRPONE	1080	bluray	h265	eac3	yes	hdr	no	DoVi
+Example.Movie.1994.2160p.Dolby.Vision.WEB-DL.H265-GRPONE	2160	web-dl	h265	-	yes	none	no	Dolby Vision spelled out
+Example.Movie.1994.2160p.WEB-DL.HDR10+.H265-GRPONE	2160	web-dl	h265	-	no	hdr10plus	unknown	HDR10+
+Example.Movie.1994.2160p.WEB-DL.HLG.H265-GRPONE	2160	web-dl	h265	-	no	hlg	unknown	HLG
+Example.Movie.1994.1080p.BluRay.H.264-GRPONE	1080	bluray	h264	-	no	none	unknown	H.264
+Example.Movie.1994.1080p.BluRay.H.265-GRPONE	1080	bluray	h265	-	no	none	unknown	H.265
+Example.Movie.1994.1080p.BluRay.AVC-GRPONE	1080	bluray	h264	-	no	none	unknown	AVC
+Example.Movie.1994.1080p.BluRay.DivX-GRPONE	1080	bluray	divx	-	no	none	no	DivX
+Example.Movie.1994.1080p.BluRay.MPEG-2-GRPONE	1080	bluray	mpeg2	-	no	none	no	MPEG-2
+Example.Movie.1994.1080p.BluRay.VC-1-GRPONE	1080	bluray	vc1	-	no	none	no	VC-1
+Example.Movie.1994.HDCAM.x264-GRPONE	0	cam	h264	-	no	none	unknown	HDCAM
+Example Movie (1994) CAMRip XviD	480	cam	xvid	-	no	none	no	CAMRip
+Example.Movie.1994.HDTS.x264.AAC-GRPONE	0	telesync	h264	aac	no	none	yes	HDTS
+Example.Movie.1994.TELESYNC.XviD-GRPONE	480	telesync	xvid	-	no	none	no	TELESYNC
+Example.Movie.1994.HDTC.x264-GRPONE	0	telesync	h264	-	no	none	unknown	HDTC
+Example.Movie.1994.TS.XviD-GRPONE	480	telesync	xvid	-	no	none	no	bare TS
+Example.Movie.1994.DVDSCR.XviD-GRPONE	480	screener	xvid	-	no	none	no	DVDSCR
+Example.Movie.1994.SCREENER.x264-GRPONE	0	screener	h264	-	no	none	unknown	SCREENER
+Example.Movie.1994.WORKPRINT.XviD-GRPONE	480	screener	xvid	-	no	none	no	WORKPRINT
+Example.Movie.1994.R5.XviD-GRPONE	480	screener	xvid	-	no	none	no	R5
+Ghosts.1994.1080p.BluRay.x264-GRPONE	1080	bluray	h264	-	no	none	unknown	ghosts is not TS
+Add.Water.1994.1080p.BluRay.x264-GRPONE	1080	bluray	h264	-	no	none	unknown	add is not DD
+Example.Movie.1994.DVDRip.x264-GRPONE	480	dvd	h264	-	no	none	unknown	DVDRip is not DV
+Example.Movie.1994.1080p.BluRay.TS.x264-GRPONE	1080	bluray	h264	-	no	none	unknown	BluRay vouches for a stray TS
+Example.Movie.1994.1080p.ts	1080	unknown	unknown	-	no	none	unknown	a .ts file extension
+Example.Show.S01E01.1080p.WEB-DL.DDP5.1.H.264-GRPONE	1080	web-dl	h264	eac3	no	none	no	series style must not upset the parser
+Example.Movie.1994.UHD.BluRay.2160p.DTS-HD.MA.5.1.DV.HEVC.HYBRID.REMU…	2160	bluray	h265	dts,dtshd	yes	none	no	cut after the tags that matter
+Example.Movie.1994.bluray.sdr.1080p.av1.5.1.opus.subs...	1080	bluray	av1	opus	no	none	no	cut with three dots
+Пример Фильма / Example Movie [1994 BDRip 1080p]	1080	bluray	unknown	-	no	none	unknown	Cyrillic with an English title
