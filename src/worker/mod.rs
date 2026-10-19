@@ -5,5 +5,8 @@
 pub mod candidate;
 pub mod release;
 pub mod rules;
+pub mod score;
 pub mod settings;
 pub mod torrentio_text;
+
+pub use score::{Candidate, Evaluation, evaluate};
