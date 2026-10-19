@@ -16,9 +16,14 @@ use mediaqueue::worker::{
     release::{Audio, parse_release, tokenize},
     rules::{DropReason, FreeBadge, JobSpec, free_badge},
     settings::RankSettings,
-    torrentio_text::parse_stream_text,
+    source::{CandidateSource, MediaKind},
+    torrentio::TorrentioSource,
 };
 use serde_json::Value;
+use wiremock::{
+    Mock, MockServer, ResponseTemplate,
+    matchers::{method, path},
+};
 
 const FIXTURE: &str = include_str!("fixtures/torrentio_example.json");
 const CORPUS: &str = include_str!("fixtures/release_names.tsv");
@@ -27,21 +32,26 @@ fn h(n: u32) -> String {
     format!("{n:040x}")
 }
 
-/// Test-only reader of a Torrentio response; the runtime has a validating
-/// one of its own.
+/// Reads a Torrentio response through the real source, served from a local
+/// stub, so the golden files cover the validator as well as the parser.
 fn candidates_from(json: &str) -> Vec<RawCandidate> {
-    let response: Value = serde_json::from_str(json).expect("a json response");
-    let streams = response["streams"].as_array().expect("a streams array");
-    streams
-        .iter()
-        .filter_map(|stream| {
-            let hash = stream["infoHash"].as_str()?.to_ascii_lowercase();
-            let name = stream["name"].as_str().unwrap_or("");
-            let title = stream["title"].as_str()?;
-            let filename = stream["behaviorHints"]["filename"].as_str();
-            parse_stream_text(name, title, filename).map(|parts| parts.into_candidate(hash))
+    tokio::runtime::Runtime::new()
+        .expect("a runtime")
+        .block_on(async {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/stream/movie/tt1234567.json"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_raw(json.as_bytes(), "application/json"),
+                )
+                .mount(&server)
+                .await;
+            TorrentioSource::new(&server.uri())
+                .expect("a client")
+                .candidates("tt1234567", MediaKind::Movie)
+                .await
+                .expect("a readable response")
         })
-        .collect()
 }
 
 fn job(pro: bool) -> JobSpec {
