@@ -3,6 +3,7 @@
 //! rule can be tested with plain strings.
 
 pub mod candidate;
+pub mod config;
 pub mod release;
 pub mod rules;
 pub mod score;
