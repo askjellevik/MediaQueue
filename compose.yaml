@@ -3,6 +3,9 @@ services:
     image: ghcr.io/askjellevik/mediaqueue:latest   # built for linux/arm64 by GitHub Actions
     restart: unless-stopped
     env_file: .env
+    environment:
+      INTERNAL_LISTEN: "0.0.0.0:8001"   # wildcard bind only where the dedicated network exists
+    networks: [workernet]
     ports: ["127.0.0.1:8088:8000"]     # loopback only, never 0.0.0.0
     volumes: ["./data:/data"]           # must be owned by UID 65532
     read_only: true
@@ -19,3 +22,32 @@ services:
       interval: 30s
       timeout: 3s
       retries: 3
+
+  worker:
+    image: ghcr.io/askjellevik/mediaqueue:latest
+    command: ["worker"]
+    restart: unless-stopped
+    # no env_file: compose substitutes INTERNAL_TOKEN from .env, nothing else is handed over
+    environment:
+      PORTAL_URL: http://portal:8001
+      INTERNAL_TOKEN: "${INTERNAL_TOKEN:?set INTERNAL_TOKEN in .env}"
+      RUST_LOG: info
+    networks: [workernet]
+    read_only: true
+    tmpfs: ["/tmp:size=4m"]
+    user: "65532:65532"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 48m
+    cpus: 0.25
+    pids_limit: 32
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
+    depends_on:
+      portal:
+        condition: service_healthy
+
+networks:
+  workernet:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24   # inside the default TRUSTED_PROXY_CIDRS (172.16.0.0/12)
