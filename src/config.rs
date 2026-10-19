@@ -12,6 +12,9 @@ use crate::clientip::{Cidr, parse_cidr_list};
 /// trivially reversible for short codes.
 const MIN_PEPPER_BYTES: usize = 32;
 
+/// The bearer token the worker presents on the internal listener.
+const MIN_INTERNAL_TOKEN_BYTES: usize = 32;
+
 /// Devices a member may be logged in on at once. A device is just a login
 /// session, so this only bounds session rows; it is not an anti-sharing
 /// control.
@@ -52,6 +55,45 @@ pub struct Config {
     pub cf_access: Option<CfAccessConfig>,
     pub ntfy: NtfyConfig,
     pub rate_limits: RateLimitConfig,
+    /// Where the worker's internal listener binds; `None` = no listener.
+    pub internal_listen: Option<SocketAddr>,
+    /// Bearer token the worker presents there. Set whenever
+    /// `internal_listen` is. Never logged.
+    pub internal_token: Option<String>,
+    /// `WORKER_ENABLED`: overrides the kill switch stored in the database.
+    pub worker_enabled: Option<bool>,
+    /// `WORKER_MODE`: overrides the mode stored in the database.
+    pub worker_mode: Option<WorkerMode>,
+}
+
+/// How far the worker may go on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerMode {
+    /// Logs what it would pick and touches nothing.
+    DryRun,
+    /// Adds only after the admin picks a candidate.
+    Assisted,
+    /// Also adds clear winners by itself.
+    Auto,
+}
+
+impl WorkerMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WorkerMode::DryRun => "dry_run",
+            WorkerMode::Assisted => "assisted",
+            WorkerMode::Auto => "auto",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "dry_run" => Some(WorkerMode::DryRun),
+            "assisted" => Some(WorkerMode::Assisted),
+            "auto" => Some(WorkerMode::Auto),
+            _ => None,
+        }
+    }
 }
 
 /// Cloudflare Access settings (`cf-access` feature).
@@ -172,6 +214,13 @@ impl std::fmt::Debug for Config {
             .field("cf_access", &self.cf_access)
             .field("ntfy", &self.ntfy)
             .field("rate_limits", &self.rate_limits)
+            .field("internal_listen", &self.internal_listen)
+            .field(
+                "internal_token",
+                &self.internal_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("worker_enabled", &self.worker_enabled)
+            .field("worker_mode", &self.worker_mode)
             .finish()
     }
 }
@@ -181,6 +230,9 @@ impl std::fmt::Debug for Config {
 /// environment table.
 trait EnvLookup {
     fn get(&self, key: &str) -> Option<String>;
+
+    /// Whether the variable is present at all, even empty or not valid UTF-8.
+    fn is_set(&self, key: &str) -> bool;
 }
 
 struct ProcessEnv;
@@ -189,11 +241,19 @@ impl EnvLookup for ProcessEnv {
     fn get(&self, key: &str) -> Option<String> {
         std::env::var(key).ok()
     }
+
+    fn is_set(&self, key: &str) -> bool {
+        std::env::var_os(key).is_some()
+    }
 }
 
 impl EnvLookup for HashMap<&str, &str> {
     fn get(&self, key: &str) -> Option<String> {
         HashMap::get(self, key).map(|v| v.to_string())
+    }
+
+    fn is_set(&self, key: &str) -> bool {
+        self.contains_key(key)
     }
 }
 
@@ -301,6 +361,59 @@ fn ntfy_config(env: &impl EnvLookup) -> Result<NtfyConfig, ConfigError> {
     })
 }
 
+/// The Real-Debrid token belongs to the worker service alone. The portal
+/// shares its `.env` with nothing else, but a token placed there by mistake
+/// would sit next to the public listener, so its mere presence is refused.
+fn refuse_real_debrid_token(env: &impl EnvLookup) -> Result<(), ConfigError> {
+    for name in ["RD_TOKEN", "RD_TOKEN_FILE"] {
+        if env.is_set(name) {
+            return Err(ConfigError::Invalid {
+                name,
+                reason: "the portal must never hold the Real-Debrid token; give it only to the worker service".into(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// `INTERNAL_LISTEN` and `INTERNAL_TOKEN`: both or neither.
+fn internal_listener(
+    env: &impl EnvLookup,
+    bind_addr: SocketAddr,
+) -> Result<(Option<SocketAddr>, Option<String>), ConfigError> {
+    let listen = env
+        .get("INTERNAL_LISTEN")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    let Some(listen) = listen else {
+        return Ok((None, None));
+    };
+    let listen = listen
+        .parse::<SocketAddr>()
+        .map_err(|e| ConfigError::Invalid {
+            name: "INTERNAL_LISTEN",
+            reason: e.to_string(),
+        })?;
+    if listen == bind_addr {
+        return Err(ConfigError::Invalid {
+            name: "INTERNAL_LISTEN",
+            reason: "must differ from BIND_ADDR".into(),
+        });
+    }
+    let token = env
+        .get("INTERNAL_TOKEN")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .ok_or(ConfigError::Missing("INTERNAL_TOKEN"))?;
+    if token.len() < MIN_INTERNAL_TOKEN_BYTES {
+        return Err(ConfigError::Invalid {
+            name: "INTERNAL_TOKEN",
+            reason: format!("must be at least {MIN_INTERNAL_TOKEN_BYTES} bytes"),
+        });
+    }
+    Ok((Some(listen), Some(token)))
+}
+
 impl Config {
     /// Reads and validates configuration from the process environment.
     /// Fails fast with a specific, non-secret-leaking message.
@@ -309,6 +422,8 @@ impl Config {
     }
 
     fn from_lookup(env: &impl EnvLookup) -> Result<Self, ConfigError> {
+        refuse_real_debrid_token(env)?;
+
         let public_origin = required(env, "PUBLIC_ORIGIN")?;
         // The CSRF check compares this byte for byte with the browser's
         // `Origin`, which never ends in a slash.
@@ -399,6 +514,23 @@ impl Config {
 
         let ntfy = ntfy_config(env)?;
 
+        let (internal_listen, internal_token) = internal_listener(env, bind_addr)?;
+        let worker_enabled = env.get("WORKER_ENABLED").map(|v| {
+            let v = v.trim();
+            v == "1" || v.eq_ignore_ascii_case("true")
+        });
+        let worker_mode = env
+            .get("WORKER_MODE")
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .map(|v| {
+                WorkerMode::parse(&v).ok_or(ConfigError::Invalid {
+                    name: "WORKER_MODE",
+                    reason: "must be dry_run, assisted or auto".into(),
+                })
+            })
+            .transpose()?;
+
         Ok(Config {
             public_origin,
             bind_addr,
@@ -414,6 +546,10 @@ impl Config {
             cf_access,
             ntfy,
             rate_limits: RateLimitConfig::default(),
+            internal_listen,
+            internal_token,
+            worker_enabled,
+            worker_mode,
         })
     }
 }
@@ -705,5 +841,113 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn the_portal_refuses_to_start_with_a_real_debrid_token() {
+        for (name, value) in [
+            ("RD_TOKEN", "secret"),
+            ("RD_TOKEN_FILE", "/run/secrets/rd"),
+            ("RD_TOKEN", ""),
+        ] {
+            let mut env = base_env();
+            env.insert(name, value);
+            let err = Config::from_lookup(&env).unwrap_err();
+            assert!(
+                matches!(&err, ConfigError::Invalid { name: n, .. } if *n == name),
+                "{name}={value:?} gave {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn internal_listener_needs_a_long_token_and_its_own_address() {
+        let cfg = Config::from_lookup(&base_env()).unwrap();
+        assert!(cfg.internal_listen.is_none() && cfg.internal_token.is_none());
+
+        let mut env = base_env();
+        env.insert("INTERNAL_LISTEN", "0.0.0.0:8001");
+        let err = Config::from_lookup(&env).unwrap_err();
+        assert!(matches!(err, ConfigError::Missing("INTERNAL_TOKEN")));
+
+        env.insert("INTERNAL_TOKEN", "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");
+        assert_eq!(env["INTERNAL_TOKEN"].len(), 31);
+        let err = Config::from_lookup(&env).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::Invalid {
+                name: "INTERNAL_TOKEN",
+                ..
+            }
+        ));
+
+        env.insert("INTERNAL_TOKEN", long_pepper());
+        let cfg = Config::from_lookup(&env).unwrap();
+        assert_eq!(cfg.internal_listen, Some("0.0.0.0:8001".parse().unwrap()));
+        assert_eq!(cfg.internal_token.as_deref(), Some(long_pepper()));
+
+        env.insert("INTERNAL_LISTEN", "0.0.0.0:8000");
+        let err = Config::from_lookup(&env).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::Invalid {
+                name: "INTERNAL_LISTEN",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn an_empty_internal_listen_means_off() {
+        let mut env = base_env();
+        env.insert("INTERNAL_LISTEN", "  ");
+        let cfg = Config::from_lookup(&env).unwrap();
+        assert!(cfg.internal_listen.is_none() && cfg.internal_token.is_none());
+    }
+
+    #[test]
+    fn worker_switches_parse_and_default_to_unset() {
+        let cfg = Config::from_lookup(&base_env()).unwrap();
+        assert_eq!((cfg.worker_enabled, cfg.worker_mode), (None, None));
+
+        let mut env = base_env();
+        env.insert("WORKER_ENABLED", "1");
+        env.insert("WORKER_MODE", "assisted");
+        let cfg = Config::from_lookup(&env).unwrap();
+        assert_eq!(cfg.worker_enabled, Some(true));
+        assert_eq!(cfg.worker_mode, Some(WorkerMode::Assisted));
+
+        env.insert("WORKER_ENABLED", "0");
+        assert_eq!(
+            Config::from_lookup(&env).unwrap().worker_enabled,
+            Some(false)
+        );
+
+        env.insert("WORKER_MODE", "bogus");
+        let err = Config::from_lookup(&env).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::Invalid {
+                name: "WORKER_MODE",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn worker_modes_round_trip() {
+        for mode in [WorkerMode::DryRun, WorkerMode::Assisted, WorkerMode::Auto] {
+            assert_eq!(WorkerMode::parse(mode.as_str()), Some(mode));
+        }
+        assert_eq!(WorkerMode::parse("Auto"), None);
+    }
+
+    #[test]
+    fn debug_does_not_leak_the_internal_token() {
+        let mut env = base_env();
+        env.insert("INTERNAL_LISTEN", "127.0.0.1:8001");
+        env.insert("INTERNAL_TOKEN", "internal-token-0123456789abcdefghijkl");
+        let cfg = Config::from_lookup(&env).unwrap();
+        assert!(!format!("{cfg:?}").contains("internal-token-0123456789"));
     }
 }

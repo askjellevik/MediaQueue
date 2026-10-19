@@ -124,6 +124,17 @@ pub fn generate_session_token() -> (String, Vec<u8>) {
     (hex_encode(&bytes), hash)
 }
 
+const CLAIM_ID_BYTES: usize = 16;
+
+/// A random id handed to the worker with a job. It is only compared for
+/// equality and never hashed, so unlike a session token nothing is derived
+/// from it.
+pub fn generate_claim_id() -> String {
+    let mut bytes = [0u8; CLAIM_ID_BYTES];
+    rand::rng().fill_bytes(&mut bytes);
+    hex_encode(&bytes)
+}
+
 /// Hashes a hex-decoded session token from a cookie for DB lookup.
 pub fn hash_token(raw: &[u8]) -> Vec<u8> {
     Sha256::digest(raw).to_vec()

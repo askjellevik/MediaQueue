@@ -1,0 +1,134 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT j.id AS \"id!\", j.request_id AS \"request_id!\",\n                  r.tmdb_id AS \"tmdb_id!\", r.media_type AS \"media_type!\",\n                  r.imdb_id AS \"imdb_id!\", r.title AS \"title!\", r.year,\n                  j.infuse_pro AS \"infuse_pro!: bool\", j.chosen_infohash, j.rd_torrent_id\n           FROM fetch_jobs j JOIN requests r ON r.id = j.request_id\n           WHERE j.state = 'queued' AND r.status = 'pending' AND r.imdb_id IS NOT NULL\n           ORDER BY j.created_at, j.id\n           LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "fetch_jobs",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "request_id!",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "fetch_jobs",
+            "name": "request_id"
+          }
+        }
+      },
+      {
+        "name": "tmdb_id!",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "tmdb_id"
+          }
+        }
+      },
+      {
+        "name": "media_type!",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "media_type"
+          }
+        }
+      },
+      {
+        "name": "imdb_id!",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "imdb_id"
+          }
+        }
+      },
+      {
+        "name": "title!",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "name": "year",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "year"
+          }
+        }
+      },
+      {
+        "name": "infuse_pro!: bool",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "fetch_jobs",
+            "name": "infuse_pro"
+          }
+        }
+      },
+      {
+        "name": "chosen_infohash",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "fetch_jobs",
+            "name": "chosen_infohash"
+          }
+        }
+      },
+      {
+        "name": "rd_torrent_id",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "fetch_jobs",
+            "name": "rd_torrent_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "9d5a55a1a182a715a92257afea1c89de9972db8b337c31f38d7dbbcc5cc075f1"
+}

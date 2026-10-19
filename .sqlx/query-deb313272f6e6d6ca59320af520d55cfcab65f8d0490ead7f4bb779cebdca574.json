@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE request_events SET actor = ? WHERE actor = ? AND kind IN ('submitted', 'duplicate')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "deb313272f6e6d6ca59320af520d55cfcab65f8d0490ead7f4bb779cebdca574"
+}

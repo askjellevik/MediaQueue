@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE fetch_jobs\n         SET state = 'needs_pick', reason = 'no_imdb_id', claim_id = NULL, updated_at = ?\n         WHERE state = 'queued'\n           AND request_id IN (SELECT id FROM requests WHERE imdb_id IS NULL)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "d8c083544e1b9ec3b01b15a4c2bf4b3f964872d6e2c64bd24525dfba5cf930d7"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO fetch_jobs (request_id, state, infuse_pro, reason, created_at, updated_at)\n         VALUES (?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "f61b69e09dd9bd9b5a0d6ffc45f4fa77efb420077efd58c2bd4154810f531a38"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE fetch_jobs\n         SET state = 'failed', reason = 'max_attempts', claim_id = NULL, updated_at = ?\n         WHERE state = 'fetching' AND COALESCE(claimed_at, 0) < ? AND attempts >= max_attempts",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "1a8f5131b7eb7079c27a0e4aa197febb184b2e3ccd33a87f156882927b912c6f"
+}

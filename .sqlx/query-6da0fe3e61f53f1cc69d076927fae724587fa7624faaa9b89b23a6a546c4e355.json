@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT r.id AS \"id!\", r.status AS \"status!\"\n               FROM fetch_jobs j JOIN requests r ON r.id = j.request_id\n               WHERE j.id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "status!",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "status"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "6da0fe3e61f53f1cc69d076927fae724587fa7624faaa9b89b23a6a546c4e355"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE fetch_jobs\n         SET state = 'queued', claim_id = NULL, updated_at = ?\n         WHERE state = 'fetching' AND COALESCE(claimed_at, 0) < ? AND attempts < max_attempts",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "e27e4297cac20723d2c4b7f4499a454981f697b20e4add555834fe686f1b2757"
+}

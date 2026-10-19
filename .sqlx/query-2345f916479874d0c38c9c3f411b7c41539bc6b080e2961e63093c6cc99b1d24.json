@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT infohash AS \"infohash!\" FROM blocked_hashes\n           WHERE request_id = ? ORDER BY infohash",
+  "describe": {
+    "columns": [
+      {
+        "name": "infohash!",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "blocked_hashes",
+            "name": "infohash"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "2345f916479874d0c38c9c3f411b7c41539bc6b080e2961e63093c6cc99b1d24"
+}

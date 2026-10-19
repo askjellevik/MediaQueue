@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE fetch_jobs\n         SET state = 'done', reason = 'request_changed', claim_id = NULL, updated_at = ?\n         WHERE state = 'queued'\n           AND request_id IN (SELECT id FROM requests WHERE status <> 'pending')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "7b50074e142a206a5ee974286f2ae169e527cb906a975e92102077ae9313b8cc"
+}

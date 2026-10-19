@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT status AS \"status!\", infuse_pro AS \"infuse_pro!: bool\", imdb_id\n           FROM requests WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "status!",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "name": "infuse_pro!: bool",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "infuse_pro"
+          }
+        }
+      },
+      {
+        "name": "imdb_id",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "imdb_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "0b44c688988887bce76a0dca03bbe0f33b2bbdf427d8a0c71203db8679e889e3"
+}

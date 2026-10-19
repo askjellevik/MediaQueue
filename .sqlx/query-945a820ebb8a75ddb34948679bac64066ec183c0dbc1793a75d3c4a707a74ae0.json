@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO request_events (request_id, kind, actor, from_status, to_status, note, created_at)\n         VALUES (?, 'status', ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "945a820ebb8a75ddb34948679bac64066ec183c0dbc1793a75d3c4a707a74ae0"
+}

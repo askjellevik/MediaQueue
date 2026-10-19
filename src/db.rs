@@ -5,11 +5,11 @@
 use std::time::Duration;
 
 use sqlx::{
-    Sqlite, SqlitePool, Transaction,
+    Sqlite, SqliteConnection, SqlitePool, Transaction,
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
 };
 
-use crate::config::Config;
+use crate::config::{Config, WorkerMode};
 
 const MAX_CONNECTIONS: u32 = 4;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -806,6 +806,7 @@ pub async fn admin_requests(
     .await
 }
 
+#[derive(Debug)]
 pub enum StatusChange {
     NotFound,
     /// Already in that status; nothing written.
@@ -830,20 +831,39 @@ pub async fn set_request_status(
     now: i64,
 ) -> Result<StatusChange, sqlx::Error> {
     let mut tx = begin_immediate(pool).await?;
+    let change = set_request_status_in(&mut tx, request_id, to, reason, "admin", now).await?;
+    match change {
+        StatusChange::Changed { .. } => tx.commit().await?,
+        StatusChange::NotFound | StatusChange::Unchanged => tx.rollback().await?,
+    }
+    Ok(change)
+}
+
+/// The body of [`set_request_status`], for callers that already hold the
+/// write transaction (the worker's `done` report). `actor` is who the
+/// `status` event is logged as. A request that leaves `pending` also
+/// closes its open fetch job, so a worker still running it finds out at
+/// its next call and cleans up instead of leaving a torrent behind.
+async fn set_request_status_in(
+    conn: &mut SqliteConnection,
+    request_id: i64,
+    to: &str,
+    reason: Option<&str>,
+    actor: &str,
+    now: i64,
+) -> Result<StatusChange, sqlx::Error> {
     let current = sqlx::query!(
         r#"SELECT status AS "status!", reject_reason FROM requests WHERE id = ?"#,
         request_id
     )
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut *conn)
     .await?;
     let Some(current) = current else {
-        tx.rollback().await?;
         return Ok(StatusChange::NotFound);
     };
     let from = current.status;
     let reason = reason.filter(|_| to == "refused");
     if from == to && (to != "refused" || reason == current.reject_reason.as_deref()) {
-        tx.rollback().await?;
         return Ok(StatusChange::Unchanged);
     }
     sqlx::query!(
@@ -853,20 +873,31 @@ pub async fn set_request_status(
         now,
         request_id
     )
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?;
     sqlx::query!(
         "INSERT INTO request_events (request_id, kind, actor, from_status, to_status, note, created_at)
-         VALUES (?, 'status', 'admin', ?, ?, ?, ?)",
+         VALUES (?, 'status', ?, ?, ?, ?, ?)",
         request_id,
+        actor,
         from,
         to,
         reason,
         now
     )
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?;
-    tx.commit().await?;
+    if to != "pending" {
+        sqlx::query!(
+            "UPDATE fetch_jobs
+             SET state = 'done', reason = 'request_changed', claim_id = NULL, updated_at = ?
+             WHERE request_id = ? AND state IN ('queued', 'needs_pick', 'fetching')",
+            now,
+            request_id
+        )
+        .execute(&mut *conn)
+        .await?;
+    }
     Ok(StatusChange::Changed { from })
 }
 
@@ -1160,12 +1191,14 @@ pub async fn update_member(
         return Ok(MemberWrite::NotFound);
     }
     // Events carry the name as text, so a rename must follow them or the
-    // member's earlier duplicate requests would drop out of their list.
+    // member's earlier duplicate requests would drop out of their list. Only
+    // the events a member authors: `status` events are logged as `admin` or
+    // `worker`, which a member may also be called.
     if let (Some(old), Some(new)) = (old_name, update.name)
         && old != new
     {
         sqlx::query!(
-            "UPDATE request_events SET actor = ? WHERE actor = ?",
+            "UPDATE request_events SET actor = ? WHERE actor = ? AND kind IN ('submitted', 'duplicate')",
             new,
             old
         )
@@ -1291,7 +1324,7 @@ pub async fn delete_member(pool: &SqlitePool, member_id: i64) -> Result<MemberDe
     .await?;
     let tombstone = format!("{}{DELETED_SUFFIX}", member.name);
     sqlx::query!(
-        "UPDATE request_events SET actor = ? WHERE actor = ?",
+        "UPDATE request_events SET actor = ? WHERE actor = ? AND kind IN ('submitted', 'duplicate')",
         tombstone,
         member.name
     )
@@ -1317,6 +1350,612 @@ pub async fn delete_user_session(pool: &SqlitePool, session_id: i64) -> Result<b
     .await?;
     Ok(result.rows_affected() > 0)
 }
+
+// ---------------------------------------------------------------------
+// Fetch jobs (the worker)
+// ---------------------------------------------------------------------
+
+/// A `fetching` job with no report or progress call for this long is taken
+/// back by the next claim. Longer than the worker's own job deadline.
+pub const RECLAIM_AFTER_SECS: i64 = 45 * 60;
+
+/// Most `uncached_adds` one progress or report call may add.
+const MAX_UNCACHED_INCREMENT: i64 = 5;
+
+pub enum CreateJob {
+    Created {
+        /// `queued`, or `needs_pick` when the request has no IMDb ID.
+        state: String,
+    },
+    /// The request already has a job.
+    Exists,
+    NotPending,
+    NotFound,
+}
+
+/// Creates the job for a pending request. A request without an IMDb ID
+/// goes straight to `needs_pick`, because the worker could never search
+/// for it.
+pub async fn create_fetch_job(
+    pool: &SqlitePool,
+    request_id: i64,
+    now: i64,
+) -> Result<CreateJob, sqlx::Error> {
+    let mut tx = begin_immediate(pool).await?;
+    let Some(request) = sqlx::query!(
+        r#"SELECT status AS "status!", infuse_pro AS "infuse_pro!: bool", imdb_id
+           FROM requests WHERE id = ?"#,
+        request_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    else {
+        tx.rollback().await?;
+        return Ok(CreateJob::NotFound);
+    };
+    if request.status != "pending" {
+        tx.rollback().await?;
+        return Ok(CreateJob::NotPending);
+    }
+    let existing = sqlx::query_scalar!(
+        r#"SELECT id AS "id!" FROM fetch_jobs WHERE request_id = ?"#,
+        request_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    if existing.is_some() {
+        tx.rollback().await?;
+        return Ok(CreateJob::Exists);
+    }
+    let (state, reason) = if request.imdb_id.is_some() {
+        ("queued", None)
+    } else {
+        ("needs_pick", Some("no_imdb_id"))
+    };
+    sqlx::query!(
+        "INSERT INTO fetch_jobs (request_id, state, infuse_pro, reason, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)",
+        request_id,
+        state,
+        request.infuse_pro,
+        reason,
+        now,
+        now
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(CreateJob::Created {
+        state: state.to_string(),
+    })
+}
+
+/// What the worker is told about a job. Deliberately not the member's note,
+/// name or id: the worker sees validated IDs and titles only.
+#[derive(Debug, Clone)]
+pub struct ClaimedJob {
+    pub id: i64,
+    pub claim_id: String,
+    pub tmdb_id: i64,
+    pub imdb_id: String,
+    pub media_type: String,
+    pub title: String,
+    pub year: Option<i64>,
+    pub infuse_pro: bool,
+    /// Set when a human picked, or an earlier run got that far; the worker
+    /// then skips the search.
+    pub chosen_infohash: Option<String>,
+    /// A torrent an earlier run already added, to resume from.
+    pub rd_torrent_id: Option<String>,
+    pub blocked_hashes: Vec<String>,
+}
+
+/// The cheap check before a claim: is there a queued job, or a `fetching`
+/// one whose claim has expired? Only a hint, the claim transaction
+/// re-reads everything.
+async fn has_claimable_fetch_job(pool: &SqlitePool, now: i64) -> Result<bool, sqlx::Error> {
+    let stale_before = now - RECLAIM_AFTER_SECS;
+    sqlx::query_scalar!(
+        r#"SELECT EXISTS (
+             SELECT 1 FROM fetch_jobs
+             WHERE state = 'queued'
+                OR (state = 'fetching' AND COALESCE(claimed_at, 0) < ?)
+           ) AS "claimable!: bool""#,
+        stale_before
+    )
+    .fetch_one(pool)
+    .await
+}
+
+/// Hands the oldest queued job to the worker: sets it `fetching` with a
+/// fresh `claim_id`. `enabled` is the kill switch ([`worker_settings`]);
+/// off, nothing is touched. With nothing to do, no write transaction is
+/// opened, so an idle worker polling every few seconds never takes the
+/// write lock.
+///
+/// Before handing anything out it tidies up: expired `fetching` jobs go
+/// back to `queued` (or `failed` with reason `max_attempts` once they have
+/// used their attempts), queued jobs whose request is no longer pending are
+/// closed, and queued jobs whose request has no IMDb ID wait in
+/// `needs_pick`.
+pub async fn claim_fetch_job(
+    pool: &SqlitePool,
+    enabled: bool,
+    now: i64,
+) -> Result<Option<ClaimedJob>, sqlx::Error> {
+    if !enabled || !has_claimable_fetch_job(pool, now).await? {
+        return Ok(None);
+    }
+    let stale_before = now - RECLAIM_AFTER_SECS;
+    let mut tx = begin_immediate(pool).await?;
+
+    sqlx::query!(
+        "UPDATE fetch_jobs
+         SET state = 'failed', reason = 'max_attempts', claim_id = NULL, updated_at = ?
+         WHERE state = 'fetching' AND COALESCE(claimed_at, 0) < ? AND attempts >= max_attempts",
+        now,
+        stale_before
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query!(
+        "UPDATE fetch_jobs
+         SET state = 'queued', claim_id = NULL, updated_at = ?
+         WHERE state = 'fetching' AND COALESCE(claimed_at, 0) < ? AND attempts < max_attempts",
+        now,
+        stale_before
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query!(
+        "UPDATE fetch_jobs
+         SET state = 'done', reason = 'request_changed', claim_id = NULL, updated_at = ?
+         WHERE state = 'queued'
+           AND request_id IN (SELECT id FROM requests WHERE status <> 'pending')",
+        now
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query!(
+        "UPDATE fetch_jobs
+         SET state = 'needs_pick', reason = 'no_imdb_id', claim_id = NULL, updated_at = ?
+         WHERE state = 'queued'
+           AND request_id IN (SELECT id FROM requests WHERE imdb_id IS NULL)",
+        now
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    let Some(next) = sqlx::query!(
+        r#"SELECT j.id AS "id!", j.request_id AS "request_id!",
+                  r.tmdb_id AS "tmdb_id!", r.media_type AS "media_type!",
+                  r.imdb_id AS "imdb_id!", r.title AS "title!", r.year,
+                  j.infuse_pro AS "infuse_pro!: bool", j.chosen_infohash, j.rd_torrent_id
+           FROM fetch_jobs j JOIN requests r ON r.id = j.request_id
+           WHERE j.state = 'queued' AND r.status = 'pending' AND r.imdb_id IS NOT NULL
+           ORDER BY j.created_at, j.id
+           LIMIT 1"#
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    else {
+        tx.commit().await?;
+        return Ok(None);
+    };
+
+    let claim_id = crate::auth::generate_claim_id();
+    sqlx::query!(
+        "UPDATE fetch_jobs
+         SET state = 'fetching', claim_id = ?, claimed_at = ?, attempts = attempts + 1,
+             updated_at = ?
+         WHERE id = ?",
+        claim_id,
+        now,
+        now,
+        next.id
+    )
+    .execute(&mut *tx)
+    .await?;
+    let blocked_hashes = sqlx::query_scalar!(
+        r#"SELECT infohash AS "infohash!" FROM blocked_hashes
+           WHERE request_id = ? ORDER BY infohash"#,
+        next.request_id
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+
+    Ok(Some(ClaimedJob {
+        id: next.id,
+        claim_id,
+        tmdb_id: next.tmdb_id,
+        imdb_id: next.imdb_id,
+        media_type: next.media_type,
+        title: next.title,
+        year: next.year,
+        infuse_pro: next.infuse_pro,
+        chosen_infohash: next.chosen_infohash,
+        rd_torrent_id: next.rd_torrent_id,
+        blocked_hashes,
+    }))
+}
+
+/// The states a worker may end a run in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReportState {
+    NeedsPick,
+    Failed,
+    Done,
+}
+
+impl ReportState {
+    fn as_str(self) -> &'static str {
+        match self {
+            ReportState::NeedsPick => "needs_pick",
+            ReportState::Failed => "failed",
+            ReportState::Done => "done",
+        }
+    }
+}
+
+/// A worker's final report. Fields are validated by the caller (infohash
+/// shape, lengths, `candidates` being well-formed JSON). `None` leaves the
+/// stored `candidates`, `top_infohash` and `chosen_infohash` alone;
+/// `picked` is never touched here, only a human pick sets it.
+#[derive(Debug, Default)]
+pub struct Report<'a> {
+    pub candidates: Option<&'a str>,
+    pub top_infohash: Option<&'a str>,
+    pub chosen_infohash: Option<&'a str>,
+    pub rd_torrent_id: Option<&'a str>,
+    pub reason: Option<&'a str>,
+    pub last_error: Option<&'a str>,
+    pub uncached_adds: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReportOutcome {
+    Applied {
+        /// The request moved to `added` or `already_had`, so the caller
+        /// should publish a members tick.
+        request_status_changed: bool,
+    },
+    /// No such job in `fetching` with this claim: replayed, forged,
+    /// reclaimed or overridden. Carries the id now stored on the job, so
+    /// the worker keeps that torrent when it cleans up its own.
+    Stale {
+        rd_torrent_id: Option<String>,
+    },
+    /// The job is picked and the report names a different hash.
+    PickedLocked,
+    NotFound,
+}
+
+/// Why a guarded job update matched no row, in this order: no such job,
+/// then a wrong state or claim (so a stale worker gets its 409 before the
+/// picked lock is looked at), otherwise the lock.
+async fn classify_missed_update(
+    conn: &mut SqliteConnection,
+    job_id: i64,
+    claim_id: &str,
+) -> Result<ReportOutcome, sqlx::Error> {
+    let Some(job) = sqlx::query!(
+        "SELECT state, claim_id, rd_torrent_id FROM fetch_jobs WHERE id = ?",
+        job_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    else {
+        return Ok(ReportOutcome::NotFound);
+    };
+    if job.state != "fetching" || job.claim_id.as_deref() != Some(claim_id) {
+        return Ok(ReportOutcome::Stale {
+            rd_torrent_id: job.rd_torrent_id,
+        });
+    }
+    Ok(ReportOutcome::PickedLocked)
+}
+
+/// Ends a run. One guarded `UPDATE` makes it atomic: the job must be
+/// `fetching` under exactly this `claim_id`, and a picked job's hash may
+/// not change. On success `claim_id` is cleared, so replaying the report
+/// is stale.
+///
+/// `needs_pick` and `failed` clear the stored `rd_torrent_id` unless the
+/// report gives one (the worker has already deleted its torrent); `done`
+/// keeps it. A `done` report also moves the request to `added` (or
+/// `already_had` when the reason says so) in the same transaction, but only
+/// if it is still `pending`.
+pub async fn report_fetch_job(
+    pool: &SqlitePool,
+    job_id: i64,
+    claim_id: &str,
+    state: ReportState,
+    report: &Report<'_>,
+    now: i64,
+) -> Result<ReportOutcome, sqlx::Error> {
+    let target = state.as_str();
+    let keep_rd = state == ReportState::Done;
+    let uncached = report.uncached_adds.clamp(0, MAX_UNCACHED_INCREMENT);
+    let mut tx = begin_immediate(pool).await?;
+    // `IS NOT`, not `<>`: with a stored NULL `<>` yields NULL, the WHERE
+    // would fail and a valid claim would be classified as PickedLocked.
+    let updated = sqlx::query!(
+        "UPDATE fetch_jobs
+         SET state = ?1,
+             candidates = COALESCE(?2, candidates),
+             top_infohash = COALESCE(?3, top_infohash),
+             chosen_infohash = COALESCE(?4, chosen_infohash),
+             rd_torrent_id = CASE WHEN ?5 THEN COALESCE(?6, rd_torrent_id) ELSE ?6 END,
+             reason = ?7,
+             last_error = ?8,
+             uncached_adds = uncached_adds + ?9,
+             claim_id = NULL,
+             updated_at = ?10
+         WHERE id = ?11 AND state = 'fetching' AND claim_id = ?12
+           AND NOT (picked = 1 AND ?4 IS NOT NULL AND ?4 IS NOT chosen_infohash)",
+        target,
+        report.candidates,
+        report.top_infohash,
+        report.chosen_infohash,
+        keep_rd,
+        report.rd_torrent_id,
+        report.reason,
+        report.last_error,
+        uncached,
+        now,
+        job_id,
+        claim_id
+    )
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    if updated == 0 {
+        let outcome = classify_missed_update(&mut tx, job_id, claim_id).await?;
+        tx.rollback().await?;
+        return Ok(outcome);
+    }
+
+    let mut request_status_changed = false;
+    if state == ReportState::Done {
+        // The job is already `done`, so the shared status function's
+        // close-open-jobs step leaves it (and its reason) alone.
+        let request = sqlx::query!(
+            r#"SELECT r.id AS "id!", r.status AS "status!"
+               FROM fetch_jobs j JOIN requests r ON r.id = j.request_id
+               WHERE j.id = ?"#,
+            job_id
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        if request.status == "pending" {
+            let to = if report.reason == Some("already_had") {
+                "already_had"
+            } else {
+                "added"
+            };
+            request_status_changed = matches!(
+                set_request_status_in(&mut tx, request.id, to, None, "worker", now).await?,
+                StatusChange::Changed { .. }
+            );
+        }
+    }
+    tx.commit().await?;
+    Ok(ReportOutcome::Applied {
+        request_status_changed,
+    })
+}
+
+#[derive(Debug, Default)]
+pub struct Progress<'a> {
+    pub rd_torrent_id: Option<&'a str>,
+    pub chosen_infohash: Option<&'a str>,
+    /// Add-and-delete cycles since the last call, 0 to 5.
+    pub uncached_adds: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ProgressOutcome {
+    Applied,
+    Stale { rd_torrent_id: Option<String> },
+    PickedLocked,
+    NotFound,
+}
+
+/// A sign of life from the worker: saves an RD torrent id the moment RD
+/// returns it and refreshes `claimed_at`, so a long RD wait is not
+/// reclaimed. `state` and `claim_id` stay. Same guard and classification
+/// as [`report_fetch_job`], picked lock included.
+pub async fn progress_fetch_job(
+    pool: &SqlitePool,
+    job_id: i64,
+    claim_id: &str,
+    progress: &Progress<'_>,
+    now: i64,
+) -> Result<ProgressOutcome, sqlx::Error> {
+    let uncached = progress.uncached_adds.clamp(0, MAX_UNCACHED_INCREMENT);
+    let mut tx = begin_immediate(pool).await?;
+    // `IS NOT` for the reason given in `report_fetch_job`.
+    let updated = sqlx::query!(
+        "UPDATE fetch_jobs
+         SET claimed_at = ?1,
+             updated_at = ?1,
+             rd_torrent_id = COALESCE(?2, rd_torrent_id),
+             chosen_infohash = COALESCE(?3, chosen_infohash),
+             uncached_adds = uncached_adds + ?4
+         WHERE id = ?5 AND state = 'fetching' AND claim_id = ?6
+           AND NOT (picked = 1 AND ?3 IS NOT NULL AND ?3 IS NOT chosen_infohash)",
+        now,
+        progress.rd_torrent_id,
+        progress.chosen_infohash,
+        uncached,
+        job_id,
+        claim_id
+    )
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    let outcome = if updated > 0 {
+        ProgressOutcome::Applied
+    } else {
+        match classify_missed_update(&mut tx, job_id, claim_id).await? {
+            ReportOutcome::Stale { rd_torrent_id } => ProgressOutcome::Stale { rd_torrent_id },
+            ReportOutcome::NotFound => ProgressOutcome::NotFound,
+            _ => ProgressOutcome::PickedLocked,
+        }
+    };
+    if updated > 0 {
+        tx.commit().await?;
+    } else {
+        tx.rollback().await?;
+    }
+    Ok(outcome)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum RetryOutcome {
+    Retried,
+    NotFound,
+    WrongState,
+}
+
+/// Requeues a job from `failed`, `needs_pick`, `fetching`, or `done` while
+/// its request is still `pending`. Attempts and messages reset; the
+/// shortlist, chosen hash and RD torrent id are kept so the next run
+/// resumes. Clearing `claim_id` in the same statement makes a running
+/// worker's next call stale. Refused while the request has no IMDb ID
+/// (checked now, not by the job's reason, which can be cleared): the worker
+/// could never search for it and the job would loop.
+pub async fn retry_fetch_job(
+    pool: &SqlitePool,
+    job_id: i64,
+    now: i64,
+) -> Result<RetryOutcome, sqlx::Error> {
+    let mut tx = begin_immediate(pool).await?;
+    let Some(job) = sqlx::query!(
+        r#"SELECT j.state AS "state!", r.status AS "status!", r.imdb_id
+           FROM fetch_jobs j JOIN requests r ON r.id = j.request_id
+           WHERE j.id = ?"#,
+        job_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    else {
+        tx.rollback().await?;
+        return Ok(RetryOutcome::NotFound);
+    };
+    let allowed = match job.state.as_str() {
+        "failed" | "needs_pick" | "fetching" => true,
+        "done" => job.status == "pending",
+        _ => false,
+    };
+    if !allowed || job.imdb_id.is_none() {
+        tx.rollback().await?;
+        return Ok(RetryOutcome::WrongState);
+    }
+    sqlx::query!(
+        "UPDATE fetch_jobs
+         SET state = 'queued', claim_id = NULL, claimed_at = NULL, attempts = 0,
+             reason = NULL, last_error = NULL, updated_at = ?
+         WHERE id = ?",
+        now,
+        job_id
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(RetryOutcome::Retried)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum CancelJobOutcome {
+    Cancelled,
+    NotFound,
+    WrongState,
+}
+
+/// Ends a `queued`, `fetching` or `needs_pick` job as `failed` with reason
+/// `cancelled`. Cancel is terminal; `retry` is the way back. Like retry it
+/// clears `claim_id`, so a running worker's next call is stale.
+pub async fn cancel_fetch_job(
+    pool: &SqlitePool,
+    job_id: i64,
+    now: i64,
+) -> Result<CancelJobOutcome, sqlx::Error> {
+    let cancelled = sqlx::query!(
+        "UPDATE fetch_jobs
+         SET state = 'failed', reason = 'cancelled', claim_id = NULL, updated_at = ?
+         WHERE id = ? AND state IN ('queued', 'fetching', 'needs_pick')",
+        now,
+        job_id
+    )
+    .execute(pool)
+    .await?
+    .rows_affected();
+    if cancelled > 0 {
+        return Ok(CancelJobOutcome::Cancelled);
+    }
+    let exists = sqlx::query_scalar!(r#"SELECT id AS "id!" FROM fetch_jobs WHERE id = ?"#, job_id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(if exists.is_some() {
+        CancelJobOutcome::WrongState
+    } else {
+        CancelJobOutcome::NotFound
+    })
+}
+
+pub async fn get_setting(pool: &SqlitePool, key: &str) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"SELECT value AS "value!" FROM settings WHERE key = ?"#,
+        key
+    )
+    .fetch_optional(pool)
+    .await
+}
+
+pub async fn set_setting(pool: &SqlitePool, key: &str, value: &str) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "INSERT INTO settings (key, value) VALUES (?, ?)
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        key,
+        value
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// The worker's kill switch and mode as they currently stand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkerSettings {
+    pub enabled: bool,
+    pub mode: WorkerMode,
+}
+
+/// Environment override first, then the database, then off and dry-run.
+/// A database value that does not parse counts as unset.
+pub async fn worker_settings(
+    pool: &SqlitePool,
+    config: &Config,
+) -> Result<WorkerSettings, sqlx::Error> {
+    let enabled = match config.worker_enabled {
+        Some(enabled) => enabled,
+        None => get_setting(pool, SETTING_WORKER_ENABLED).await?.as_deref() == Some("1"),
+    };
+    let mode = match config.worker_mode {
+        Some(mode) => mode,
+        None => get_setting(pool, SETTING_WORKER_MODE)
+            .await?
+            .as_deref()
+            .and_then(WorkerMode::parse)
+            .unwrap_or(WorkerMode::DryRun),
+    };
+    Ok(WorkerSettings { enabled, mode })
+}
+
+pub const SETTING_WORKER_ENABLED: &str = "worker_enabled";
+pub const SETTING_WORKER_MODE: &str = "worker_mode";
 
 #[cfg(test)]
 mod tests {
@@ -1442,6 +2081,15 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(index.0, 1);
+        // The fetch tables arrive with the same upgrade, empty.
+        for table in ["fetch_jobs", "blocked_hashes", "settings"] {
+            let (n,): (i64,) =
+                sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")))
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap_or_else(|e| panic!("{table}: {e}"));
+            assert_eq!(n, 0, "{table}");
+        }
     }
 
     #[tokio::test]
@@ -1510,5 +2158,1280 @@ mod tests {
             .await
             .expect("count");
         assert_eq!(remaining, 1);
+    }
+
+    // -----------------------------------------------------------------
+    // Fetch jobs
+    // -----------------------------------------------------------------
+
+    const HASH_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const HASH_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    fn test_config() -> Config {
+        Config {
+            public_origin: "https://example.com".into(),
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            database_path: ":memory:".into(),
+            code_pepper: Vec::new(),
+            cookie_dev_insecure: false,
+            admin_user: "admin".into(),
+            admin_password_hash: String::new(),
+            trusted_proxy_cidrs: Vec::new(),
+            tmdb_token: String::new(),
+            tmdb_base_url: String::new(),
+            dmm_base_url: String::new(),
+            cf_access: None,
+            ntfy: Default::default(),
+            rate_limits: Default::default(),
+            internal_listen: None,
+            internal_token: None,
+            worker_enabled: None,
+            worker_mode: None,
+        }
+    }
+
+    async fn member(pool: &SqlitePool, name: &str) -> i64 {
+        insert_member(pool, name, name.as_bytes(), None, 0)
+            .await
+            .expect("insert member")
+    }
+
+    /// A pending request by a member named Ann (created on first use).
+    async fn request(pool: &SqlitePool, tmdb_id: i64, imdb: Option<&str>, pro: bool) -> i64 {
+        let ann = match sqlx::query_scalar::<_, i64>("SELECT id FROM members WHERE name = 'Ann'")
+            .fetch_optional(pool)
+            .await
+            .unwrap()
+        {
+            Some(id) => id,
+            None => member(pool, "Ann").await,
+        };
+        sqlx::query_scalar(
+            "INSERT INTO requests (tmdb_id, media_type, imdb_id, title, year, note, infuse_pro,
+                                   requested_by, created_at, status_changed_at)
+             VALUES (?, 'movie', ?, 'Dune', 2021, 'secret note', ?, ?, 1, 1)
+             RETURNING id",
+        )
+        .bind(tmdb_id)
+        .bind(imdb)
+        .bind(pro)
+        .bind(ann)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    /// Creates the job for `request_id` and returns its id.
+    async fn job_for(pool: &SqlitePool, request_id: i64, now: i64) -> i64 {
+        assert!(matches!(
+            create_fetch_job(pool, request_id, now).await.unwrap(),
+            CreateJob::Created { .. }
+        ));
+        sqlx::query_scalar("SELECT id FROM fetch_jobs WHERE request_id = ?")
+            .bind(request_id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    /// A new pending request with a job, claimed at `now`.
+    async fn claimed(pool: &SqlitePool, tmdb_id: i64, now: i64) -> ClaimedJob {
+        let id = request(pool, tmdb_id, Some("tt0000001"), false).await;
+        job_for(pool, id, now).await;
+        claim_fetch_job(pool, true, now)
+            .await
+            .unwrap()
+            .expect("a job to claim")
+    }
+
+    #[derive(Debug, PartialEq, sqlx::FromRow)]
+    struct JobRow {
+        state: String,
+        claim_id: Option<String>,
+        claimed_at: Option<i64>,
+        attempts: i64,
+        uncached_adds: i64,
+        candidates: Option<String>,
+        top_infohash: Option<String>,
+        chosen_infohash: Option<String>,
+        picked: bool,
+        rd_torrent_id: Option<String>,
+        reason: Option<String>,
+        last_error: Option<String>,
+    }
+
+    async fn job(pool: &SqlitePool, id: i64) -> JobRow {
+        sqlx::query_as(
+            "SELECT state, claim_id, claimed_at, attempts, uncached_adds, candidates, top_infohash,
+                    chosen_infohash, picked, rd_torrent_id, reason, last_error
+             FROM fetch_jobs WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    /// Test-only raw SQL; the statements are literals built in this module.
+    async fn sql(pool: &SqlitePool, statement: &str) {
+        sqlx::query(sqlx::AssertSqlSafe(statement.to_string()))
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    async fn count(pool: &SqlitePool, table: &str) -> i64 {
+        sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")))
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    async fn request_status(pool: &SqlitePool, id: i64) -> String {
+        sqlx::query_scalar("SELECT status FROM requests WHERE id = ?")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    async fn request_of(pool: &SqlitePool, job_id: i64) -> i64 {
+        sqlx::query_scalar("SELECT request_id FROM fetch_jobs WHERE id = ?")
+            .bind(job_id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    async fn report(
+        pool: &SqlitePool,
+        claim: &ClaimedJob,
+        state: ReportState,
+        report: &Report<'_>,
+        now: i64,
+    ) -> ReportOutcome {
+        report_fetch_job(pool, claim.id, &claim.claim_id, state, report, now)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn create_fetch_job_covers_every_outcome() {
+        let pool = test_pool().await;
+        let plain = request(&pool, 1, Some("tt1"), false).await;
+        let pro = request(&pool, 1, Some("tt1"), true).await;
+        let no_imdb = request(&pool, 2, None, false).await;
+        let refused = request(&pool, 3, Some("tt3"), false).await;
+        sql(
+            &pool,
+            &format!("UPDATE requests SET status = 'refused' WHERE id = {refused}"),
+        )
+        .await;
+
+        assert!(matches!(
+            create_fetch_job(&pool, plain, 10).await.unwrap(),
+            CreateJob::Created { state } if state == "queued"
+        ));
+        assert!(matches!(
+            create_fetch_job(&pool, plain, 11).await.unwrap(),
+            CreateJob::Exists
+        ));
+        assert!(matches!(
+            create_fetch_job(&pool, pro, 12).await.unwrap(),
+            CreateJob::Created { .. }
+        ));
+        assert!(matches!(
+            create_fetch_job(&pool, no_imdb, 13).await.unwrap(),
+            CreateJob::Created { state } if state == "needs_pick"
+        ));
+        assert!(matches!(
+            create_fetch_job(&pool, 999, 14).await.unwrap(),
+            CreateJob::NotFound
+        ));
+        assert!(matches!(
+            create_fetch_job(&pool, refused, 15).await.unwrap(),
+            CreateJob::NotPending
+        ));
+
+        // infuse_pro is copied from the request, and a missing IMDb ID is explained.
+        let rows: Vec<(i64, i64, String, Option<String>)> = sqlx::query_as(
+            "SELECT request_id, infuse_pro, state, reason FROM fetch_jobs ORDER BY request_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (plain, 0, "queued".into(), None),
+                (pro, 1, "queued".into(), None),
+                (no_imdb, 0, "needs_pick".into(), Some("no_imdb_id".into())),
+            ]
+        );
+    }
+
+    async fn insert_job(
+        pool: &SqlitePool,
+        request_id: i64,
+        picked: i64,
+        hash: Option<&str>,
+    ) -> Result<sqlx::sqlite::SqliteQueryResult, sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO fetch_jobs (request_id, infuse_pro, picked, chosen_infohash, created_at, updated_at)
+             VALUES (?, 0, ?, ?, 0, 0)",
+        )
+        .bind(request_id)
+        .bind(picked)
+        .bind(hash)
+        .execute(pool)
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_picked_job_must_have_a_stored_hash() {
+        let pool = test_pool().await;
+        let id = request(&pool, 1, Some("tt1"), false).await;
+        assert!(insert_job(&pool, id, 1, None).await.is_err());
+        insert_job(&pool, id, 1, Some(HASH_A))
+            .await
+            .expect("picked with a hash");
+        sql(&pool, "DELETE FROM fetch_jobs").await;
+        insert_job(&pool, id, 0, None)
+            .await
+            .expect("unpicked without one");
+    }
+
+    #[tokio::test]
+    async fn claim_is_off_with_the_kill_switch_and_hands_out_a_job_once() {
+        let pool = test_pool().await;
+        let id = request(&pool, 1, Some("tt1"), true).await;
+        let job_id = job_for(&pool, id, 10).await;
+
+        assert!(claim_fetch_job(&pool, false, 20).await.unwrap().is_none());
+        assert_eq!(job(&pool, job_id).await.state, "queued");
+
+        let claimed = claim_fetch_job(&pool, true, 20).await.unwrap().unwrap();
+        assert_eq!(claimed.id, job_id);
+        assert_eq!(claimed.imdb_id, "tt1");
+        assert_eq!((claimed.title.as_str(), claimed.year), ("Dune", Some(2021)));
+        assert!(claimed.infuse_pro);
+        assert_eq!(claimed.claim_id.len(), 32);
+        let row = job(&pool, job_id).await;
+        assert_eq!(row.state, "fetching");
+        assert_eq!(row.claim_id.as_deref(), Some(claimed.claim_id.as_str()));
+        assert_eq!((row.attempts, row.claimed_at), (1, Some(20)));
+
+        assert!(claim_fetch_job(&pool, true, 21).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn claim_takes_the_oldest_job_and_lists_blocked_hashes() {
+        let pool = test_pool().await;
+        let newer = request(&pool, 1, Some("tt1"), false).await;
+        let older = request(&pool, 2, Some("tt2"), false).await;
+        job_for(&pool, newer, 20).await;
+        let older_job = job_for(&pool, older, 10).await;
+        sql(
+            &pool,
+            &format!(
+                "INSERT INTO blocked_hashes (request_id, infohash, created_at) VALUES
+                 ({older}, '{HASH_B}', 1), ({older}, '{HASH_A}', 2), ({newer}, '{HASH_B}', 3)"
+            ),
+        )
+        .await;
+
+        let claimed = claim_fetch_job(&pool, true, 30).await.unwrap().unwrap();
+        assert_eq!(claimed.id, older_job);
+        assert_eq!(claimed.blocked_hashes, vec![HASH_A, HASH_B]);
+    }
+
+    #[tokio::test]
+    async fn an_idle_claim_opens_no_write_transaction() {
+        let pool = test_pool().await;
+        assert!(!has_claimable_fetch_job(&pool, 100).await.unwrap());
+        assert!(claim_fetch_job(&pool, true, 100).await.unwrap().is_none());
+
+        // Jobs in other states, or `fetching` and fresh, are no reason to write.
+        let claim = claimed(&pool, 1, 100).await;
+        let id = request(&pool, 2, Some("tt2"), false).await;
+        let waiting = job_for(&pool, id, 100).await;
+        sql(
+            &pool,
+            &format!("UPDATE fetch_jobs SET state = 'needs_pick' WHERE id = {waiting}"),
+        )
+        .await;
+        assert!(
+            !has_claimable_fetch_job(&pool, 100 + RECLAIM_AFTER_SECS)
+                .await
+                .unwrap()
+        );
+        assert!(
+            has_claimable_fetch_job(&pool, 100 + RECLAIM_AFTER_SECS + 1)
+                .await
+                .unwrap()
+        );
+        let before = job(&pool, claim.id).await;
+        assert!(claim_fetch_job(&pool, true, 200).await.unwrap().is_none());
+        assert_eq!(job(&pool, claim.id).await, before);
+    }
+
+    #[tokio::test]
+    async fn an_expired_job_is_requeued_with_its_ids_and_a_new_claim() {
+        let pool = test_pool().await;
+        let first = claimed(&pool, 1, 1000).await;
+        sql(
+            &pool,
+            &format!(
+                "UPDATE fetch_jobs SET chosen_infohash = '{HASH_A}', rd_torrent_id = 'RD1',
+                        candidates = '[1]' WHERE id = {}",
+                first.id
+            ),
+        )
+        .await;
+
+        // Exactly 45 minutes: still the first worker's.
+        let edge = 1000 + RECLAIM_AFTER_SECS;
+        assert!(claim_fetch_job(&pool, true, edge).await.unwrap().is_none());
+        assert_eq!(job(&pool, first.id).await.state, "fetching");
+
+        let again = claim_fetch_job(&pool, true, edge + 1)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(again.id, first.id);
+        assert_ne!(again.claim_id, first.claim_id);
+        assert_eq!(again.chosen_infohash.as_deref(), Some(HASH_A));
+        assert_eq!(again.rd_torrent_id.as_deref(), Some("RD1"));
+        let row = job(&pool, first.id).await;
+        assert_eq!((row.attempts, row.candidates.as_deref()), (2, Some("[1]")));
+
+        // The first worker's late report matches nothing.
+        let late = report(
+            &pool,
+            &first,
+            ReportState::Done,
+            &Report::default(),
+            edge + 2,
+        )
+        .await;
+        assert_eq!(
+            late,
+            ReportOutcome::Stale {
+                rd_torrent_id: Some("RD1".into())
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn an_expired_job_out_of_attempts_fails_and_is_not_returned() {
+        let pool = test_pool().await;
+        let first = claimed(&pool, 1, 1000).await;
+        sql(&pool, "UPDATE fetch_jobs SET attempts = max_attempts").await;
+        let spare_request = request(&pool, 2, Some("tt2"), false).await;
+        let spare = job_for(&pool, spare_request, 2000).await;
+
+        let next = claim_fetch_job(&pool, true, 1000 + RECLAIM_AFTER_SECS + 1)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(next.id, spare);
+        let row = job(&pool, first.id).await;
+        assert_eq!(row.state, "failed");
+        assert_eq!(row.reason.as_deref(), Some("max_attempts"));
+        assert_eq!(row.claim_id, None);
+    }
+
+    #[tokio::test]
+    async fn claim_closes_jobs_of_requests_that_are_no_longer_pending() {
+        let pool = test_pool().await;
+        let id = request(&pool, 1, Some("tt1"), false).await;
+        let job_id = job_for(&pool, id, 10).await;
+        sql(
+            &pool,
+            &format!("UPDATE requests SET status = 'refused' WHERE id = {id}"),
+        )
+        .await;
+
+        assert!(claim_fetch_job(&pool, true, 20).await.unwrap().is_none());
+        let row = job(&pool, job_id).await;
+        assert_eq!(
+            (row.state.as_str(), row.reason.as_deref()),
+            ("done", Some("request_changed"))
+        );
+    }
+
+    #[tokio::test]
+    async fn claim_parks_a_queued_job_without_an_imdb_id_and_moves_on() {
+        let pool = test_pool().await;
+        let blind = request(&pool, 1, Some("tt1"), false).await;
+        let blind_job = job_for(&pool, blind, 10).await;
+        let seeing = request(&pool, 2, Some("tt2"), false).await;
+        let seeing_job = job_for(&pool, seeing, 20).await;
+        // The ID disappears after the job was queued (older data, a manual edit).
+        sql(
+            &pool,
+            &format!("UPDATE requests SET imdb_id = NULL WHERE id = {blind}"),
+        )
+        .await;
+
+        let claimed = claim_fetch_job(&pool, true, 30).await.unwrap().unwrap();
+        assert_eq!(claimed.id, seeing_job);
+        let row = job(&pool, blind_job).await;
+        assert_eq!(
+            (row.state.as_str(), row.reason.as_deref()),
+            ("needs_pick", Some("no_imdb_id"))
+        );
+
+        // With nothing else eligible a claim returns nothing, and does not loop on it.
+        sql(
+            &pool,
+            &format!("UPDATE fetch_jobs SET state = 'queued' WHERE id = {blind_job}"),
+        )
+        .await;
+        sql(
+            &pool,
+            &format!("UPDATE fetch_jobs SET state = 'done' WHERE id = {seeing_job}"),
+        )
+        .await;
+        assert!(claim_fetch_job(&pool, true, 40).await.unwrap().is_none());
+        assert_eq!(job(&pool, blind_job).await.state, "needs_pick");
+    }
+
+    #[tokio::test]
+    async fn progress_saves_ids_and_keeps_the_job_from_being_reclaimed() {
+        let pool = test_pool().await;
+        let claim = claimed(&pool, 1, 1000).await;
+
+        let progress = Progress {
+            rd_torrent_id: Some("RD9"),
+            chosen_infohash: Some(HASH_A),
+            uncached_adds: 1,
+        };
+        let at_44_minutes = 1000 + 44 * 60;
+        assert_eq!(
+            progress_fetch_job(&pool, claim.id, &claim.claim_id, &progress, at_44_minutes)
+                .await
+                .unwrap(),
+            ProgressOutcome::Applied
+        );
+        let row = job(&pool, claim.id).await;
+        assert_eq!(row.state, "fetching");
+        assert_eq!(row.claim_id.as_deref(), Some(claim.claim_id.as_str()));
+        assert_eq!(
+            (
+                row.rd_torrent_id.as_deref(),
+                row.chosen_infohash.as_deref(),
+                row.uncached_adds,
+                row.claimed_at
+            ),
+            (Some("RD9"), Some(HASH_A), 1, Some(at_44_minutes))
+        );
+
+        // Six minutes later the original claim time would have expired; the refreshed one has not.
+        assert!(
+            claim_fetch_job(&pool, true, 1000 + 50 * 60)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(job(&pool, claim.id).await.state, "fetching");
+
+        // Absent fields stay, and one call adds at most 5 uncached adds.
+        let again = Progress {
+            uncached_adds: 99,
+            ..Progress::default()
+        };
+        progress_fetch_job(&pool, claim.id, &claim.claim_id, &again, at_44_minutes + 1)
+            .await
+            .unwrap();
+        let row = job(&pool, claim.id).await;
+        assert_eq!(
+            (row.rd_torrent_id.as_deref(), row.uncached_adds),
+            (Some("RD9"), 6)
+        );
+    }
+
+    #[tokio::test]
+    async fn progress_with_a_stale_claim_or_unknown_id_writes_nothing() {
+        let pool = test_pool().await;
+        let claim = claimed(&pool, 1, 1000).await;
+        sql(&pool, "UPDATE fetch_jobs SET rd_torrent_id = 'RD1'").await;
+        let before = job(&pool, claim.id).await;
+
+        let progress = Progress {
+            rd_torrent_id: Some("RD2"),
+            chosen_infohash: Some(HASH_B),
+            uncached_adds: 2,
+        };
+        assert_eq!(
+            progress_fetch_job(&pool, claim.id, "not-the-claim", &progress, 2000)
+                .await
+                .unwrap(),
+            ProgressOutcome::Stale {
+                rd_torrent_id: Some("RD1".into())
+            }
+        );
+        assert_eq!(job(&pool, claim.id).await, before);
+        assert_eq!(
+            progress_fetch_job(&pool, 999, &claim.claim_id, &progress, 2000)
+                .await
+                .unwrap(),
+            ProgressOutcome::NotFound
+        );
+    }
+
+    #[tokio::test]
+    async fn progress_cannot_rewrite_a_human_pick() {
+        let pool = test_pool().await;
+        let claim = claimed(&pool, 1, 1000).await;
+        sql(
+            &pool,
+            &format!("UPDATE fetch_jobs SET picked = 1, chosen_infohash = '{HASH_A}'"),
+        )
+        .await;
+
+        let other = Progress {
+            chosen_infohash: Some(HASH_B),
+            rd_torrent_id: Some("RD2"),
+            ..Progress::default()
+        };
+        assert_eq!(
+            progress_fetch_job(&pool, claim.id, &claim.claim_id, &other, 1500)
+                .await
+                .unwrap(),
+            ProgressOutcome::PickedLocked
+        );
+        let row = job(&pool, claim.id).await;
+        assert_eq!(
+            (
+                row.chosen_infohash.as_deref(),
+                row.rd_torrent_id,
+                row.claimed_at
+            ),
+            (Some(HASH_A), None, Some(1000))
+        );
+
+        let same = Progress {
+            chosen_infohash: Some(HASH_A),
+            ..Progress::default()
+        };
+        assert_eq!(
+            progress_fetch_job(&pool, claim.id, &claim.claim_id, &same, 1500)
+                .await
+                .unwrap(),
+            ProgressOutcome::Applied
+        );
+        // A stale claim on a picked job is stale, not locked.
+        assert_eq!(
+            progress_fetch_job(&pool, claim.id, "old", &other, 1500)
+                .await
+                .unwrap(),
+            ProgressOutcome::Stale {
+                rd_torrent_id: None
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn report_applies_once_and_clears_the_claim() {
+        let pool = test_pool().await;
+        let claim = claimed(&pool, 1, 1000).await;
+        let body = Report {
+            candidates: Some(r#"[{"h":1}]"#),
+            top_infohash: Some(HASH_A),
+            reason: Some("dry_run"),
+            uncached_adds: 1,
+            ..Report::default()
+        };
+
+        let wrong = report_fetch_job(
+            &pool,
+            claim.id,
+            "wrong",
+            ReportState::NeedsPick,
+            &body,
+            1100,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            wrong,
+            ReportOutcome::Stale {
+                rd_torrent_id: None
+            }
+        );
+        assert_eq!(job(&pool, claim.id).await.state, "fetching");
+
+        let applied = report(&pool, &claim, ReportState::NeedsPick, &body, 1100).await;
+        assert_eq!(
+            applied,
+            ReportOutcome::Applied {
+                request_status_changed: false
+            }
+        );
+        let row = job(&pool, claim.id).await;
+        assert_eq!(row.state, "needs_pick");
+        assert_eq!(row.claim_id, None);
+        assert_eq!(
+            (
+                row.candidates.as_deref(),
+                row.top_infohash.as_deref(),
+                row.reason.as_deref(),
+                row.uncached_adds
+            ),
+            (Some(r#"[{"h":1}]"#), Some(HASH_A), Some("dry_run"), 1)
+        );
+
+        let replay = report(&pool, &claim, ReportState::NeedsPick, &body, 1200).await;
+        assert!(matches!(replay, ReportOutcome::Stale { .. }));
+        let unknown = report_fetch_job(
+            &pool,
+            999,
+            &claim.claim_id,
+            ReportState::Failed,
+            &body,
+            1200,
+        )
+        .await
+        .unwrap();
+        assert_eq!(unknown, ReportOutcome::NotFound);
+    }
+
+    #[tokio::test]
+    async fn report_keeps_the_torrent_id_only_for_done_or_when_given() {
+        let pool = test_pool().await;
+        let claim = claimed(&pool, 1, 1000).await;
+        sql(&pool, "UPDATE fetch_jobs SET rd_torrent_id = 'RD1'").await;
+        let failed = Report {
+            reason: Some("picked_failed"),
+            last_error: Some("timeout"),
+            ..Report::default()
+        };
+        report(&pool, &claim, ReportState::NeedsPick, &failed, 1100).await;
+        let row = job(&pool, claim.id).await;
+        assert_eq!(
+            (
+                row.rd_torrent_id,
+                row.reason.as_deref(),
+                row.last_error.as_deref()
+            ),
+            (None, Some("picked_failed"), Some("timeout"))
+        );
+
+        // Given explicitly, it is stored even on a failure.
+        assert_eq!(
+            retry_fetch_job(&pool, claim.id, 1200).await.unwrap(),
+            RetryOutcome::Retried
+        );
+        let second = claim_fetch_job(&pool, true, 1300).await.unwrap().unwrap();
+        let keeps = Report {
+            rd_torrent_id: Some("RD2"),
+            ..Report::default()
+        };
+        report(&pool, &second, ReportState::Failed, &keeps, 1400).await;
+        assert_eq!(
+            job(&pool, claim.id).await.rd_torrent_id.as_deref(),
+            Some("RD2")
+        );
+
+        // `done` keeps the stored id when the report gives none.
+        retry_fetch_job(&pool, claim.id, 1500).await.unwrap();
+        let third = claim_fetch_job(&pool, true, 1600).await.unwrap().unwrap();
+        report(&pool, &third, ReportState::Done, &Report::default(), 1700).await;
+        assert_eq!(
+            job(&pool, claim.id).await.rd_torrent_id.as_deref(),
+            Some("RD2")
+        );
+    }
+
+    #[tokio::test]
+    async fn report_cannot_rewrite_a_human_pick() {
+        let pool = test_pool().await;
+        let claim = claimed(&pool, 1, 1000).await;
+        sql(
+            &pool,
+            &format!(
+                "UPDATE fetch_jobs SET picked = 1, chosen_infohash = '{HASH_A}', candidates = '[0]'"
+            ),
+        )
+        .await;
+        let before = job(&pool, claim.id).await;
+
+        let other = Report {
+            chosen_infohash: Some(HASH_B),
+            candidates: Some("[1]"),
+            reason: Some("x"),
+            ..Report::default()
+        };
+        assert_eq!(
+            report(&pool, &claim, ReportState::Failed, &other, 1100).await,
+            ReportOutcome::PickedLocked
+        );
+        assert_eq!(
+            job(&pool, claim.id).await,
+            before,
+            "nothing written, the claim is still usable"
+        );
+
+        // A stale claim is reported before the lock.
+        let stale = report_fetch_job(&pool, claim.id, "old", ReportState::Failed, &other, 1100)
+            .await
+            .unwrap();
+        assert_eq!(
+            stale,
+            ReportOutcome::Stale {
+                rd_torrent_id: None
+            }
+        );
+
+        // The same hash applies, and top_infohash is not locked.
+        let same = Report {
+            chosen_infohash: Some(HASH_A),
+            top_infohash: Some(HASH_B),
+            ..Report::default()
+        };
+        assert!(matches!(
+            report(&pool, &claim, ReportState::NeedsPick, &same, 1200).await,
+            ReportOutcome::Applied { .. }
+        ));
+        let row = job(&pool, claim.id).await;
+        assert_eq!(
+            (
+                row.top_infohash.as_deref(),
+                row.chosen_infohash.as_deref(),
+                row.picked
+            ),
+            (Some(HASH_B), Some(HASH_A), true)
+        );
+
+        // A report that names no hash applies too.
+        retry_fetch_job(&pool, claim.id, 1300).await.unwrap();
+        let next = claim_fetch_job(&pool, true, 1400).await.unwrap().unwrap();
+        assert!(matches!(
+            report(
+                &pool,
+                &next,
+                ReportState::NeedsPick,
+                &Report::default(),
+                1500
+            )
+            .await,
+            ReportOutcome::Applied { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_unpicked_job_may_change_its_hash_freely() {
+        let pool = test_pool().await;
+        let claim = claimed(&pool, 1, 1000).await;
+        sql(
+            &pool,
+            &format!("UPDATE fetch_jobs SET chosen_infohash = '{HASH_A}'"),
+        )
+        .await;
+        let other = Report {
+            chosen_infohash: Some(HASH_B),
+            ..Report::default()
+        };
+        assert!(matches!(
+            report(&pool, &claim, ReportState::NeedsPick, &other, 1100).await,
+            ReportOutcome::Applied { .. }
+        ));
+        assert_eq!(
+            job(&pool, claim.id).await.chosen_infohash.as_deref(),
+            Some(HASH_B)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_done_report_marks_the_request_added_once_as_the_worker() {
+        let pool = test_pool().await;
+        let claim = claimed(&pool, 1, 1000).await;
+        let request_id = request_of(&pool, claim.id).await;
+        let body = Report {
+            chosen_infohash: Some(HASH_A),
+            rd_torrent_id: Some("RD1"),
+            ..Report::default()
+        };
+
+        assert_eq!(
+            report(&pool, &claim, ReportState::Done, &body, 1100).await,
+            ReportOutcome::Applied {
+                request_status_changed: true
+            }
+        );
+        assert_eq!(request_status(&pool, request_id).await, "added");
+        let row = job(&pool, claim.id).await;
+        assert_eq!(
+            (row.state.as_str(), row.reason),
+            ("done", None),
+            "not rewritten as request_changed"
+        );
+        let events: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT actor, from_status, to_status FROM request_events WHERE kind = 'status'",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            events,
+            vec![(
+                "worker".into(),
+                Some("pending".into()),
+                Some("added".into())
+            )]
+        );
+
+        assert!(matches!(
+            report(&pool, &claim, ReportState::Done, &body, 1200).await,
+            ReportOutcome::Stale { .. }
+        ));
+        assert_eq!(count(&pool, "request_events").await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_done_report_with_already_had_sets_already_had() {
+        let pool = test_pool().await;
+        let claim = claimed(&pool, 1, 1000).await;
+        let request_id = request_of(&pool, claim.id).await;
+        let body = Report {
+            reason: Some("already_had"),
+            ..Report::default()
+        };
+        report(&pool, &claim, ReportState::Done, &body, 1100).await;
+        assert_eq!(request_status(&pool, request_id).await, "already_had");
+        assert_eq!(
+            job(&pool, claim.id).await.reason.as_deref(),
+            Some("already_had")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_done_report_leaves_a_request_that_is_no_longer_pending_alone() {
+        let pool = test_pool().await;
+        let claim = claimed(&pool, 1, 1000).await;
+        let request_id = request_of(&pool, claim.id).await;
+        // Bypasses the close rule, as only a direct write can.
+        sql(
+            &pool,
+            &format!("UPDATE requests SET status = 'refused' WHERE id = {request_id}"),
+        )
+        .await;
+
+        assert_eq!(
+            report(&pool, &claim, ReportState::Done, &Report::default(), 1100).await,
+            ReportOutcome::Applied {
+                request_status_changed: false
+            }
+        );
+        assert_eq!(request_status(&pool, request_id).await, "refused");
+        assert_eq!(job(&pool, claim.id).await.state, "done");
+        assert_eq!(count(&pool, "request_events").await, 0);
+    }
+
+    #[tokio::test]
+    async fn retry_requeues_from_fetching_and_keeps_what_lets_the_next_run_resume() {
+        let pool = test_pool().await;
+        let claim = claimed(&pool, 1, 1000).await;
+        sql(
+            &pool,
+            &format!(
+                "UPDATE fetch_jobs SET chosen_infohash = '{HASH_A}', rd_torrent_id = 'RD1',
+                        candidates = '[1]', reason = 'rd_error', last_error = 'boom', attempts = 2"
+            ),
+        )
+        .await;
+
+        assert_eq!(
+            retry_fetch_job(&pool, claim.id, 1100).await.unwrap(),
+            RetryOutcome::Retried
+        );
+        let row = job(&pool, claim.id).await;
+        assert_eq!(
+            (
+                row.state.as_str(),
+                row.claim_id,
+                row.claimed_at,
+                row.attempts,
+                row.reason,
+                row.last_error
+            ),
+            ("queued", None, None, 0, None, None)
+        );
+        assert_eq!(
+            (
+                row.chosen_infohash.as_deref(),
+                row.rd_torrent_id.as_deref(),
+                row.candidates.as_deref()
+            ),
+            (Some(HASH_A), Some("RD1"), Some("[1]"))
+        );
+
+        // The running worker's next calls match no row.
+        assert!(matches!(
+            progress_fetch_job(&pool, claim.id, &claim.claim_id, &Progress::default(), 1200)
+                .await
+                .unwrap(),
+            ProgressOutcome::Stale { rd_torrent_id: Some(id) } if id == "RD1"
+        ));
+        assert!(matches!(
+            report(&pool, &claim, ReportState::Done, &Report::default(), 1200).await,
+            ReportOutcome::Stale { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn retry_is_refused_from_queued_unknown_and_for_requests_without_an_imdb_id() {
+        let pool = test_pool().await;
+        let id = request(&pool, 1, Some("tt1"), false).await;
+        let job_id = job_for(&pool, id, 10).await;
+        assert_eq!(
+            retry_fetch_job(&pool, job_id, 20).await.unwrap(),
+            RetryOutcome::WrongState
+        );
+        assert_eq!(
+            retry_fetch_job(&pool, 999, 20).await.unwrap(),
+            RetryOutcome::NotFound
+        );
+
+        // No IMDb ID: refused whatever the job's reason says, fine once an ID exists.
+        let blind = request(&pool, 2, None, false).await;
+        let blind_job = job_for(&pool, blind, 10).await;
+        assert_eq!(
+            retry_fetch_job(&pool, blind_job, 20).await.unwrap(),
+            RetryOutcome::WrongState
+        );
+        sql(
+            &pool,
+            &format!("UPDATE fetch_jobs SET reason = NULL WHERE id = {blind_job}"),
+        )
+        .await;
+        assert_eq!(
+            retry_fetch_job(&pool, blind_job, 20).await.unwrap(),
+            RetryOutcome::WrongState
+        );
+        sql(
+            &pool,
+            &format!("UPDATE requests SET imdb_id = 'tt2' WHERE id = {blind}"),
+        )
+        .await;
+        assert_eq!(
+            retry_fetch_job(&pool, blind_job, 30).await.unwrap(),
+            RetryOutcome::Retried
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_from_done_needs_a_pending_request() {
+        let pool = test_pool().await;
+        let id = request(&pool, 1, Some("tt1"), false).await;
+        let job_id = job_for(&pool, id, 10).await;
+        sql(
+            &pool,
+            &format!(
+                "UPDATE fetch_jobs SET state = 'done', reason = 'dry_run', picked = 1,
+                        chosen_infohash = '{HASH_A}'"
+            ),
+        )
+        .await;
+        assert_eq!(
+            retry_fetch_job(&pool, job_id, 20).await.unwrap(),
+            RetryOutcome::Retried
+        );
+        let row = job(&pool, job_id).await;
+        assert_eq!(
+            (
+                row.state.as_str(),
+                row.chosen_infohash.as_deref(),
+                row.picked
+            ),
+            ("queued", Some(HASH_A), true)
+        );
+
+        sql(&pool, "UPDATE fetch_jobs SET state = 'done'").await;
+        for status in ["added", "refused"] {
+            sql(&pool, &format!("UPDATE requests SET status = '{status}'")).await;
+            assert_eq!(
+                retry_fetch_job(&pool, job_id, 30).await.unwrap(),
+                RetryOutcome::WrongState,
+                "{status}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_ends_open_jobs_as_failed_and_cancelled() {
+        let pool = test_pool().await;
+        let claim = claimed(&pool, 1, 1000).await;
+        assert_eq!(
+            cancel_fetch_job(&pool, claim.id, 1100).await.unwrap(),
+            CancelJobOutcome::Cancelled
+        );
+        let row = job(&pool, claim.id).await;
+        assert_eq!(
+            (row.state.as_str(), row.reason.as_deref(), row.claim_id),
+            ("failed", Some("cancelled"), None)
+        );
+        assert!(matches!(
+            progress_fetch_job(&pool, claim.id, &claim.claim_id, &Progress::default(), 1200)
+                .await
+                .unwrap(),
+            ProgressOutcome::Stale { .. }
+        ));
+
+        // Terminal: cancelling again is refused, and so is cancelling a finished job.
+        assert_eq!(
+            cancel_fetch_job(&pool, claim.id, 1300).await.unwrap(),
+            CancelJobOutcome::WrongState
+        );
+        sql(&pool, "UPDATE fetch_jobs SET state = 'done'").await;
+        assert_eq!(
+            cancel_fetch_job(&pool, claim.id, 1300).await.unwrap(),
+            CancelJobOutcome::WrongState
+        );
+        assert_eq!(
+            cancel_fetch_job(&pool, 999, 1300).await.unwrap(),
+            CancelJobOutcome::NotFound
+        );
+
+        // Retry is the way back.
+        sql(&pool, "UPDATE fetch_jobs SET state = 'failed'").await;
+        assert_eq!(
+            retry_fetch_job(&pool, claim.id, 1400).await.unwrap(),
+            RetryOutcome::Retried
+        );
+    }
+
+    #[tokio::test]
+    async fn a_request_leaving_pending_closes_its_open_job() {
+        for open in ["queued", "needs_pick", "fetching"] {
+            let pool = test_pool().await;
+            let id = request(&pool, 1, Some("tt1"), false).await;
+            let job_id = job_for(&pool, id, 10).await;
+            let claim = claim_fetch_job(&pool, true, 20).await.unwrap().unwrap();
+            match open {
+                "queued" => {
+                    sql(
+                        &pool,
+                        "UPDATE fetch_jobs SET state = 'queued', claim_id = NULL",
+                    )
+                    .await
+                }
+                "needs_pick" => {
+                    sql(
+                        &pool,
+                        "UPDATE fetch_jobs SET state = 'needs_pick', claim_id = NULL",
+                    )
+                    .await
+                }
+                _ => {}
+            }
+
+            let change = set_request_status(&pool, id, "refused", Some("no"), 30)
+                .await
+                .unwrap();
+            assert!(matches!(change, StatusChange::Changed { .. }));
+            let row = job(&pool, job_id).await;
+            assert_eq!(
+                (row.state.as_str(), row.reason.as_deref(), row.claim_id),
+                ("done", Some("request_changed"), None),
+                "{open}"
+            );
+
+            // The worker that still held it is told at its next call.
+            assert!(matches!(
+                progress_fetch_job(&pool, job_id, &claim.claim_id, &Progress::default(), 40)
+                    .await
+                    .unwrap(),
+                ProgressOutcome::Stale { .. }
+            ));
+            assert!(matches!(
+                report(&pool, &claim, ReportState::Done, &Report::default(), 40).await,
+                ReportOutcome::Stale { .. }
+            ));
+            assert_eq!(request_status(&pool, id).await, "refused");
+
+            // Reopened: retry re-runs the job, and creating another one is refused.
+            set_request_status(&pool, id, "pending", None, 50)
+                .await
+                .unwrap();
+            assert!(matches!(
+                create_fetch_job(&pool, id, 60).await.unwrap(),
+                CreateJob::Exists
+            ));
+            assert_eq!(
+                retry_fetch_job(&pool, job_id, 60).await.unwrap(),
+                RetryOutcome::Retried
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_admin_status_function_still_logs_admin_and_reopening_closes_nothing() {
+        let pool = test_pool().await;
+        let id = request(&pool, 1, Some("tt1"), false).await;
+        let job_id = job_for(&pool, id, 10).await;
+        assert!(matches!(
+            set_request_status(&pool, id, "pending", None, 20)
+                .await
+                .unwrap(),
+            StatusChange::Unchanged
+        ));
+        assert_eq!(job(&pool, job_id).await.state, "queued");
+        assert!(matches!(
+            set_request_status(&pool, 999, "added", None, 20)
+                .await
+                .unwrap(),
+            StatusChange::NotFound
+        ));
+        set_request_status(&pool, id, "added", None, 30)
+            .await
+            .unwrap();
+        let actor: String =
+            sqlx::query_scalar("SELECT actor FROM request_events WHERE kind = 'status'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(actor, "admin");
+    }
+
+    #[tokio::test]
+    async fn settings_default_off_then_database_then_environment() {
+        let pool = test_pool().await;
+        let mut cfg = test_config();
+        assert_eq!(
+            worker_settings(&pool, &cfg).await.unwrap(),
+            WorkerSettings {
+                enabled: false,
+                mode: WorkerMode::DryRun
+            }
+        );
+        assert_eq!(get_setting(&pool, "nope").await.unwrap(), None);
+
+        set_setting(&pool, SETTING_WORKER_ENABLED, "1")
+            .await
+            .unwrap();
+        set_setting(&pool, SETTING_WORKER_MODE, WorkerMode::Assisted.as_str())
+            .await
+            .unwrap();
+        assert_eq!(
+            worker_settings(&pool, &cfg).await.unwrap(),
+            WorkerSettings {
+                enabled: true,
+                mode: WorkerMode::Assisted
+            }
+        );
+        // An upsert replaces.
+        set_setting(&pool, SETTING_WORKER_MODE, "auto")
+            .await
+            .unwrap();
+        assert_eq!(
+            worker_settings(&pool, &cfg).await.unwrap().mode,
+            WorkerMode::Auto
+        );
+
+        cfg.worker_enabled = Some(false);
+        cfg.worker_mode = Some(WorkerMode::DryRun);
+        assert_eq!(
+            worker_settings(&pool, &cfg).await.unwrap(),
+            WorkerSettings {
+                enabled: false,
+                mode: WorkerMode::DryRun
+            }
+        );
+
+        // Garbage in the database counts as unset.
+        cfg.worker_mode = None;
+        set_setting(&pool, SETTING_WORKER_MODE, "bogus")
+            .await
+            .unwrap();
+        assert_eq!(
+            worker_settings(&pool, &cfg).await.unwrap().mode,
+            WorkerMode::DryRun
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_a_request_takes_its_job_and_blocked_hashes_along() {
+        for admin_delete in [true, false] {
+            let pool = test_pool().await;
+            let id = request(&pool, 1, Some("tt1"), false).await;
+            let ann: i64 = sqlx::query_scalar("SELECT id FROM members WHERE name = 'Ann'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            job_for(&pool, id, 10).await;
+            sql(
+                &pool,
+                &format!("INSERT INTO blocked_hashes VALUES ({id}, '{HASH_A}', 1)"),
+            )
+            .await;
+            if admin_delete {
+                assert!(delete_request(&pool, id).await.unwrap());
+            } else {
+                assert!(matches!(
+                    cancel_request(&pool, id, ann).await.unwrap(),
+                    CancelOutcome::Cancelled
+                ));
+            }
+            for table in ["fetch_jobs", "blocked_hashes"] {
+                assert_eq!(
+                    count(&pool, table).await,
+                    0,
+                    "{table} after admin_delete={admin_delete}"
+                );
+            }
+        }
+    }
+
+    async fn event_actors(pool: &SqlitePool, kind: &str) -> Vec<String> {
+        sqlx::query_scalar("SELECT actor FROM request_events WHERE kind = ? ORDER BY id")
+            .bind(kind)
+            .fetch_all(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn renaming_or_deleting_a_member_leaves_status_events_alone() {
+        let pool = test_pool().await;
+        let id = request(&pool, 1, Some("tt1"), false).await;
+        for kind in ["status", "duplicate"] {
+            for name in ["admin", "worker"] {
+                sql(
+                    &pool,
+                    &format!(
+                        "INSERT INTO request_events (request_id, kind, actor, created_at)
+                         VALUES ({id}, '{kind}', '{name}', 1)"
+                    ),
+                )
+                .await;
+            }
+        }
+        let admin = member(&pool, "admin").await;
+        let worker = member(&pool, "worker").await;
+
+        for (member_id, new_name) in [(admin, "Adam"), (worker, "Wendy")] {
+            let update = MemberUpdate {
+                name: Some(new_name),
+                daily_limit: None,
+            };
+            update_member(&pool, member_id, &update).await.unwrap();
+        }
+        assert_eq!(event_actors(&pool, "status").await, ["admin", "worker"]);
+        assert_eq!(event_actors(&pool, "duplicate").await, ["Adam", "Wendy"]);
+
+        for member_id in [admin, worker] {
+            revoke_member(&pool, member_id, 5).await.unwrap();
+            assert!(matches!(
+                delete_member(&pool, member_id).await.unwrap(),
+                MemberDelete::Deleted
+            ));
+        }
+        assert_eq!(event_actors(&pool, "status").await, ["admin", "worker"]);
+        assert_eq!(
+            event_actors(&pool, "duplicate").await,
+            ["Adam (deleted)", "Wendy (deleted)"]
+        );
     }
 }

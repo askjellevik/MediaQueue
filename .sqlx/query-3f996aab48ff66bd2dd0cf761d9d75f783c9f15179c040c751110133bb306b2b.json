@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT state, claim_id, rd_torrent_id FROM fetch_jobs WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "state",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "fetch_jobs",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "name": "claim_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "fetch_jobs",
+            "name": "claim_id"
+          }
+        }
+      },
+      {
+        "name": "rd_torrent_id",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "fetch_jobs",
+            "name": "rd_torrent_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "3f996aab48ff66bd2dd0cf761d9d75f783c9f15179c040c751110133bb306b2b"
+}

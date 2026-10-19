@@ -192,6 +192,10 @@ fn test_config() -> Config {
         cf_access: None,
         ntfy: Default::default(),
         rate_limits: Default::default(),
+        internal_listen: None,
+        internal_token: None,
+        worker_enabled: None,
+        worker_mode: None,
     }
 }
 

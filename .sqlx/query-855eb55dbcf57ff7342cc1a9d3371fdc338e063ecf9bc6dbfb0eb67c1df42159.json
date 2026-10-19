@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE fetch_jobs\n         SET claimed_at = ?1,\n             updated_at = ?1,\n             rd_torrent_id = COALESCE(?2, rd_torrent_id),\n             chosen_infohash = COALESCE(?3, chosen_infohash),\n             uncached_adds = uncached_adds + ?4\n         WHERE id = ?5 AND state = 'fetching' AND claim_id = ?6\n           AND NOT (picked = 1 AND ?3 IS NOT NULL AND ?3 IS NOT chosen_infohash)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "855eb55dbcf57ff7342cc1a9d3371fdc338e063ecf9bc6dbfb0eb67c1df42159"
+}

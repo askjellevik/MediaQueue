@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT value AS \"value!\" FROM settings WHERE key = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "value!",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "settings",
+            "name": "value"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "ca2803b15425b350d45b179a9382af923531d784fb607ec0653249e649c50ca7"
+}

@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT j.state AS \"state!\", r.status AS \"status!\", r.imdb_id\n           FROM fetch_jobs j JOIN requests r ON r.id = j.request_id\n           WHERE j.id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "state!",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "fetch_jobs",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "name": "status!",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "name": "imdb_id",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "imdb_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "dc229429099333c2e8407f877b561c04387dae27d0db5c577ceec323512cdd7f"
+}

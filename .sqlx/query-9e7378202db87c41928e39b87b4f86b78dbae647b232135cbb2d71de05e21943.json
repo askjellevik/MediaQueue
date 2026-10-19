@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE fetch_jobs\n         SET state = 'fetching', claim_id = ?, claimed_at = ?, attempts = attempts + 1,\n             updated_at = ?\n         WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "9e7378202db87c41928e39b87b4f86b78dbae647b232135cbb2d71de05e21943"
+}

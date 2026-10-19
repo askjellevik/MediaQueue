@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT EXISTS (\n             SELECT 1 FROM fetch_jobs\n             WHERE state = 'queued'\n                OR (state = 'fetching' AND COALESCE(claimed_at, 0) < ?)\n           ) AS \"claimable!: bool\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "claimable!: bool",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f3ab4377406a219e368a2fa291cd3a3d2c84540d0c2c2eb9c3f5bc4785ae76ce"
+}
