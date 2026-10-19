@@ -2,4 +2,6 @@
 //! candidates. Nothing in here touches the network or the disk, so every
 //! rule can be tested with plain strings.
 
+pub mod candidate;
 pub mod release;
+pub mod torrentio_text;
