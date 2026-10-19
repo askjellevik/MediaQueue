@@ -10,8 +10,11 @@ pub struct RawCandidate {
     pub name: String,
     /// The video file inside the torrent, when the source knows it.
     pub filename: Option<String>,
-    /// The source listed this as a pack or collection holding other titles.
-    pub pack: bool,
+    /// The torrent holds several files: the source names the torrent and,
+    /// apart from it, the file the stream points at. It is a collection of
+    /// other titles when the torrent's name is not the film's, and a plain
+    /// film with extras when it is.
+    pub multi_file: bool,
     /// The source's own quality label, such as `4k DV | HDR`.
     pub label: Option<String>,
     pub size_bytes: Option<u64>,

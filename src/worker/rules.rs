@@ -136,6 +136,13 @@ pub fn passes_hard_filters(
     }
     let title_tokens = tokenize(&job.title);
 
+    let name_tokens = tokenize(&raw.name);
+    let file_tokens = raw.filename.as_deref().map(tokenize);
+    let name_run = title_run(&name_tokens, &title_tokens);
+    let file_run = file_tokens
+        .as_ref()
+        .and_then(|tokens| title_run(tokens, &title_tokens));
+
     // A pack word that is part of the film's own title ("The Collection")
     // says nothing about the torrent.
     let outside_title = |words: &[&'static str]| {
@@ -143,7 +150,11 @@ pub fn passes_hard_filters(
             .iter()
             .any(|word| !title_tokens.iter().any(|token| token == word))
     };
-    if raw.pack || outside_title(&release.flags.pack_words) {
+    // A torrent with several files is a collection of other titles unless
+    // its own name is the film's: "Film (1994) RM4K (1080p ...)" holding the
+    // film and some extras is a fine candidate, "Great Films 3" is not.
+    let collection = raw.multi_file && name_run.is_none();
+    if collection || outside_title(&release.flags.pack_words) {
         return Err(DropReason::Pack);
     }
     if outside_title(&release.flags.extras_words) {
@@ -156,12 +167,6 @@ pub fn passes_hard_filters(
         return Err(DropReason::CamOrScreener);
     }
 
-    let name_tokens = tokenize(&raw.name);
-    let file_tokens = raw.filename.as_deref().map(tokenize);
-    let name_run = title_run(&name_tokens, &title_tokens);
-    let file_run = file_tokens
-        .as_ref()
-        .and_then(|tokens| title_run(tokens, &title_tokens));
     if !title_tokens.is_empty() && name_run.is_none() && file_run.is_none() {
         return Err(DropReason::TitleMismatch);
     }
@@ -280,7 +285,7 @@ mod tests {
             infohash: "1".repeat(40),
             name: name.to_string(),
             filename: None,
-            pack: false,
+            multi_file: false,
             label: None,
             size_bytes: Some(3 * 1024 * 1024 * 1024),
             seeders: Some(50),
@@ -316,9 +321,8 @@ mod tests {
     fn a_blocked_hash_is_dropped_first() {
         let mut spec = job("Example Movie", Some(1994), true);
         spec.blocked.insert("1".repeat(40));
-        // Even a pack that would be dropped for another reason.
-        let mut candidate = raw(GOOD);
-        candidate.pack = true;
+        // Even a collection that would be dropped for another reason.
+        let candidate = raw("Example Movie Collection 1994 1080p BluRay x264");
         assert_eq!(judge(&candidate, &spec), Err(DropReason::Blocked));
         spec.blocked.clear();
         assert_eq!(judge(&candidate, &spec), Err(DropReason::Pack));
@@ -327,9 +331,6 @@ mod tests {
     #[test]
     fn packs_collections_and_extras_are_dropped() {
         let spec = job("Example Movie", Some(1994), true);
-        let mut listed_as_pack = raw(GOOD);
-        listed_as_pack.pack = true;
-        assert_eq!(judge(&listed_as_pack, &spec), Err(DropReason::Pack));
         assert_eq!(
             judge(
                 &raw("Example Movie Collection 1994 1080p BluRay x264"),
@@ -349,6 +350,32 @@ mod tests {
         let mut inner = raw(GOOD);
         inner.filename = Some("Example Movie 1994 Trilogy 1080p.mkv".to_string());
         assert_eq!(judge(&inner, &spec), Err(DropReason::Pack));
+    }
+
+    #[test]
+    fn a_multi_file_torrent_is_a_collection_unless_its_name_is_the_film() {
+        let spec = job("Example Movie", Some(1994), true);
+        // The torrent's own name has no film in it: a collection.
+        let mut collection = raw("Great Examples 3: MP4 X264 AC3 1080p");
+        collection.multi_file = true;
+        collection.filename = Some("Example Movie (1994) 1080p Surround.mp4".to_string());
+        assert_eq!(judge(&collection, &spec), Err(DropReason::Pack));
+        // The torrent is named for the film and holds more files: fine.
+        let mut film =
+            raw("Example Movie (1994) RM4K (1080p BluRay x265 HEVC 10bit AAC 5.1 GrpTwo)");
+        film.multi_file = true;
+        film.filename =
+            Some("Example Movie (1994) RM4K (1080p BluRay x265 GrpTwo).mkv".to_string());
+        let accepted = judge(&film, &spec).unwrap();
+        assert_eq!(accepted.badge, FreeBadge::Yes);
+        // A single file named for something else is a title mismatch, not a pack.
+        assert_eq!(
+            judge(&raw("Great Examples 3: MP4 X264 AC3 1080p"), &spec),
+            Err(DropReason::TitleMismatch)
+        );
+        // With no title to compare, a multi-file torrent cannot be vouched for.
+        let untitled = job("", Some(1994), true);
+        assert_eq!(judge(&film, &untitled), Err(DropReason::Pack));
     }
 
     #[test]

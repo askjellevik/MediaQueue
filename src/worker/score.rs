@@ -341,7 +341,7 @@ mod tests {
             infohash: hash_digit.to_string().repeat(40),
             name: name.to_string(),
             filename: None,
-            pack: false,
+            multi_file: false,
             label: None,
             size_bytes: Some((size_gib * GIB_BYTES as f64) as u64),
             seeders: Some(seeders),

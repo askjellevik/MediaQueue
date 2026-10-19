@@ -8,11 +8,16 @@
 //! 👤 <seeders> 💾 <size> ⚙️ <provider>
 //! <languages>                    (optional: flags and "Multi Audio")
 //!
-//! <pack name>                    (a pack: the name of the pack,
-//! <file inside the pack>          then the file the stream points at)
+//! <torrent name>                 (several files: the name of the torrent,
+//! <file inside the torrent>       then the file the stream points at)
 //! 👤 ... 💾 ... ⚙️ ...
 //! <languages>
 //! ```
+//!
+//! Two name lines mean a torrent with several files: a collection of other
+//! titles (the first line names the collection) or one film packed with
+//! extras or other dubs (the first line names the film). Telling them apart
+//! is for the caller, who knows the title.
 //!
 //! The `name` field is `Torrentio` and, on a second line, a quality label.
 
@@ -25,7 +30,7 @@ const LONGEST_PROVIDER: usize = 100;
 pub struct TextParts {
     pub name: String,
     pub filename: Option<String>,
-    pub pack: bool,
+    pub multi_file: bool,
     pub label: Option<String>,
     pub seeders: Option<u32>,
     pub size_bytes: Option<u64>,
@@ -40,7 +45,7 @@ impl TextParts {
             infohash,
             name: self.name,
             filename: self.filename,
-            pack: self.pack,
+            multi_file: self.multi_file,
             label: self.label,
             size_bytes: self.size_bytes,
             seeders: self.seeders,
@@ -72,12 +77,12 @@ pub fn parse_stream_text(
         .filter(|line| !line.is_empty())
         .collect();
     let name = (*names.first()?).to_string();
-    let pack = names.len() >= 2;
+    let multi_file = names.len() >= 2;
     let filename = filename
         .map(|f| f.chars().filter(|c| !c.is_control()).collect::<String>())
         .map(|f| f.trim().to_string())
         .filter(|f| !f.is_empty())
-        .or_else(|| pack.then(|| names[1].to_string()));
+        .or_else(|| multi_file.then(|| names[1].to_string()));
 
     let stats = &lines[stats_at];
     let (flag_languages, multi_audio) = languages(&lines[stats_at + 1..]);
@@ -85,7 +90,7 @@ pub fn parse_stream_text(
     Some(TextParts {
         name,
         filename,
-        pack,
+        multi_file,
         label: label(name_field),
         seeders: seeders(stats),
         size_bytes: size_bytes(stats),
@@ -227,7 +232,7 @@ mod tests {
             parts.filename.as_deref(),
             Some("Example.Movie.1994.1080p.BluRay.x264.AAC-GRPONE.mkv")
         );
-        assert!(!parts.pack);
+        assert!(!parts.multi_file);
         assert_eq!(parts.label.as_deref(), Some("1080p"));
         assert_eq!(parts.seeders, Some(120));
         assert_eq!(parts.size_bytes, Some((2.5 * 1024f64.powi(3)) as u64));
@@ -248,14 +253,14 @@ mod tests {
     }
 
     #[test]
-    fn a_pack_has_two_name_lines_and_the_inner_file_is_the_filename() {
+    fn two_name_lines_mean_several_files_and_the_inner_file_is_the_filename() {
         let parts = parse_stream_text(
             "Torrentio\n1080p",
             "Example Writer Pack (1985 - 2003)\nExample Movie (1994) 1080p.mkv\n👤 9 💾 1.09 GB ⚙️ ExampleSite\n🇬🇧",
             None,
         )
         .unwrap();
-        assert!(parts.pack);
+        assert!(parts.multi_file);
         assert_eq!(parts.name, "Example Writer Pack (1985 - 2003)");
         assert_eq!(
             parts.filename.as_deref(),
