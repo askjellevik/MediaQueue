@@ -4,4 +4,6 @@
 
 pub mod candidate;
 pub mod release;
+pub mod rules;
+pub mod settings;
 pub mod torrentio_text;
