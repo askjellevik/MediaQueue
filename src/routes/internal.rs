@@ -52,6 +52,7 @@ const REASONS: &[&str] = &[
     "timeout",
     "rate_limited",
     "no_candidates",
+    "source_unreachable",
 ];
 
 fn ok() -> Json<Value> {
@@ -427,6 +428,10 @@ mod tests {
     #[test]
     fn reasons_come_from_the_fixed_list() {
         assert_eq!(clean_reason(Some("dry_run")).unwrap(), Some("dry_run"));
+        assert_eq!(
+            clean_reason(Some("source_unreachable")).unwrap(),
+            Some("source_unreachable")
+        );
         assert!(clean_reason(Some("cancelled")).is_err());
         assert!(clean_reason(Some("anything")).is_err());
     }
