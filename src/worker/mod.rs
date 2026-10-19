@@ -5,6 +5,7 @@
 
 pub mod candidate;
 pub mod config;
+pub mod portal;
 pub mod release;
 pub mod rules;
 pub mod score;
