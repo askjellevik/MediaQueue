@@ -206,6 +206,9 @@ struct ClaimView {
     year: Option<i64>,
     infuse_pro: bool,
     chosen_infohash: Option<String>,
+    /// A human chose `chosen_infohash`: use exactly that hash, never fall
+    /// back to another candidate.
+    picked: bool,
     rd_torrent_id: Option<String>,
     blocked_hashes: Vec<String>,
 }
@@ -217,8 +220,14 @@ pub async fn post_claim(
     State(state): State<AppState>,
 ) -> Result<Response, AppError> {
     let settings = db::worker_settings(&state.pool, &state.config).await?;
-    let Some(job) = db::claim_fetch_job(&state.pool, settings.enabled, admin::now(&state)).await?
-    else {
+    let claim =
+        db::claim_fetch_job_with_changes(&state.pool, settings.enabled, admin::now(&state)).await?;
+    // A tick for what the admin can see change: jobs the tidy-up moved, and a
+    // job handed out. An idle poll changes nothing and ticks nothing.
+    if claim.tidied || claim.job.is_some() {
+        state.events.publish(Tick::Admin);
+    }
+    let Some(job) = claim.job else {
         return Ok(StatusCode::NO_CONTENT.into_response());
     };
     tracing::info!(job_id = job.id, state = "fetching", "fetch job claimed");
@@ -232,6 +241,7 @@ pub async fn post_claim(
         year: job.year,
         infuse_pro: job.infuse_pro,
         chosen_infohash: job.chosen_infohash,
+        picked: job.picked,
         rd_torrent_id: job.rd_torrent_id,
         blocked_hashes: job.blocked_hashes,
     })
@@ -361,6 +371,7 @@ pub async fn post_report(
         }
         ReportOutcome::Stale { rd_torrent_id } => Err(AppError::StaleClaim { rd_torrent_id }),
         ReportOutcome::PickedLocked => Err(AppError::PickedLocked),
+        ReportOutcome::MissingTorrent => Err(AppError::BadRequest),
         ReportOutcome::NotFound => Err(AppError::NotFound),
     }
 }

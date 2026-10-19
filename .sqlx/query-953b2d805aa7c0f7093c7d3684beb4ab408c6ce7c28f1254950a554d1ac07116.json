@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT j.id AS \"id!\", j.request_id AS \"request_id!\",\n                  r.tmdb_id AS \"tmdb_id!\", r.media_type AS \"media_type!\",\n                  r.imdb_id AS \"imdb_id!\", r.title AS \"title!\", r.year,\n                  j.infuse_pro AS \"infuse_pro!: bool\", j.chosen_infohash, j.rd_torrent_id\n           FROM fetch_jobs j JOIN requests r ON r.id = j.request_id\n           WHERE j.state = 'queued' AND r.status = 'pending' AND r.imdb_id IS NOT NULL\n           ORDER BY j.created_at, j.id\n           LIMIT 1",
+  "query": "SELECT j.id AS \"id!\", j.request_id AS \"request_id!\",\n                  r.tmdb_id AS \"tmdb_id!\", r.media_type AS \"media_type!\",\n                  r.imdb_id AS \"imdb_id!\", r.title AS \"title!\", r.year,\n                  j.infuse_pro AS \"infuse_pro!: bool\", j.chosen_infohash,\n                  j.picked AS \"picked!: bool\", j.rd_torrent_id\n           FROM fetch_jobs j JOIN requests r ON r.id = j.request_id\n           WHERE j.state = 'queued' AND r.status = 'pending' AND r.imdb_id IS NOT NULL\n           ORDER BY j.created_at, j.id\n           LIMIT 1",
   "describe": {
     "columns": [
       {
@@ -103,8 +103,19 @@
         }
       },
       {
-        "name": "rd_torrent_id",
+        "name": "picked!: bool",
         "ordinal": 9,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "fetch_jobs",
+            "name": "picked"
+          }
+        }
+      },
+      {
+        "name": "rd_torrent_id",
+        "ordinal": 10,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -127,8 +138,9 @@
       true,
       false,
       true,
+      false,
       true
     ]
   },
-  "hash": "9d5a55a1a182a715a92257afea1c89de9972db8b337c31f38d7dbbcc5cc075f1"
+  "hash": "953b2d805aa7c0f7093c7d3684beb4ab408c6ce7c28f1254950a554d1ac07116"
 }

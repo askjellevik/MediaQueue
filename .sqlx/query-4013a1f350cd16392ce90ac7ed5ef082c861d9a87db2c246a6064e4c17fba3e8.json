@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT rd_torrent_id FROM fetch_jobs WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "rd_torrent_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "fetch_jobs",
+            "name": "rd_torrent_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "4013a1f350cd16392ce90ac7ed5ef082c861d9a87db2c246a6064e4c17fba3e8"
+}

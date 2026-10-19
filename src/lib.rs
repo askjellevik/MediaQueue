@@ -183,7 +183,7 @@ pub fn internal_router(state: AppState) -> Router {
         .layer(middleware::timeout_layer())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
-            middleware::request_log,
+            middleware::internal_request_log,
         ))
         .layer(middleware::internal_concurrency_limit_layer())
         .with_state(state)

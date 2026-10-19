@@ -337,7 +337,22 @@ async fn internal_paths_do_not_exist_on_the_public_port() {
 #[tokio::test]
 async fn the_internal_listener_has_no_csrf_guard_and_no_browser_headers() {
     let app = common::spawn_app().await;
-    // No Origin, no X-Requested-With: a service is not a browser.
+    // No Origin, no X-Requested-With: a service is not a browser. A write
+    // is what the guard would refuse, so use one.
+    let response = worker(&app, "POST", "/internal/jobs/claim", None).await;
+    assert_eq!(response.status, 204, "{}", response.body);
+    // The same write on the public port, without the headers, is refused.
+    let admin = login_admin_cookie(&app).await;
+    let refused = app
+        .request(
+            "PUT",
+            "/api/admin/worker",
+            &[("Cookie", &admin), ("Content-Type", "application/json")],
+            Some(r#"{"enabled":true}"#),
+        )
+        .await;
+    assert_eq!(refused.status, 403, "{}", refused.body);
+
     let response = worker(&app, "GET", "/internal/settings", None).await;
     assert_eq!(response.status, 200, "{}", response.body);
     assert_eq!(response.header("cache-control"), Some("no-store"));
@@ -347,8 +362,17 @@ async fn the_internal_listener_has_no_csrf_guard_and_no_browser_headers() {
 
 #[tokio::test]
 async fn the_internal_listener_is_not_per_ip_rate_limited() {
-    let app = common::spawn_app().await;
-    for _ in 0..40 {
+    // A low limit, so the test can fail: the public port must hit it...
+    let app = common::spawn_app_with(|config| config.rate_limits.api_per_minute = 5).await;
+    let mut limited = 0;
+    for _ in 0..20 {
+        if app.request("GET", "/api/me", &[], None).await.status == 429 {
+            limited += 1;
+        }
+    }
+    assert!(limited > 0, "the public limiter is not live in this test");
+    // ...and the internal port, from the same address, must not.
+    for _ in 0..20 {
         let response = worker(&app, "GET", "/internal/settings", None).await;
         assert_eq!(response.status, 200);
     }
@@ -562,10 +586,12 @@ async fn claim_hands_out_only_the_allowed_fields_and_only_while_enabled() {
             "year",
             "infuse_pro",
             "chosen_infohash",
+            "picked",
             "rd_torrent_id",
             "blocked_hashes",
         ])
     );
+    assert_eq!(body["picked"], false);
     assert_eq!(body["id"], job);
     assert_eq!(body["tmdb_id"], 7);
     assert_eq!(body["imdb_id"], "tt0000007");
@@ -615,6 +641,166 @@ async fn a_stale_job_is_claimable_again_with_its_torrent_and_a_new_claim() {
     .await;
     let body = assert_error(&stale, 409, "stale_claim");
     assert_eq!(stored_torrent(&body), Some("RD1"));
+}
+
+#[tokio::test]
+async fn a_claim_says_whether_the_hash_is_a_human_pick() {
+    let app = common::spawn_app().await;
+    let run = running(&app).await;
+    sql(
+        &app.pool,
+        &format!(
+            "UPDATE fetch_jobs SET picked = 1, chosen_infohash = '{HASH_A}', state = 'queued',
+                    claim_id = NULL WHERE id = {}",
+            run.job_id
+        ),
+    )
+    .await;
+    let claim = json_of(&worker(&app, "POST", "/internal/jobs/claim", None).await);
+    assert_eq!(claim["picked"], true);
+    assert_eq!(claim["chosen_infohash"], HASH_A);
+
+    // A hash the worker saved itself is not a pick, even when it comes back
+    // with a reclaim.
+    let other = seed_request(&app, 2, "pending", Some("tt0000002"), false).await;
+    let other_job = create_job(&app, &run.admin, other).await;
+    let claim = json_of(&worker(&app, "POST", "/internal/jobs/claim", None).await);
+    assert_eq!(claim["id"], other_job);
+    let response = worker(
+        &app,
+        "POST",
+        &format!("/internal/jobs/{other_job}/progress"),
+        Some(&json!({"claim_id": claim["claim_id"], "chosen_infohash": HASH_B})),
+    )
+    .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    // Put the first job aside, so the reclaim below is the second one's.
+    sql(
+        &app.pool,
+        &format!(
+            "UPDATE fetch_jobs SET state = 'failed', claim_id = NULL WHERE id = {}",
+            run.job_id
+        ),
+    )
+    .await;
+    app.clock.advance(46 * MINUTE);
+    let claim = json_of(&worker(&app, "POST", "/internal/jobs/claim", None).await);
+    assert_eq!(claim["id"], other_job);
+    assert_eq!(claim["picked"], false);
+    assert_eq!(claim["chosen_infohash"], HASH_B);
+}
+
+#[tokio::test]
+async fn a_done_report_needs_a_torrent_unless_the_title_was_already_had() {
+    let app = common::spawn_app().await;
+    let run = running(&app).await;
+    let report = format!("/internal/jobs/{}/report", run.job_id);
+    let progress = format!("/internal/jobs/{}/progress", run.job_id);
+
+    // Nothing stored, nothing given: 400, and the run is left alone.
+    let response = worker(
+        &app,
+        "POST",
+        &report,
+        Some(&json!({"claim_id": run.claim_id, "state": "done"})),
+    )
+    .await;
+    assert_error(&response, 400, "bad_request");
+    let row = job_row(&app.pool, run.job_id).await;
+    assert_eq!(row.state, "fetching");
+    assert_eq!(row.claim_id.as_deref(), Some(run.claim_id.as_str()));
+    assert_eq!(request_status(&app.pool, run.request_id).await, "pending");
+
+    // A stale claim is still 409, not 400.
+    let response = worker(
+        &app,
+        "POST",
+        &report,
+        Some(&json!({"claim_id": "old", "state": "done"})),
+    )
+    .await;
+    assert_error(&response, 409, "stale_claim");
+
+    // A torrent stored by a progress call is enough.
+    worker(
+        &app,
+        "POST",
+        &progress,
+        Some(&json!({"claim_id": run.claim_id, "rd_torrent_id": "RD1"})),
+    )
+    .await;
+    let response = worker(
+        &app,
+        "POST",
+        &report,
+        Some(&json!({"claim_id": run.claim_id, "state": "done"})),
+    )
+    .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    assert_eq!(request_status(&app.pool, run.request_id).await, "added");
+
+    // already_had needs none, and sets that status.
+    let other = seed_request(&app, 2, "pending", Some("tt0000002"), false).await;
+    let other_job = create_job(&app, &run.admin, other).await;
+    let claim = json_of(&worker(&app, "POST", "/internal/jobs/claim", None).await);
+    let response = worker(
+        &app,
+        "POST",
+        &format!("/internal/jobs/{other_job}/report"),
+        Some(&json!({"claim_id": claim["claim_id"], "state": "done", "reason": "already_had"})),
+    )
+    .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    assert_eq!(request_status(&app.pool, other).await, "already_had");
+
+    // failed and needs_pick never need one.
+    let third = seed_request(&app, 3, "pending", Some("tt0000003"), false).await;
+    let third_job = create_job(&app, &run.admin, third).await;
+    let claim = json_of(&worker(&app, "POST", "/internal/jobs/claim", None).await);
+    let response = worker(
+        &app,
+        "POST",
+        &format!("/internal/jobs/{third_job}/report"),
+        Some(&json!({"claim_id": claim["claim_id"], "state": "needs_pick", "reason": "dry_run"})),
+    )
+    .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+}
+
+#[tokio::test]
+async fn a_rejected_bare_done_leaves_the_claim_usable_for_a_corrected_report() {
+    let app = common::spawn_app().await;
+    let run = running(&app).await;
+    let report = format!("/internal/jobs/{}/report", run.job_id);
+
+    let response = worker(
+        &app,
+        "POST",
+        &report,
+        Some(&json!({"claim_id": run.claim_id, "state": "done"})),
+    )
+    .await;
+    assert_error(&response, 400, "bad_request");
+    let row = job_row(&app.pool, run.job_id).await;
+    assert_eq!(row.state, "fetching");
+    assert_eq!(row.claim_id.as_deref(), Some(run.claim_id.as_str()));
+    assert_eq!(request_status(&app.pool, run.request_id).await, "pending");
+
+    // The same claim, now with the torrent: applied.
+    let response = worker(
+        &app,
+        "POST",
+        &report,
+        Some(&json!({"claim_id": run.claim_id, "state": "done", "rd_torrent_id": "RD1"})),
+    )
+    .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    let row = job_row(&app.pool, run.job_id).await;
+    assert_eq!(
+        (row.state.as_str(), row.rd_torrent_id.as_deref()),
+        ("done", Some("RD1"))
+    );
+    assert_eq!(request_status(&app.pool, run.request_id).await, "added");
 }
 
 // ---------------------------------------------------------------------
@@ -966,7 +1152,7 @@ async fn done_leaves_a_request_that_is_no_longer_pending_alone() {
         &app,
         "POST",
         &format!("/internal/jobs/{}/report", run.job_id),
-        Some(&json!({"claim_id": run.claim_id, "state": "done"})),
+        Some(&json!({"claim_id": run.claim_id, "state": "done", "rd_torrent_id": "RD1"})),
     )
     .await;
     assert_eq!(response.status, 200, "{}", response.body);
@@ -1384,11 +1570,84 @@ async fn a_done_report_that_adds_the_request_ticks_the_members_too() {
         &app,
         "POST",
         &format!("/internal/jobs/{}/report", run.job_id),
-        Some(&json!({"claim_id": run.claim_id, "state": "done"})),
+        Some(&json!({"claim_id": run.claim_id, "state": "done", "rd_torrent_id": "RD1"})),
     )
     .await;
     assert_eq!(response.status, 200);
     assert!(members.saw("event: tick", SOON).await, "no members tick");
+}
+
+#[tokio::test]
+async fn claims_tick_the_admin_only_when_something_changed() {
+    let app = common::spawn_app().await;
+    let admin = login_admin_cookie(&app).await;
+    enable_worker(&app, &admin).await;
+    let mut admins = EventStream::open(app.addr, "/api/admin/events", Some(&admin)).await;
+
+    // Idle polls change nothing and tick nothing.
+    for _ in 0..3 {
+        let response = worker(&app, "POST", "/internal/jobs/claim", None).await;
+        assert_eq!(response.status, 204);
+    }
+    assert!(
+        !admins.saw("event: tick", QUIET).await,
+        "an idle poll ticked"
+    );
+
+    // A job handed out ticks once the job exists (creating it ticks too).
+    let request = seed_request(&app, 1, "pending", Some("tt0000001"), false).await;
+    let job = create_job(&app, &admin, request).await;
+    assert!(admins.saw("event: tick", SOON).await, "no tick for the job");
+    assert!(!admins.saw("event: tick", QUIET).await);
+    let response = worker(&app, "POST", "/internal/jobs/claim", None).await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    assert!(
+        admins.saw("event: tick", SOON).await,
+        "no tick for the claim"
+    );
+    assert!(!admins.saw("event: tick", QUIET).await);
+
+    // The tidy-up alone ticks too: an expired job out of attempts fails,
+    // and nothing is handed out.
+    sql(&app.pool, "UPDATE fetch_jobs SET max_attempts = 1").await;
+    app.clock.advance(46 * MINUTE);
+    let response = worker(&app, "POST", "/internal/jobs/claim", None).await;
+    assert_eq!(response.status, 204);
+    assert!(
+        admins.saw("event: tick", SOON).await,
+        "no tick for max_attempts"
+    );
+    let row = job_row(&app.pool, job).await;
+    assert_eq!(
+        (row.state.as_str(), row.reason.as_deref()),
+        ("failed", Some("max_attempts"))
+    );
+    // The next poll is idle again.
+    let response = worker(&app, "POST", "/internal/jobs/claim", None).await;
+    assert_eq!(response.status, 204);
+    assert!(!admins.saw("event: tick", QUIET).await);
+
+    // A queued job whose request changed behind the portal's back is closed
+    // by the tidy-up, with a tick and no claim.
+    let other = seed_request(&app, 2, "pending", Some("tt0000002"), false).await;
+    let other_job = create_job(&app, &admin, other).await;
+    assert!(admins.saw("event: tick", SOON).await);
+    sql(
+        &app.pool,
+        &format!("UPDATE requests SET status = 'refused' WHERE id = {other}"),
+    )
+    .await;
+    let response = worker(&app, "POST", "/internal/jobs/claim", None).await;
+    assert_eq!(response.status, 204);
+    assert!(
+        admins.saw("event: tick", SOON).await,
+        "no tick for request_changed"
+    );
+    let row = job_row(&app.pool, other_job).await;
+    assert_eq!(
+        (row.state.as_str(), row.reason.as_deref()),
+        ("done", Some("request_changed"))
+    );
 }
 
 // ---------------------------------------------------------------------

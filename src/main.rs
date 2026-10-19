@@ -184,8 +184,13 @@ async fn stopped(mut stop: tokio::sync::watch::Receiver<bool>) {
 /// never finish on their own, and graceful shutdown would wait for them
 /// forever) and tells every listener to stop.
 async fn shutdown_signal(events: mediaqueue::events::Hub, stop: tokio::sync::watch::Sender<bool>) {
+    // A handler that fails to install must wait forever, not resolve: a
+    // resolved branch would count as a signal and stop the server at startup.
     let ctrl_c = async {
-        let _ = tokio::signal::ctrl_c().await;
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            tracing::error!(error = %e, "failed to install the ctrl-c handler");
+            std::future::pending::<()>().await;
+        }
     };
 
     let terminate = async {
@@ -195,6 +200,7 @@ async fn shutdown_signal(events: mediaqueue::events::Hub, stop: tokio::sync::wat
             }
             Err(e) => {
                 tracing::error!(error = %e, "failed to install SIGTERM handler");
+                std::future::pending::<()>().await;
             }
         }
     };

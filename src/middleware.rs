@@ -151,17 +151,52 @@ pub async fn request_log(ClientIp(ip): ClientIp, req: Request, next: Next) -> Re
     let started = std::time::Instant::now();
     let response = next.run(req).await;
     if path != "/healthz" {
-        tracing::info!(
-            target: "mediaqueue::request",
-            %ip,
-            %method,
-            %path,
-            status = response.status().as_u16(),
-            ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-            "request"
-        );
+        log_request(false, ip, &method, &path, response.status(), started);
     }
     response
+}
+
+/// Whether an internal call is the worker's routine polling: a successful
+/// progress or settings call, or a claim with nothing to hand out. Those
+/// repeat every few seconds and would fill the log (and the SD card); they
+/// log at `debug`. Everything else, failures and reports included, stays at
+/// `info`.
+fn is_routine_internal_call(path: &str, status: StatusCode) -> bool {
+    if !status.is_success() {
+        return false;
+    }
+    path == "/internal/settings"
+        || (path.starts_with("/internal/jobs/") && path.ends_with("/progress"))
+        || (path == "/internal/jobs/claim" && status == StatusCode::NO_CONTENT)
+}
+
+/// [`request_log`] for the internal listener, with the routine polling
+/// calls demoted to `debug`.
+pub async fn internal_request_log(ClientIp(ip): ClientIp, req: Request, next: Next) -> Response {
+    let method = req.method().clone();
+    let path = req.uri().path().to_string();
+    let started = std::time::Instant::now();
+    let response = next.run(req).await;
+    let routine = is_routine_internal_call(&path, response.status());
+    log_request(routine, ip, &method, &path, response.status(), started);
+    response
+}
+
+fn log_request(
+    debug: bool,
+    ip: std::net::IpAddr,
+    method: &axum::http::Method,
+    path: &str,
+    status: StatusCode,
+    started: std::time::Instant,
+) {
+    let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let status = status.as_u16();
+    if debug {
+        tracing::debug!(target: "mediaqueue::request", %ip, %method, %path, status, ms, "request");
+    } else {
+        tracing::info!(target: "mediaqueue::request", %ip, %method, %path, status, ms, "request");
+    }
 }
 
 pub fn body_limit_layer() -> RequestBodyLimitLayer {
@@ -212,6 +247,32 @@ pub fn catch_panic_layer() -> CatchPanicLayer<fn(Box<dyn Any + Send + 'static>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_successful_polling_calls_are_routine() {
+        let ok = StatusCode::OK;
+        let none = StatusCode::NO_CONTENT;
+        assert!(is_routine_internal_call("/internal/settings", ok));
+        assert!(is_routine_internal_call("/internal/jobs/7/progress", ok));
+        assert!(is_routine_internal_call("/internal/jobs/claim", none));
+        // A claim that hands out a job, and every report, stay visible.
+        assert!(!is_routine_internal_call("/internal/jobs/claim", ok));
+        assert!(!is_routine_internal_call("/internal/jobs/7/report", ok));
+        // So does anything that went wrong.
+        for status in [
+            StatusCode::UNAUTHORIZED,
+            StatusCode::CONFLICT,
+            StatusCode::BAD_REQUEST,
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ] {
+            assert!(!is_routine_internal_call("/internal/settings", status));
+            assert!(!is_routine_internal_call(
+                "/internal/jobs/7/progress",
+                status
+            ));
+            assert!(!is_routine_internal_call("/internal/jobs/claim", status));
+        }
+    }
 
     #[test]
     fn get_and_head_are_not_state_changing() {
