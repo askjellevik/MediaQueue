@@ -23,6 +23,11 @@ use crate::{clientip::ClientIp, error::AppError, state::AppState};
 pub const BODY_LIMIT_BYTES: usize = 16 * 1024;
 pub const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 pub const CONCURRENCY_LIMIT: usize = 64;
+/// The internal listener carries candidate lists, which the public 16 KiB
+/// limit would cut off.
+pub const INTERNAL_BODY_LIMIT_BYTES: usize = 256 * 1024;
+/// One worker polls this listener; a handful of calls at once is plenty.
+pub const INTERNAL_CONCURRENCY_LIMIT: usize = 8;
 
 const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; \
 img-src 'self' https://image.tmdb.org; connect-src 'self'; base-uri 'none'; \
@@ -163,12 +168,20 @@ pub fn body_limit_layer() -> RequestBodyLimitLayer {
     RequestBodyLimitLayer::new(BODY_LIMIT_BYTES)
 }
 
+pub fn internal_body_limit_layer() -> RequestBodyLimitLayer {
+    RequestBodyLimitLayer::new(INTERNAL_BODY_LIMIT_BYTES)
+}
+
 pub fn timeout_layer() -> TimeoutLayer {
     TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, REQUEST_TIMEOUT)
 }
 
 pub fn concurrency_limit_layer() -> ConcurrencyLimitLayer {
     ConcurrencyLimitLayer::new(CONCURRENCY_LIMIT)
+}
+
+pub fn internal_concurrency_limit_layer() -> ConcurrencyLimitLayer {
+    ConcurrencyLimitLayer::new(INTERNAL_CONCURRENCY_LIMIT)
 }
 
 fn panic_message<'a>(err: &'a (dyn Any + Send + 'static)) -> &'a str {

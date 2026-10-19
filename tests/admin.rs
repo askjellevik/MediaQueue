@@ -103,7 +103,7 @@ async fn count(pool: &SqlitePool, sql: &'static str) -> i64 {
 async fn every_admin_route_is_401_anonymous_and_403_for_members() {
     let app = common::spawn_app().await;
     let user = login_new_member(&app, "Alice").await;
-    let routes: [(&str, &str, Option<&str>); 15] = [
+    let routes: [(&str, &str, Option<&str>); 22] = [
         ("POST", "/api/admin/logout", Some("{}")),
         ("GET", "/api/admin/requests", None),
         ("GET", "/api/admin/requests?status=all", None),
@@ -127,6 +127,13 @@ async fn every_admin_route_is_401_anonymous_and_403_for_members() {
         ("POST", "/api/admin/members/1/restore", Some("{}")),
         ("DELETE", "/api/admin/members/1", None),
         ("DELETE", "/api/admin/sessions/1", None),
+        ("POST", "/api/admin/requests/1/fetch", Some("{}")),
+        ("POST", "/api/admin/jobs/1/retry", Some("{}")),
+        ("POST", "/api/admin/jobs/1/cancel", Some("{}")),
+        ("GET", "/api/admin/jobs", None),
+        ("GET", "/api/admin/jobs?state=queued", None),
+        ("GET", "/api/admin/worker", None),
+        ("PUT", "/api/admin/worker", Some(r#"{"enabled":true}"#)),
     ];
     for (method, path, body) in routes {
         let anonymous = call(&app, None, method, path, body).await;

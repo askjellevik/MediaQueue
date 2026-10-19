@@ -9,7 +9,7 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
-use mediaqueue::{auth, build_router, config::Config, db, state::AppState, tasks};
+use mediaqueue::{auth, build_router, config::Config, db, internal_router, state::AppState, tasks};
 use tokio::signal::unix::{SignalKind, signal};
 
 #[derive(Parser)]
@@ -121,22 +121,50 @@ fn warn_if_insecure_origin(origin: &str) {
 async fn serve_async(config: Config) -> anyhow::Result<()> {
     let pool = db::connect(&config).await?;
     let bind_addr = config.bind_addr;
+    let internal_addr = config.internal_listen;
     tasks::spawn_session_cleanup(pool.clone());
     tasks::spawn_daily_backup(pool.clone(), config.database_path.clone());
     let state = AppState::new(pool.clone(), config)?;
     let events = state.events.clone();
     tasks::spawn_rate_limit_maintenance(state.limits.clone());
-    let app = build_router(state);
+    let app = build_router(state.clone());
+    let internal_app = internal_router(state);
 
+    // Bind both before serving either, so a bad or taken address fails
+    // startup instead of leaving half the service up.
     let listener = tokio::net::TcpListener::bind(bind_addr).await?;
+    let internal_listener = match internal_addr {
+        Some(addr) => Some(tokio::net::TcpListener::bind(addr).await?),
+        None => None,
+    };
     tracing::info!(addr = %bind_addr, "listening");
+    if let Some(addr) = internal_addr {
+        tracing::info!(addr = %addr, "listening (internal, worker only)");
+    }
 
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .with_graceful_shutdown(shutdown_signal(events))
-    .await?;
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(shutdown_signal(events, stop_tx));
+
+    let public = async {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .with_graceful_shutdown(stopped(stop_rx.clone()))
+        .await
+    };
+    let internal = async {
+        let Some(listener) = internal_listener else {
+            return Ok(());
+        };
+        axum::serve(
+            listener,
+            internal_app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .with_graceful_shutdown(stopped(stop_rx.clone()))
+        .await
+    };
+    tokio::try_join!(public, internal)?;
 
     tracing::info!("shutting down, checkpointing WAL");
     db::checkpoint(&pool).await?;
@@ -145,7 +173,17 @@ async fn serve_async(config: Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn shutdown_signal(events: mediaqueue::events::Hub) {
+/// Resolves once [`shutdown_signal`] has fired. Each listener waits on its
+/// own receiver.
+async fn stopped(mut stop: tokio::sync::watch::Receiver<bool>) {
+    // An error means the sender is gone, which is also a reason to stop.
+    let _ = stop.wait_for(|stop| *stop).await;
+}
+
+/// Waits for ctrl-c or SIGTERM, then ends the open event streams (they
+/// never finish on their own, and graceful shutdown would wait for them
+/// forever) and tells every listener to stop.
+async fn shutdown_signal(events: mediaqueue::events::Hub, stop: tokio::sync::watch::Sender<bool>) {
     let ctrl_c = async {
         let _ = tokio::signal::ctrl_c().await;
     };
@@ -165,9 +203,8 @@ async fn shutdown_signal(events: mediaqueue::events::Hub) {
         _ = ctrl_c => {},
         _ = terminate => {},
     }
-    // Open event streams never finish on their own; graceful shutdown would
-    // wait for them forever.
     events.shutdown();
+    let _ = stop.send(true);
 }
 
 /// Plain stdlib HTTP GET to the local server's `/healthz`, for use as the

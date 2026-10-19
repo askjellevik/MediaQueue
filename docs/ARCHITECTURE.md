@@ -16,6 +16,9 @@ Defined in `migrations/`; times are unix seconds in UTC.
 | `sessions` | Logged-in devices. `token_hash` is the SHA-256 of the cookie token. `kind` is `user` (with a `member_id`) or `admin`. |
 | `requests` | One row per title and Infuse PRO answer (`UNIQUE (tmdb_id, media_type, infuse_pro)`), so members with and without Infuse PRO get separate requests and the admin can pick a fitting release for each. `status` is `pending`, `added`, `already_had` or `refused`. Also the IMDb ID, title, year, poster path, an optional note of up to 200 characters, an optional `reject_reason` of up to 300 characters (the admin's explanation, kept only while the status is `refused`), and who asked first (`requested_by`, which becomes `NULL` when that member is deleted; `requested_by_name` then keeps their name as text). |
 | `request_events` | History: `submitted`, `duplicate` and `status` events with the actor's name. Events are only ever added, and removed together with their request when the admin deletes it (or a member withdraws it). It is the audit trail, the CSV export source and the source of the request quotas, so deleting a request also frees that day's quota for the people who asked for it. |
+| `fetch_jobs` | One job per request that the admin sends to the worker (`UNIQUE (request_id)`, removed with the request). `state` is `queued`, `fetching`, `needs_pick`, `failed` or `done`. Holds the Infuse PRO answer copied from the request, `claim_id` and `claimed_at` (set on claim, refreshed by progress calls), `attempts` against `max_attempts`, `uncached_adds`, the worker's ranked `candidates` (JSON), `top_infohash` (its own pick), `chosen_infohash` and `picked` (a human chose it; a picked job always has a hash), `rd_torrent_id`, and `reason` and `last_error` for diagnostics. |
+| `blocked_hashes` | Infohashes marked "didn't play", per request (removed with the request). The worker gets them with a claim and skips them. |
+| `settings` | Small key/value table for the worker kill switch (`worker_enabled`) and mode (`worker_mode`); `WORKER_ENABLED` and `WORKER_MODE` in the environment override it. |
 
 A second person asking for a title that already exists with the same Infuse
 PRO answer adds a `duplicate` event instead of a row. The UI is in Norwegian (bokmål), with every string in
@@ -40,8 +43,38 @@ failed). Every `/api` response has `Cache-Control: no-store`.
 | `POST /admin/login`, `POST /admin/logout` | anyone, admin | Admin session. |
 | `GET /admin/requests`, `PATCH` and `DELETE /admin/requests/{id}`, `GET /admin/requests/{id}/events` | admin | Queue with filter and paging; change a status (a `refused` PATCH may carry a `reason`, which the requester sees under "Vis begrunnelse"; `refused` again with a different reason replaces it); delete a request with its history; a request's history. |
 | `GET /admin/counts`, `GET /admin/events`, `GET /admin/export.csv` | admin | Per-status counts; live ticks; CSV of everything. |
+| `POST /admin/requests/{id}/fetch` | admin | Hand a pending request to the worker: creates its job (201; 409 if it has one or is not pending). Without an IMDb ID the job waits in `needs_pick` with reason `no_imdb_id`. |
+| `POST /admin/jobs/{id}/retry`, `POST /admin/jobs/{id}/cancel` | admin | Requeue a job (from `failed`, `needs_pick`, `fetching` or `done`, only while its request is pending and has an IMDb ID); end a `queued`, `fetching` or `needs_pick` job as `failed` with reason `cancelled`. Either one makes a running worker's next call stale. 409 in any other state. |
+| `GET /admin/jobs?state=&limit=&cursor=` | admin | Jobs, newest first, with the request's title, year and type; `candidates` is the stored JSON parsed (`null` if it does not parse). `state` is one of the job states or `all`. Worker-supplied text (`candidates`, `last_error`) must be rendered with `textContent` only. |
+| `GET /admin/worker`, `PUT /admin/worker` | admin | The kill switch and mode (`dry_run`, `assisted`, `auto`), with `enabled_from_env` and `mode_from_env` saying whether the environment pins them. `PUT` takes either or both fields and returns the effective values. |
 | `GET/POST /admin/members`, `PATCH` and `DELETE /admin/members/{id}` (delete only for a revoked member; their requests stay under their name and their events are relabelled `<name> (deleted)`), `POST /admin/members/{id}/rotate`, `POST /admin/members/{id}/revoke`, `POST /admin/members/{id}/restore` (undo a revoke), `DELETE /admin/sessions/{id}` | admin | Manage members and devices. |
 | `GET /healthz` | anyone | Database check, for the container healthcheck. |
+
+
+### Internal API (the worker)
+
+Served on a second listener, `INTERNAL_LISTEN`, which is never published to
+the host or routed through Caddy; it exists only when `INTERNAL_LISTEN` and
+`INTERNAL_TOKEN` are both set. Every route needs `Authorization: Bearer
+<INTERNAL_TOKEN>` and answers JSON in the same error shape as `/api`. There
+is no cookie, CSRF check or per-IP rate limit here. The limits are 10 s per
+request, a 256 KiB body and 8 calls in flight. None of these paths exist on
+the public port (404). Nothing in the user interface uses this API yet.
+
+| Route | Purpose |
+| --- | --- |
+| `POST /internal/jobs/claim` | The oldest queued job (200: `id`, `claim_id`, `tmdb_id`, `imdb_id`, `media_type`, `title`, `year`, `infuse_pro`, `chosen_infohash`, `rd_torrent_id`, `blocked_hashes`), now `fetching`; 204 when there is nothing to do or the kill switch is off. The member's note and name are never included. |
+| `POST /internal/jobs/{id}/progress` | `claim_id` plus any of `rd_torrent_id`, `chosen_infohash`, `uncached_adds` (0 to 5). Saves them and refreshes `claimed_at`, so a long wait is not reclaimed. Nothing is ticked. |
+| `POST /internal/jobs/{id}/report` | `claim_id`, `state` (`needs_pick`, `failed` or `done`) and optionally `candidates` (at most 20 flat objects, 64 KiB), `top_infohash`, `chosen_infohash`, `rd_torrent_id`, `reason` (a fixed list) and `error` (500 characters). `done` marks the request `added` (or `already_had` for that reason) as actor `worker`, only if it is still pending. Ticks the admin, and the members when the request changed. |
+| `GET /internal/settings` | `{ "enabled", "mode" }`, the kill switch and mode. |
+
+Progress and report answer 200 `{ "ok": true }`, or: 404 for an unknown job
+(the worker treats it like a stale claim); 409 `stale_claim` when the job is
+not `fetching` under that `claim_id`, with the `rd_torrent_id` stored on the
+job when there is one (the key is absent otherwise), so the worker keeps
+that torrent and deletes only its own; 400 `picked_locked` when the job was
+picked by a human and the call would change `chosen_infohash`; 400 for
+anything malformed.
 
 Anything else is served from the embedded `web/` directory.
 
@@ -110,6 +143,9 @@ ignored.
 | `TMDB_TOKEN` | required | TMDB API read access token. |
 | `NTFY_URL`, `NTFY_TOPIC`, `NTFY_TOKEN` | off | Push notification for new requests. A push that fails for a passing reason (timeout, connection error, 5xx, 429) is tried up to two more times, 2 s and 10 s later. |
 | `CF_ACCESS_ENABLED`, `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD`, `CF_ACCESS_CERTS_URL` | off | Cloudflare Access check (needs the `cf-access` build feature). |
+| `INTERNAL_LISTEN`, `INTERNAL_TOKEN` | off | Address of the worker listener (must differ from `BIND_ADDR`) and its bearer token, at least 32 bytes. Both or neither: a token without an address is a startup error. |
+| `WORKER_ENABLED`, `WORKER_MODE` | unset | Pin the kill switch (`true` or `false`) and the mode (`dry_run`, `assisted`, `auto`) so the admin toggle cannot change them. |
+| `RD_TOKEN`, `RD_TOKEN_FILE` | must be unset | The portal refuses to start if either is set: the Real-Debrid token belongs to the worker service only. |
 | `TRUSTED_PROXY_CIDRS` | loopback and `172.16.0.0/12` | Proxies trusted to send `X-Real-IP`. |
 | `RUST_LOG` | `info` | Log filter. |
 | `BIND_ADDR` | `0.0.0.0:8000` | Listen address (the image sets it). |

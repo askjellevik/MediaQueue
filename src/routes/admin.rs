@@ -83,7 +83,7 @@ pub async fn post_admin_logout(
     Ok(response)
 }
 
-fn now(state: &AppState) -> i64 {
+pub(super) fn now(state: &AppState) -> i64 {
     i64::try_from(state.clock.unix_secs()).unwrap_or(i64::MAX)
 }
 
@@ -751,4 +751,245 @@ mod tests {
         assert!(check_daily_limit(Some(-1)).is_err());
         assert!(check_daily_limit(Some(0)).is_ok());
     }
+}
+
+// ---------------------------------------------------------------------
+// Fetch jobs and the worker switch
+// ---------------------------------------------------------------------
+
+/// `POST /api/admin/requests/{id}/fetch`: hands a pending request to the
+/// worker.
+pub async fn post_fetch(
+    State(state): State<AppState>,
+    _admin: RequireAdmin,
+    AppPath(id): AppPath<i64>,
+) -> Result<impl IntoResponse, AppError> {
+    match db::create_fetch_job(&state.pool, id, now(&state)).await? {
+        db::CreateJob::NotFound => Err(AppError::NotFound),
+        db::CreateJob::Exists => Err(AppError::Conflict("forespørselen har allerede en jobb")),
+        db::CreateJob::NotPending => Err(AppError::Conflict(
+            "bare ventende forespørsler kan hentes automatisk",
+        )),
+        db::CreateJob::Created {
+            id: job_id,
+            state: job_state,
+            reason,
+        } => {
+            tracing::info!(request_id = id, job_id, state = %job_state, "fetch job created");
+            state.events.publish(Tick::Admin);
+            Ok((
+                StatusCode::CREATED,
+                Json(json!({ "job": { "id": job_id, "state": job_state, "reason": reason } })),
+            ))
+        }
+    }
+}
+
+/// `POST /api/admin/jobs/{id}/retry`: requeues a job, as long as its
+/// request is still pending and has an IMDb ID.
+pub async fn post_job_retry(
+    State(state): State<AppState>,
+    _admin: RequireAdmin,
+    AppPath(id): AppPath<i64>,
+) -> Result<impl IntoResponse, AppError> {
+    match db::retry_fetch_job(&state.pool, id, now(&state)).await? {
+        db::RetryOutcome::NotFound => Err(AppError::NotFound),
+        db::RetryOutcome::WrongState => Err(AppError::Conflict(
+            "jobben kan ikke kjøres på nytt nå (forespørselen må være ventende og ha IMDb-ID)",
+        )),
+        db::RetryOutcome::Retried => {
+            tracing::info!(job_id = id, state = "queued", "fetch job retried");
+            state.events.publish(Tick::Admin);
+            Ok(Json(json!({ "id": id, "state": "queued" })))
+        }
+    }
+}
+
+/// `POST /api/admin/jobs/{id}/cancel`: ends a job as failed / cancelled.
+pub async fn post_job_cancel(
+    State(state): State<AppState>,
+    _admin: RequireAdmin,
+    AppPath(id): AppPath<i64>,
+) -> Result<impl IntoResponse, AppError> {
+    match db::cancel_fetch_job(&state.pool, id, now(&state)).await? {
+        db::CancelJobOutcome::NotFound => Err(AppError::NotFound),
+        db::CancelJobOutcome::WrongState => Err(AppError::Conflict(
+            "jobben kan ikke avbrytes i denne tilstanden",
+        )),
+        db::CancelJobOutcome::Cancelled => {
+            tracing::info!(job_id = id, state = "failed", "fetch job cancelled");
+            state.events.publish(Tick::Admin);
+            Ok(Json(json!({ "id": id, "state": "failed" })))
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobStateFilter {
+    #[default]
+    All,
+    Queued,
+    Fetching,
+    NeedsPick,
+    Failed,
+    Done,
+}
+
+impl JobStateFilter {
+    fn state(self) -> Option<&'static str> {
+        match self {
+            JobStateFilter::All => None,
+            JobStateFilter::Queued => Some("queued"),
+            JobStateFilter::Fetching => Some("fetching"),
+            JobStateFilter::NeedsPick => Some("needs_pick"),
+            JobStateFilter::Failed => Some("failed"),
+            JobStateFilter::Done => Some("done"),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct JobListParams {
+    #[serde(default)]
+    state: JobStateFilter,
+    cursor: Option<String>,
+    limit: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct JobView {
+    id: i64,
+    request_id: i64,
+    state: String,
+    reason: Option<String>,
+    infuse_pro: bool,
+    attempts: i64,
+    top_infohash: Option<String>,
+    chosen_infohash: Option<String>,
+    picked: bool,
+    /// The worker's shortlist as stored; `null` if it does not parse.
+    candidates: Option<serde_json::Value>,
+    rd_torrent_id: Option<String>,
+    last_error: Option<String>,
+    created_at: i64,
+    updated_at: i64,
+    title: String,
+    year: Option<i64>,
+    #[serde(rename = "type")]
+    media_type: String,
+}
+
+/// `GET /api/admin/jobs?state=&limit=&cursor=`. `candidates` and
+/// `last_error` are worker-supplied text: render them with `textContent`.
+pub async fn get_jobs(
+    State(state): State<AppState>,
+    _admin: RequireAdmin,
+    AppQuery(params): AppQuery<JobListParams>,
+) -> Result<impl IntoResponse, AppError> {
+    let before = parse_cursor(params.cursor.as_deref())?;
+    let limit = page_limit(params.limit)?;
+    let mut rows =
+        db::list_fetch_jobs(&state.pool, params.state.state(), before, limit + 1).await?;
+    let next_cursor = next_page(&mut rows, limit, |r| (r.created_at, r.id));
+    let items: Vec<JobView> = rows
+        .into_iter()
+        .map(|r| JobView {
+            candidates: r
+                .candidates
+                .as_deref()
+                .and_then(|text| serde_json::from_str(text).ok()),
+            id: r.id,
+            request_id: r.request_id,
+            state: r.state,
+            reason: r.reason,
+            infuse_pro: r.infuse_pro,
+            attempts: r.attempts,
+            top_infohash: r.top_infohash,
+            chosen_infohash: r.chosen_infohash,
+            picked: r.picked,
+            rd_torrent_id: r.rd_torrent_id,
+            last_error: r.last_error,
+            created_at: r.created_at,
+            updated_at: r.updated_at,
+            title: r.title,
+            year: r.year,
+            media_type: r.media_type,
+        })
+        .collect();
+    Ok(Json(json!({ "items": items, "next_cursor": next_cursor })))
+}
+
+/// The worker switches as they stand, and whether the environment pins
+/// them (an env override always wins over the stored value).
+async fn worker_view(state: &AppState) -> Result<Json<serde_json::Value>, AppError> {
+    let settings = db::worker_settings(&state.pool, &state.config).await?;
+    Ok(Json(json!({
+        "enabled": settings.enabled,
+        "mode": settings.mode.as_str(),
+        "enabled_from_env": state.config.worker_enabled.is_some(),
+        "mode_from_env": state.config.worker_mode.is_some(),
+    })))
+}
+
+/// `GET /api/admin/worker`.
+pub async fn get_worker(
+    State(state): State<AppState>,
+    _admin: RequireAdmin,
+) -> Result<impl IntoResponse, AppError> {
+    worker_view(&state).await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerBody {
+    enabled: Option<bool>,
+    mode: Option<WorkerModeBody>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerModeBody {
+    DryRun,
+    Assisted,
+    Auto,
+}
+
+impl WorkerModeBody {
+    fn as_str(self) -> &'static str {
+        match self {
+            WorkerModeBody::DryRun => "dry_run",
+            WorkerModeBody::Assisted => "assisted",
+            WorkerModeBody::Auto => "auto",
+        }
+    }
+}
+
+/// `PUT /api/admin/worker`: stores the given switches and returns the
+/// effective values.
+pub async fn put_worker(
+    State(state): State<AppState>,
+    _admin: RequireAdmin,
+    AppJson(body): AppJson<WorkerBody>,
+) -> Result<impl IntoResponse, AppError> {
+    if let Some(enabled) = body.enabled {
+        db::set_setting(
+            &state.pool,
+            db::SETTING_WORKER_ENABLED,
+            if enabled { "1" } else { "0" },
+        )
+        .await?;
+    }
+    if let Some(mode) = body.mode {
+        db::set_setting(&state.pool, db::SETTING_WORKER_MODE, mode.as_str()).await?;
+    }
+    if body.enabled.is_some() || body.mode.is_some() {
+        tracing::info!(
+            enabled = ?body.enabled,
+            mode = ?body.mode,
+            "worker settings changed"
+        );
+        state.events.publish(Tick::Admin);
+    }
+    worker_view(&state).await
 }

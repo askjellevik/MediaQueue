@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod internal;
 pub mod public;
 pub mod static_files;
 

@@ -1364,8 +1364,11 @@ const MAX_UNCACHED_INCREMENT: i64 = 5;
 
 pub enum CreateJob {
     Created {
+        id: i64,
         /// `queued`, or `needs_pick` when the request has no IMDb ID.
         state: String,
+        /// `no_imdb_id` for a job that starts in `needs_pick`.
+        reason: Option<String>,
     },
     /// The request already has a job.
     Exists,
@@ -1412,7 +1415,7 @@ pub async fn create_fetch_job(
     } else {
         ("needs_pick", Some("no_imdb_id"))
     };
-    sqlx::query!(
+    let id = sqlx::query!(
         "INSERT INTO fetch_jobs (request_id, state, infuse_pro, reason, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?)",
         request_id,
@@ -1423,11 +1426,68 @@ pub async fn create_fetch_job(
         now
     )
     .execute(&mut *tx)
-    .await?;
+    .await?
+    .last_insert_rowid();
     tx.commit().await?;
     Ok(CreateJob::Created {
+        id,
         state: state.to_string(),
+        reason: reason.map(str::to_string),
     })
+}
+
+pub struct FetchJobRow {
+    pub id: i64,
+    pub request_id: i64,
+    pub state: String,
+    pub reason: Option<String>,
+    pub infuse_pro: bool,
+    pub attempts: i64,
+    pub top_infohash: Option<String>,
+    pub chosen_infohash: Option<String>,
+    pub picked: bool,
+    /// The stored JSON text; the worker supplied it, so the caller parses
+    /// it defensively.
+    pub candidates: Option<String>,
+    pub rd_torrent_id: Option<String>,
+    pub last_error: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub title: String,
+    pub year: Option<i64>,
+    pub media_type: String,
+}
+
+/// One page of jobs with their request's title, newest first, keyset-
+/// paginated on `(created_at, id)` like [`admin_requests`]. `state: None`
+/// means every state.
+pub async fn list_fetch_jobs(
+    pool: &SqlitePool,
+    state: Option<&str>,
+    before: (i64, i64),
+    limit: i64,
+) -> Result<Vec<FetchJobRow>, sqlx::Error> {
+    let (before_created, before_id) = before;
+    sqlx::query_as!(
+        FetchJobRow,
+        r#"SELECT j.id AS "id!", j.request_id AS "request_id!", j.state AS "state!", j.reason,
+                  j.infuse_pro AS "infuse_pro!: bool", j.attempts AS "attempts!",
+                  j.top_infohash, j.chosen_infohash, j.picked AS "picked!: bool",
+                  j.candidates, j.rd_torrent_id, j.last_error,
+                  j.created_at AS "created_at!", j.updated_at AS "updated_at!",
+                  r.title AS "title!", r.year, r.media_type AS "media_type!"
+           FROM fetch_jobs j JOIN requests r ON r.id = j.request_id
+           WHERE (?1 IS NULL OR j.state = ?1)
+             AND (j.created_at < ?2 OR (j.created_at = ?2 AND j.id < ?3))
+           ORDER BY j.created_at DESC, j.id DESC
+           LIMIT ?4"#,
+        state,
+        before_created,
+        before_id,
+        limit
+    )
+    .fetch_all(pool)
+    .await
 }
 
 /// What the worker is told about a job. Deliberately not the member's note,
@@ -1589,7 +1649,7 @@ pub enum ReportState {
 }
 
 impl ReportState {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             ReportState::NeedsPick => "needs_pick",
             ReportState::Failed => "failed",
@@ -2331,7 +2391,7 @@ mod tests {
 
         assert!(matches!(
             create_fetch_job(&pool, plain, 10).await.unwrap(),
-            CreateJob::Created { state } if state == "queued"
+            CreateJob::Created { state, .. } if state == "queued"
         ));
         assert!(matches!(
             create_fetch_job(&pool, plain, 11).await.unwrap(),
@@ -2343,7 +2403,7 @@ mod tests {
         ));
         assert!(matches!(
             create_fetch_job(&pool, no_imdb, 13).await.unwrap(),
-            CreateJob::Created { state } if state == "needs_pick"
+            CreateJob::Created { state, .. } if state == "needs_pick"
         ));
         assert!(matches!(
             create_fetch_job(&pool, 999, 14).await.unwrap(),

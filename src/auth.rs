@@ -387,6 +387,41 @@ impl FromRequestParts<AppState> for RequireAdmin {
     }
 }
 
+/// The worker, identified by the shared bearer token. No cookie and no
+/// CSRF: this extractor is only used on the internal listener.
+pub struct RequireWorker;
+
+impl FromRequestParts<AppState> for RequireWorker {
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, AppError> {
+        let expected = state
+            .config
+            .internal_token
+            .as_deref()
+            .ok_or(AppError::Unauthorized)?;
+        let given = parts
+            .headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .ok_or(AppError::Unauthorized)?;
+        if token_matches(given, expected) {
+            Ok(RequireWorker)
+        } else {
+            Err(AppError::Unauthorized)
+        }
+    }
+}
+
+/// Compares the SHA-256 digests of two tokens in constant time, so the
+/// compared length is fixed whatever the caller sends.
+fn token_matches(given: &str, expected: &str) -> bool {
+    let given = Sha256::digest(given.as_bytes());
+    let expected = Sha256::digest(expected.as_bytes());
+    constant_time_eq(&given, &expected)
+}
+
 /// A signed-in member who is not the admin gets 403, not 401: they are
 /// authenticated, just not allowed. Only checked on the failure path.
 async fn has_user_session(jar: &CookieJar, state: &AppState) -> Result<bool, AppError> {
@@ -427,6 +462,15 @@ async fn admin_session(jar: &CookieJar, state: &AppState) -> Result<RequireAdmin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn token_matches_only_the_exact_token() {
+        assert!(token_matches("secret-token", "secret-token"));
+        assert!(!token_matches("secret-token ", "secret-token"));
+        assert!(!token_matches("Secret-token", "secret-token"));
+        assert!(!token_matches("", "secret-token"));
+        assert!(!token_matches("secret-toke", "secret-token"));
+    }
 
     #[test]
     fn normalise_lowercases_and_strips_separators() {

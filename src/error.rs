@@ -41,6 +41,15 @@ pub enum AppError {
     /// The change conflicts with current state (e.g. a member name in use).
     #[error("conflict: {0}")]
     Conflict(&'static str),
+    /// A worker call whose job is no longer `fetching` under that claim:
+    /// replayed, forged, reclaimed or overridden by the admin. Carries the
+    /// torrent id stored on the job, so the worker keeps that one when it
+    /// cleans up its own.
+    #[error("stale claim")]
+    StaleClaim { rd_torrent_id: Option<String> },
+    /// A worker call that would change the hash of a picked job.
+    #[error("picked job is locked")]
+    PickedLocked,
     /// TMDB is unreachable and no usable cached answer exists.
     #[error("upstream unavailable")]
     Unavailable,
@@ -60,8 +69,8 @@ impl AppError {
             AppError::RateLimited { .. } | AppError::QuotaExceeded { .. } => {
                 StatusCode::TOO_MANY_REQUESTS
             }
-            AppError::BadRequest => StatusCode::BAD_REQUEST,
-            AppError::Conflict(_) => StatusCode::CONFLICT,
+            AppError::BadRequest | AppError::PickedLocked => StatusCode::BAD_REQUEST,
+            AppError::Conflict(_) | AppError::StaleClaim { .. } => StatusCode::CONFLICT,
             AppError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             AppError::Database(_) | AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -78,6 +87,8 @@ impl AppError {
             AppError::QuotaExceeded { .. } => "quota_exceeded",
             AppError::BadRequest => "bad_request",
             AppError::Conflict(_) => "conflict",
+            AppError::StaleClaim { .. } => "stale_claim",
+            AppError::PickedLocked => "picked_locked",
             AppError::Unavailable => "upstream_unavailable",
             AppError::Database(_) | AppError::Internal(_) => "internal_error",
         }
@@ -97,6 +108,8 @@ impl AppError {
             AppError::QuotaExceeded { .. } => "grense nådd",
             AppError::BadRequest => "forespørselen er ugyldig",
             AppError::Conflict(message) => message,
+            AppError::StaleClaim { .. } => "claimen er ikke lenger gyldig",
+            AppError::PickedLocked => "valget er låst",
             AppError::Unavailable => {
                 "filmdatabasen er ikke tilgjengelig akkurat nå, prøv igjen om litt"
             }
@@ -126,24 +139,30 @@ struct ErrorBody {
     message: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     remaining_today: Option<i64>,
+    /// Only on `stale_claim`, and only when the job has a torrent stored.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rd_torrent_id: Option<String>,
 }
 
 impl IntoResponse for AppError {
-    fn into_response(self) -> Response {
+    fn into_response(mut self) -> Response {
         if matches!(self, AppError::Database(_) | AppError::Internal(_)) {
             tracing::error!(error = %self, "request failed");
         }
         let status = self.status();
-        let body = ErrorBody {
+        let mut body = ErrorBody {
             error: self.code(),
             message: self.public_message(),
-            remaining_today: match self {
-                AppError::QuotaExceeded {
-                    remaining_today, ..
-                } => remaining_today,
-                _ => None,
-            },
+            remaining_today: None,
+            rd_torrent_id: None,
         };
+        match &mut self {
+            AppError::QuotaExceeded {
+                remaining_today, ..
+            } => body.remaining_today = *remaining_today,
+            AppError::StaleClaim { rd_torrent_id } => body.rd_torrent_id = rd_torrent_id.take(),
+            _ => {}
+        }
         let mut response = (status, Json(body)).into_response();
         if let AppError::RateLimited { retry_after_secs }
         | AppError::QuotaExceeded {
@@ -220,5 +239,47 @@ where
             Ok(Path(value)) => Ok(AppPath(value)),
             Err(_) => Err(AppError::NotFound),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn body_of(error: AppError) -> (StatusCode, serde_json::Value) {
+        let response = error.into_response();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    #[tokio::test]
+    async fn stale_claim_is_409_and_carries_the_stored_torrent_only_when_there_is_one() {
+        let (status, body) = body_of(AppError::StaleClaim {
+            rd_torrent_id: Some("RD1".into()),
+        })
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"], "stale_claim");
+        assert_eq!(body["message"], "claimen er ikke lenger gyldig");
+        assert_eq!(body["rd_torrent_id"], "RD1");
+
+        let (status, body) = body_of(AppError::StaleClaim {
+            rd_torrent_id: None,
+        })
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(body.get("rd_torrent_id").is_none(), "{body}");
+    }
+
+    #[tokio::test]
+    async fn picked_locked_is_400_with_its_own_code() {
+        let (status, body) = body_of(AppError::PickedLocked).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "picked_locked");
+        assert_eq!(body["message"], "valget er låst");
+        assert!(body.get("rd_torrent_id").is_none());
     }
 }

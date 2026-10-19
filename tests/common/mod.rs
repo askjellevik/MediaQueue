@@ -16,7 +16,9 @@ use std::{
     time::Duration,
 };
 
-use mediaqueue::{build_router, clock::Clock, config::Config, db, state::AppState};
+use mediaqueue::{
+    build_router, clock::Clock, config::Config, db, internal_router, state::AppState,
+};
 use sqlx::SqlitePool;
 
 static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -24,6 +26,7 @@ static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 pub const TEST_ADMIN_USER: &str = "admin";
 pub const TEST_ADMIN_PASSWORD: &str = "test-admin-password";
 pub const TEST_TMDB_TOKEN: &str = "test-tmdb-token";
+pub const TEST_INTERNAL_TOKEN: &str = "test-internal-token-0123456789abcdef-xyz";
 
 /// A real Argon2id PHC hash of [`TEST_ADMIN_PASSWORD`], computed once.
 pub fn test_admin_password_hash() -> &'static str {
@@ -192,8 +195,8 @@ fn test_config() -> Config {
         cf_access: None,
         ntfy: Default::default(),
         rate_limits: Default::default(),
-        internal_listen: None,
-        internal_token: None,
+        internal_listen: Some("127.0.0.1:0".parse().expect("valid socket addr")),
+        internal_token: Some(TEST_INTERNAL_TOKEN.to_string()),
         worker_enabled: None,
         worker_mode: None,
     }
@@ -201,6 +204,8 @@ fn test_config() -> Config {
 
 pub struct TestApp {
     pub addr: SocketAddr,
+    /// The worker's non-public listener.
+    pub internal_addr: SocketAddr,
     pub pool: SqlitePool,
     pub config: Config,
     /// The app's shared state, for reaching into limiters directly.
@@ -218,6 +223,17 @@ impl TestApp {
         body: Option<&str>,
     ) -> HttpResponse {
         http_request(self.addr, method, path, extra_headers, body).await
+    }
+
+    /// Like [`TestApp::request`], against the internal listener.
+    pub async fn internal_request(
+        &self,
+        method: &str,
+        path: &str,
+        extra_headers: &[(&str, &str)],
+        body: Option<&str>,
+    ) -> HttpResponse {
+        http_request(self.internal_addr, method, path, extra_headers, body).await
     }
 }
 
@@ -250,6 +266,7 @@ pub async fn spawn_app_custom(
         AppState::with_clock(pool.clone(), config.clone(), clock.clone()).expect("build app state");
     customize_state(&mut state);
     let app = build_router(state.clone());
+    let internal_app = internal_router(state.clone());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -265,8 +282,22 @@ pub async fn spawn_app_custom(
         .expect("test server crashed");
     });
 
+    let internal_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind random internal port");
+    let internal_addr = internal_listener.local_addr().expect("internal local addr");
+    tokio::spawn(async move {
+        axum::serve(
+            internal_listener,
+            internal_app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .expect("internal test server crashed");
+    });
+
     TestApp {
         addr,
+        internal_addr,
         pool,
         config,
         state,

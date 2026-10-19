@@ -89,6 +89,22 @@ the same source file. For the overall design, see
 | Distroless, UID 65532, read-only root, all caps dropped, `no-new-privileges`, only `/data` writable | `Dockerfile`, `compose.yaml` | container run: `user=65532:65532 ro=true caps=[ALL]`, healthy |
 | No secrets in the image or repo; `.env` ignored | `.gitignore`, `.dockerignore`, `.env.example` | review |
 
+### The worker's internal listener
+
+| Requirement | Implemented | Tested |
+| --- | --- | --- |
+| A separate listener, not published to the host or routed through Caddy, with its own middleware: no CSRF guard, no per-IP rate limit (Docker clients would share one address), no Cloudflare Access, no browser headers; a 256 KiB body limit, 8 calls in flight, `no-store`, catch-panic, request log | `lib::internal_router`, `main::serve_async` | `worker::the_internal_listener_has_no_csrf_guard_and_no_browser_headers`, `the_internal_listener_is_not_per_ip_rate_limited` |
+| `/internal` does not exist on the public port | the public router has no such route | `worker::internal_paths_do_not_exist_on_the_public_port` |
+| Bearer token checked first on every route (a bad body is 401, not 400), by comparing SHA-256 digests in constant time, so the compared length is fixed; no configured token means everyone is refused | `auth::RequireWorker`, `auth::constant_time_eq` | `worker::every_internal_route_is_401_without_the_right_token`, `without_a_configured_token_the_internal_routes_refuse_everyone`, `auth` unit tests |
+| `INTERNAL_TOKEN` at least 32 bytes, never logged; set without `INTERNAL_LISTEN` is a startup error (a misspelt address must not mean no listener) | `config::internal_listener`, redacted `Debug` | `config` unit tests |
+| The portal refuses to start if `RD_TOKEN` or `RD_TOKEN_FILE` is set, so the Real-Debrid token never reaches it through `.env` | `config` | `config` unit tests |
+| The worker sees ids, title, year and the Infuse PRO flag, never the member's note or name | `routes::internal::ClaimView` | `worker::claim_hands_out_only_the_allowed_fields_and_only_while_enabled` |
+| Every report and progress call must carry the job's current `claim_id`; one guarded `UPDATE` makes replayed, forged, reclaimed or overridden calls match no row (409 `stale_claim`, naming the stored torrent so the worker keeps it) | `db::report_fetch_job`, `db::progress_fetch_job`, `error::AppError::StaleClaim` | `worker::a_good_report_applies_once_and_the_old_claim_is_then_stale`, `retry_and_cancel_make_the_running_workers_calls_stale` |
+| A `fetching` job with no report or progress call for 45 minutes goes back to `queued`, or fails with reason `max_attempts` once its attempts are used; a progress call refreshes the clock | `db::claim_fetch_job`, `db::RECLAIM_AFTER_SECS` | `worker::a_stale_job_is_claimable_again_with_its_torrent_and_a_new_claim`, `a_progress_call_at_44_minutes_keeps_the_job_from_being_reclaimed_at_50` |
+| A human pick's hash cannot be changed by the worker (400 `picked_locked`, after the stale check) | `db::report_fetch_job`, `db::progress_fetch_job` | `worker::a_picked_job_keeps_its_hash_against_progress_and_report` |
+| The admin settling the request closes its open job, so a worker still running it is rejected as stale; `done` never overwrites a request that is no longer pending | `db::set_request_status`, `db::report_fetch_job` | `worker::refusing_or_accepting_the_request_makes_the_workers_calls_stale`, `done_leaves_a_request_that_is_no_longer_pending_alone` |
+| Worker-supplied text is bounded and cleaned: infohashes exactly 40 hex characters, flat candidates (20 entries, 64 KiB, control characters stripped), a fixed list of reasons, `error` at most 500 characters; the admin UI must render it with `textContent`; logs carry the job id and state only, never candidates | `routes::internal` | `worker::a_report_with_bad_input_is_400_and_leaves_the_run_alone`, `routes::internal` unit tests |
+
 ## Rate limiting and TMDB caching
 
 | Requirement | Implemented | Tested |
