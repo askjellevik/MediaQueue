@@ -1819,8 +1819,10 @@ pub enum RetryOutcome {
     WrongState,
 }
 
-/// Requeues a job from `failed`, `needs_pick`, `fetching`, or `done` while
-/// its request is still `pending`. Attempts and messages reset; the
+/// Requeues a job from `failed`, `needs_pick`, `fetching` or `done`, but
+/// only while its request is still `pending`: once the request was marked
+/// added or refused (by hand, say after a `failed` job) there is nothing
+/// left to fetch. Attempts and messages reset; the
 /// shortlist, chosen hash and RD torrent id are kept so the next run
 /// resumes. Clearing `claim_id` in the same statement makes a running
 /// worker's next call stale. Refused while the request has no IMDb ID
@@ -1844,12 +1846,11 @@ pub async fn retry_fetch_job(
         tx.rollback().await?;
         return Ok(RetryOutcome::NotFound);
     };
-    let allowed = match job.state.as_str() {
-        "failed" | "needs_pick" | "fetching" => true,
-        "done" => job.status == "pending",
-        _ => false,
-    };
-    if !allowed || job.imdb_id.is_none() {
+    let allowed = matches!(
+        job.state.as_str(),
+        "failed" | "needs_pick" | "fetching" | "done"
+    );
+    if !allowed || job.status != "pending" || job.imdb_id.is_none() {
         tx.rollback().await?;
         return Ok(RetryOutcome::WrongState);
     }
@@ -3156,6 +3157,42 @@ mod tests {
                 RetryOutcome::WrongState,
                 "{status}"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_needs_a_pending_request_from_every_origin_state() {
+        for origin in ["failed", "needs_pick", "fetching", "done"] {
+            let pool = test_pool().await;
+            let id = request(&pool, 1, Some("tt1"), false).await;
+            let job_id = job_for(&pool, id, 10).await;
+            let claim_part = if origin == "fetching" {
+                ", claim_id = 'c1', claimed_at = 10"
+            } else {
+                ""
+            };
+            sql(
+                &pool,
+                &format!("UPDATE fetch_jobs SET state = '{origin}'{claim_part}"),
+            )
+            .await;
+            for status in ["added", "refused", "already_had"] {
+                sql(&pool, &format!("UPDATE requests SET status = '{status}'")).await;
+                assert_eq!(
+                    retry_fetch_job(&pool, job_id, 20).await.unwrap(),
+                    RetryOutcome::WrongState,
+                    "{origin} / {status}"
+                );
+                let row = job(&pool, job_id).await;
+                assert_eq!(row.state, origin, "{origin} / {status}");
+            }
+            sql(&pool, "UPDATE requests SET status = 'pending'").await;
+            assert_eq!(
+                retry_fetch_job(&pool, job_id, 30).await.unwrap(),
+                RetryOutcome::Retried,
+                "{origin}"
+            );
+            assert_eq!(job(&pool, job_id).await.state, "queued", "{origin}");
         }
     }
 

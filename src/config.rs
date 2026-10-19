@@ -386,6 +386,18 @@ fn internal_listener(
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty());
     let Some(listen) = listen else {
+        // A token with no address is most likely a misspelt or missing
+        // INTERNAL_LISTEN; failing here beats a portal that quietly has no
+        // listener for the worker.
+        let token_set = env
+            .get("INTERNAL_TOKEN")
+            .is_some_and(|v| !v.trim().is_empty());
+        if token_set {
+            return Err(ConfigError::Invalid {
+                name: "INTERNAL_TOKEN",
+                reason: "is set but INTERNAL_LISTEN is not".into(),
+            });
+        }
         return Ok((None, None));
     };
     let listen = listen
@@ -895,6 +907,30 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn an_internal_token_without_an_address_is_refused() {
+        let mut env = base_env();
+        env.insert("INTERNAL_TOKEN", long_pepper());
+        let err = Config::from_lookup(&env).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::Invalid {
+                name: "INTERNAL_TOKEN",
+                ..
+            }
+        ));
+
+        // An empty INTERNAL_LISTEN counts as missing, an empty token as unset.
+        env.insert("INTERNAL_LISTEN", "  ");
+        assert!(Config::from_lookup(&env).is_err());
+        env.insert("INTERNAL_LISTEN", "127.0.0.1:8001");
+        assert!(Config::from_lookup(&env).is_ok());
+        let mut env = base_env();
+        env.insert("INTERNAL_TOKEN", "  ");
+        let cfg = Config::from_lookup(&env).unwrap();
+        assert!(cfg.internal_listen.is_none() && cfg.internal_token.is_none());
     }
 
     #[test]
