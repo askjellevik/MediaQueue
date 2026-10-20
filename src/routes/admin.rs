@@ -770,6 +770,9 @@ pub async fn post_fetch(
         db::CreateJob::NotPending => Err(AppError::Conflict(
             "bare ventende forespørsler kan hentes automatisk",
         )),
+        db::CreateJob::Unsupported => {
+            Err(AppError::Conflict("serier kan ikke hentes automatisk ennå"))
+        }
         db::CreateJob::Created {
             id: job_id,
             state: job_state,

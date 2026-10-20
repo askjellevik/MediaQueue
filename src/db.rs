@@ -1373,6 +1373,8 @@ pub enum CreateJob {
     /// The request already has a job.
     Exists,
     NotPending,
+    /// Only movies can be fetched; series are not supported yet.
+    Unsupported,
     NotFound,
 }
 
@@ -1386,7 +1388,8 @@ pub async fn create_fetch_job(
 ) -> Result<CreateJob, sqlx::Error> {
     let mut tx = begin_immediate(pool).await?;
     let Some(request) = sqlx::query!(
-        r#"SELECT status AS "status!", infuse_pro AS "infuse_pro!: bool", imdb_id
+        r#"SELECT status AS "status!", media_type AS "media_type!",
+                  infuse_pro AS "infuse_pro!: bool", imdb_id
            FROM requests WHERE id = ?"#,
         request_id
     )
@@ -1399,6 +1402,10 @@ pub async fn create_fetch_job(
     if request.status != "pending" {
         tx.rollback().await?;
         return Ok(CreateJob::NotPending);
+    }
+    if request.media_type != "movie" {
+        tx.rollback().await?;
+        return Ok(CreateJob::Unsupported);
     }
     let existing = sqlx::query_scalar!(
         r#"SELECT id AS "id!" FROM fetch_jobs WHERE request_id = ?"#,
@@ -2438,6 +2445,12 @@ mod tests {
             &format!("UPDATE requests SET status = 'refused' WHERE id = {refused}"),
         )
         .await;
+        let series = request(&pool, 4, Some("tt4"), false).await;
+        sql(
+            &pool,
+            &format!("UPDATE requests SET media_type = 'tv' WHERE id = {series}"),
+        )
+        .await;
 
         assert!(matches!(
             create_fetch_job(&pool, plain, 10).await.unwrap(),
@@ -2462,6 +2475,10 @@ mod tests {
         assert!(matches!(
             create_fetch_job(&pool, refused, 15).await.unwrap(),
             CreateJob::NotPending
+        ));
+        assert!(matches!(
+            create_fetch_job(&pool, series, 16).await.unwrap(),
+            CreateJob::Unsupported
         ));
 
         // infuse_pro is copied from the request, and a missing IMDb ID is explained.

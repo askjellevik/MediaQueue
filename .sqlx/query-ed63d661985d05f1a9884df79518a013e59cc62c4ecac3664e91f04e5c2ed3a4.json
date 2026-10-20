@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT status AS \"status!\", infuse_pro AS \"infuse_pro!: bool\", imdb_id\n           FROM requests WHERE id = ?",
+  "query": "SELECT status AS \"status!\", media_type AS \"media_type!\",\n                  infuse_pro AS \"infuse_pro!: bool\", imdb_id\n           FROM requests WHERE id = ?",
   "describe": {
     "columns": [
       {
@@ -15,8 +15,19 @@
         }
       },
       {
-        "name": "infuse_pro!: bool",
+        "name": "media_type!",
         "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "requests",
+            "name": "media_type"
+          }
+        }
+      },
+      {
+        "name": "infuse_pro!: bool",
+        "ordinal": 2,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -27,7 +38,7 @@
       },
       {
         "name": "imdb_id",
-        "ordinal": 2,
+        "ordinal": 3,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -43,8 +54,9 @@
     "nullable": [
       false,
       false,
+      false,
       true
     ]
   },
-  "hash": "0b44c688988887bce76a0dca03bbe0f33b2bbdf427d8a0c71203db8679e889e3"
+  "hash": "ed63d661985d05f1a9884df79518a013e59cc62c4ecac3664e91f04e5c2ed3a4"
 }

@@ -510,6 +510,32 @@ async fn fetch_creates_a_job_for_a_pending_request_once() {
 }
 
 #[tokio::test]
+async fn fetch_refuses_a_series_and_ticks_nothing() {
+    let app = common::spawn_app().await;
+    let admin = login_admin_cookie(&app).await;
+    let request = seed_request(&app, 1, "pending", Some("tt0000001"), false).await;
+    sql(
+        &app.pool,
+        &format!("UPDATE requests SET media_type = 'tv' WHERE id = {request}"),
+    )
+    .await;
+    let mut admins = EventStream::open(app.addr, "/api/admin/events", Some(&admin)).await;
+
+    let response = admin_call(
+        &app,
+        &admin,
+        "POST",
+        &format!("/api/admin/requests/{request}/fetch"),
+        Some("{}"),
+    )
+    .await;
+    let body = assert_error(&response, 409, "conflict");
+    assert_eq!(body["message"], "serier kan ikke hentes automatisk ennå");
+    assert_eq!(count(&app.pool, "SELECT COUNT(*) FROM fetch_jobs").await, 0);
+    assert!(!admins.saw("event: tick", QUIET).await, "a refusal ticked");
+}
+
+#[tokio::test]
 async fn a_request_without_an_imdb_id_waits_in_needs_pick() {
     let app = common::spawn_app().await;
     let admin = login_admin_cookie(&app).await;
