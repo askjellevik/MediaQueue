@@ -135,6 +135,10 @@ export const ta = {
     `Markere utgivelsen som ubrukelig for «${title}»? Den velges aldri igjen for denne bestillingen, og bestillingen åpnes igjen hvis den er lagt til.`,
   notPlayingDone: (title) => `Utgivelsen for «${title}» er markert som ubrukelig.`,
   notPlayingFailed: 'Kunne ikke markere utgivelsen. Jobben kan ha endret seg.',
+  fetchAuto: 'Hent automatisk',
+  fetchStarted: (title) => `Sendte «${title}» til arbeideren.`,
+  fetchExists: (title) => `«${title}» har allerede en jobb. Se fanen Jobber.`,
+  fetchFailed: (title) => `Kunne ikke hente «${title}» automatisk.`,
 
   // ----- Admin: users -----
   users: 'Brukere',

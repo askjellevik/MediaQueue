@@ -474,6 +474,20 @@ function renderQueue(panel, tab, { say, expired }) {
       }
     };
 
+    // Hands the request to the worker. The job itself is on the Jobs tab.
+    const fetchAuto = async () => {
+      for (const open of actions.querySelectorAll('details[open]')) open.open = false;
+      busy = true;
+      paint();
+      const res = await send('POST', `/api/admin/requests/${item.id}/fetch`);
+      busy = false;
+      if (expired(res)) return;
+      if (res.status === 201) toast(ta.fetchStarted(item.title));
+      else if (res.status === 409) toast(ta.fetchExists(item.title), { kind: 'bad' });
+      else toast(ta.fetchFailed(item.title), { kind: 'bad' });
+      paint();
+    };
+
     const paint = () => {
       clear(statusCell);
       statusCell.append(chip(item.status, STATUS_LABEL[item.status] || item.status));
@@ -502,6 +516,18 @@ function renderQueue(panel, tab, { say, expired }) {
       if (tab.id === 'pending') {
         // The two usual answers stay one click away; the rest is in the menu.
         actions.append(button(byStatus('added'), 'btn btn-small'), button(byStatus('refused'), 'btn btn-small'));
+        if (item.type !== 'tv') {
+          items.push(
+            el('button', {
+              class: 'menu-item',
+              type: 'button',
+              text: ta.fetchAuto,
+              'aria-label': ta.actionLabel(ta.fetchAuto, item.title),
+              disabled: busy,
+              onclick: fetchAuto,
+            }),
+          );
+        }
         items.push(button(byStatus('already_had'), 'menu-item'));
       } else {
         for (const action of ACTIONS.filter((a) => a.status !== item.status)) items.push(button(action, 'menu-item'));
