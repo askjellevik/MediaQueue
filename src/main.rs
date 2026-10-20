@@ -18,6 +18,7 @@ use mediaqueue::{
     worker::{
         config::WorkerConfig,
         portal::PortalClient,
+        rd::RdRuntime,
         run::{Shutdown, run},
         torrentio::TorrentioSource,
     },
@@ -158,11 +159,30 @@ async fn worker_async(config: WorkerConfig) -> anyhow::Result<()> {
         stop_signal().await;
         let _ = stop_tx.send(true);
     });
+    // Without RD_TOKEN_FILE there is no Real-Debrid runtime and the worker
+    // does what it always did: dry runs.
+    let rd = match &config.rd {
+        None => None,
+        Some(rd) => {
+            let runtime = RdRuntime::new(rd)?;
+            tracing::info!(
+                state_dir = %rd.state_dir.display(),
+                max_adds_per_day = rd.max_adds_per_day,
+                max_uncached_per_day = rd.max_uncached_per_day,
+                max_gb = rd.max_bytes / (1024 * 1024 * 1024),
+                per_min = rd.per_min,
+                keep_free_slots = rd.keep_free_slots,
+                "real-debrid runtime ready"
+            );
+            Some(runtime)
+        }
+    };
     tracing::info!(
         portal = %config.portal_url,
         source = %config.torrentio_base_url,
         poll_secs = config.poll_secs,
-        "worker starting (dry run)"
+        real_debrid = rd.is_some(),
+        "worker starting"
     );
     run(
         portal,
@@ -170,6 +190,7 @@ async fn worker_async(config: WorkerConfig) -> anyhow::Result<()> {
         config.rank,
         Duration::from_secs(config.poll_secs),
         shutdown,
+        rd,
     )
     .await?;
     Ok(())

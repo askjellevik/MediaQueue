@@ -18,6 +18,7 @@ use super::{
     backoff::Backoff,
     candidate::RawCandidate,
     portal::{Abandon, Job, Mode, PortalClient, PortalError, Report, ReportResult},
+    rd::RdRuntime,
     rules::{DropReason, JobSpec},
     score::{Evaluation, evaluate},
     settings::RankSettings,
@@ -126,6 +127,10 @@ pub struct Worker<S> {
     shutdown: Shutdown,
     timing: Timing,
     source_backoff: Backoff,
+    /// Present when `RD_TOKEN_FILE` is configured. Not used until the
+    /// assisted run is wired in.
+    #[allow(dead_code)]
+    rd: Option<RdRuntime>,
     idle: Option<Idle>,
     first_call: bool,
     stats: Stats,
@@ -147,6 +152,7 @@ impl<S: CandidateSource> Worker<S> {
             shutdown,
             timing: Timing::default(),
             source_backoff: Backoff::for_source(),
+            rd: None,
             idle: None,
             first_call: true,
             stats: Stats::default(),
@@ -155,6 +161,11 @@ impl<S: CandidateSource> Worker<S> {
 
     pub fn with_timing(mut self, timing: Timing) -> Self {
         self.timing = timing;
+        self
+    }
+
+    pub fn with_rd(mut self, rd: Option<RdRuntime>) -> Self {
+        self.rd = rd;
         self
     }
 
@@ -405,8 +416,9 @@ pub async fn run<S: CandidateSource>(
     rank: RankSettings,
     poll: Duration,
     shutdown: Shutdown,
+    rd: Option<RdRuntime>,
 ) -> Result<(), WorkerError> {
-    let mut worker = Worker::new(portal, source, rank, poll, shutdown);
+    let mut worker = Worker::new(portal, source, rank, poll, shutdown).with_rd(rd);
     let mut last_heartbeat = Instant::now();
     while !worker.shutdown.requested() {
         let now = Instant::now();

@@ -52,6 +52,10 @@ pub struct Job {
     /// A human chose `chosen_infohash`: never fall back to another one.
     pub picked: bool,
     pub rd_torrent_id: Option<String>,
+    /// A torrent the admin wants gone; the worker deletes it only if it
+    /// created it itself.
+    #[serde(default)]
+    pub remove_rd_torrent_id: Option<String>,
     pub blocked_hashes: Vec<String>,
 }
 
@@ -115,6 +119,65 @@ impl Report {
             ..Self::new(ReportState::Failed)
         }
     }
+
+    /// The release is at Real-Debrid and verified: the request is added.
+    pub fn done(
+        rd_torrent_id: String,
+        chosen_infohash: String,
+        top_infohash: Option<String>,
+    ) -> Self {
+        Self {
+            rd_torrent_id: Some(rd_torrent_id),
+            chosen_infohash: Some(chosen_infohash),
+            top_infohash,
+            ..Self::new(ReportState::Done)
+        }
+    }
+
+    /// The release was already in the library: nothing added, no torrent id.
+    pub fn already_had(chosen_infohash: String) -> Self {
+        Self {
+            chosen_infohash: Some(chosen_infohash),
+            reason: Some("already_had"),
+            ..Self::new(ReportState::Done)
+        }
+    }
+
+    /// Back to the admin with a reason and no new shortlist (the portal
+    /// keeps the one it holds).
+    pub fn needs_pick_with(reason: &'static str, error: &str) -> Self {
+        Self {
+            reason: Some(reason),
+            error: Some(truncate_error(error)),
+            ..Self::new(ReportState::NeedsPick)
+        }
+    }
+}
+
+/// The body of `POST /internal/jobs/{id}/progress`, minus the `claim_id`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Progress {
+    /// Sent the moment Real-Debrid hands out an id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rd_torrent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chosen_infohash: Option<String>,
+    /// The worker deleted this torrent for a removal request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub removed_rd_torrent_id: Option<String>,
+    /// Add-and-delete cycles since the last call (0 to 5).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub uncached_adds: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProgressResult {
+    Applied,
+    Abandon(Abandon),
 }
 
 /// The portal rejects an `error` over 500 characters instead of cutting it.
@@ -182,6 +245,13 @@ struct ReportRequest<'a> {
     report: &'a Report,
 }
 
+#[derive(Serialize)]
+struct ProgressRequest<'a> {
+    claim_id: &'a str,
+    #[serde(flatten)]
+    progress: &'a Progress,
+}
+
 impl PortalClient {
     pub fn new(base_url: &str, token: &str) -> Result<Self, reqwest::Error> {
         let client = reqwest::Client::builder()
@@ -231,26 +301,31 @@ impl PortalClient {
             .post(self.url(&format!("/internal/jobs/{job_id}/report")))
             .json(&ReportRequest { claim_id, report });
         let response = self.send(request).await?;
-        match answer(&response) {
-            Answer::Ok | Answer::NoContent => Ok(ReportResult::Applied),
-            Answer::Failed(StatusCode::NOT_FOUND) => Ok(ReportResult::Abandon(Abandon::NotFound)),
-            Answer::Failed(StatusCode::CONFLICT) => {
-                let body = read_body(response).await.unwrap_or_default();
-                Ok(ReportResult::Abandon(Abandon::StaleClaim {
-                    rd_torrent_id: stored_torrent(&body),
-                }))
-            }
-            Answer::Failed(StatusCode::BAD_REQUEST) => {
-                let body = read_body(response).await.unwrap_or_default();
-                match error_code(&body) {
-                    Some(code) if code == "picked_locked" => {
-                        Ok(ReportResult::Abandon(Abandon::PickedLocked))
-                    }
-                    code => Err(PortalError::Fatal(describe(StatusCode::BAD_REQUEST, code))),
-                }
-            }
-            Answer::Failed(status) => Err(failure(status, response).await),
-        }
+        Ok(match settle(response).await? {
+            None => ReportResult::Applied,
+            Some(why) => ReportResult::Abandon(why),
+        })
+    }
+
+    /// A sign of life that also saves a torrent id, a hash or a finished
+    /// removal. It refreshes the claim, so a long wait is not reclaimed; a
+    /// 409 here is how the worker learns the admin retried, cancelled or
+    /// picked meanwhile.
+    pub async fn progress(
+        &self,
+        job_id: i64,
+        claim_id: &str,
+        progress: &Progress,
+    ) -> Result<ProgressResult, PortalError> {
+        let request = self
+            .client
+            .post(self.url(&format!("/internal/jobs/{job_id}/progress")))
+            .json(&ProgressRequest { claim_id, progress });
+        let response = self.send(request).await?;
+        Ok(match settle(response).await? {
+            None => ProgressResult::Applied,
+            Some(why) => ProgressResult::Abandon(why),
+        })
     }
 
     fn url(&self, path: &str) -> String {
@@ -263,6 +338,29 @@ impl PortalClient {
             .send()
             .await
             .map_err(|e| PortalError::Transient(network_reason(&e).into()))
+    }
+}
+
+/// What a report or progress answer means: `None` when it was applied,
+/// otherwise why the run is no longer this worker's.
+async fn settle(response: Response) -> Result<Option<Abandon>, PortalError> {
+    match answer(&response) {
+        Answer::Ok | Answer::NoContent => Ok(None),
+        Answer::Failed(StatusCode::NOT_FOUND) => Ok(Some(Abandon::NotFound)),
+        Answer::Failed(StatusCode::CONFLICT) => {
+            let body = read_body(response).await.unwrap_or_default();
+            Ok(Some(Abandon::StaleClaim {
+                rd_torrent_id: stored_torrent(&body),
+            }))
+        }
+        Answer::Failed(StatusCode::BAD_REQUEST) => {
+            let body = read_body(response).await.unwrap_or_default();
+            match error_code(&body) {
+                Some(code) if code == "picked_locked" => Ok(Some(Abandon::PickedLocked)),
+                code => Err(PortalError::Fatal(describe(StatusCode::BAD_REQUEST, code))),
+            }
+        }
+        Answer::Failed(status) => Err(failure(status, response).await),
     }
 }
 
@@ -554,6 +652,171 @@ mod tests {
         let result = client_for(&server).await.report(7, "c-1", &report).await;
         assert_eq!(result, Ok(ReportResult::Applied));
         server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn a_claim_carries_the_removal_and_defaults_to_none() {
+        let server = MockServer::start().await;
+        let mut body = claim_json();
+        body["remove_rd_torrent_id"] = json!("ABCDEFGHIJKLM");
+        mount(
+            &server,
+            "POST",
+            "/internal/jobs/claim",
+            ResponseTemplate::new(200).set_body_json(body),
+        )
+        .await;
+        let job = client_for(&server).await.claim().await.unwrap().unwrap();
+        assert_eq!(job.remove_rd_torrent_id.as_deref(), Some("ABCDEFGHIJKLM"));
+
+        // An older portal that does not send the field.
+        let server = MockServer::start().await;
+        mount(
+            &server,
+            "POST",
+            "/internal/jobs/claim",
+            ResponseTemplate::new(200).set_body_json(claim_json()),
+        )
+        .await;
+        let job = client_for(&server).await.claim().await.unwrap().unwrap();
+        assert_eq!(job.remove_rd_torrent_id, None);
+    }
+
+    #[tokio::test]
+    async fn the_done_reports_have_the_portals_field_names() {
+        let hash = "a".repeat(40);
+        let top = "b".repeat(40);
+        for (report, expected) in [
+            (
+                Report::done("ABCDEFGHIJKLM".into(), hash.clone(), Some(top.clone())),
+                json!({
+                    "claim_id": "c-1", "state": "done", "rd_torrent_id": "ABCDEFGHIJKLM",
+                    "chosen_infohash": hash, "top_infohash": top,
+                }),
+            ),
+            (
+                Report::already_had(hash.clone()),
+                json!({
+                    "claim_id": "c-1", "state": "done", "chosen_infohash": hash,
+                    "reason": "already_had",
+                }),
+            ),
+            (
+                Report::needs_pick_with("picked_failed", "status 403, error_code 35"),
+                json!({
+                    "claim_id": "c-1", "state": "needs_pick", "reason": "picked_failed",
+                    "error": "status 403, error_code 35",
+                }),
+            ),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/internal/jobs/7/report"))
+                .and(body_json(expected))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let result = client_for(&server).await.report(7, "c-1", &report).await;
+            assert_eq!(result, Ok(ReportResult::Applied));
+            server.verify().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn progress_sends_only_what_it_has_with_the_bearer_token() {
+        let cases = [
+            (Progress::default(), json!({"claim_id": "c-1"})),
+            (
+                Progress {
+                    rd_torrent_id: Some("ABCDEFGHIJKLM".into()),
+                    chosen_infohash: Some("a".repeat(40)),
+                    ..Progress::default()
+                },
+                json!({
+                    "claim_id": "c-1", "rd_torrent_id": "ABCDEFGHIJKLM",
+                    "chosen_infohash": "a".repeat(40),
+                }),
+            ),
+            (
+                Progress {
+                    removed_rd_torrent_id: Some("NOPQRSTUVWXYZ".into()),
+                    uncached_adds: 1,
+                    ..Progress::default()
+                },
+                json!({
+                    "claim_id": "c-1", "removed_rd_torrent_id": "NOPQRSTUVWXYZ",
+                    "uncached_adds": 1,
+                }),
+            ),
+        ];
+        for (progress, expected) in cases {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/internal/jobs/7/progress"))
+                .and(header("authorization", format!("Bearer {TOKEN}").as_str()))
+                .and(body_json(expected))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let result = client_for(&server)
+                .await
+                .progress(7, "c-1", &progress)
+                .await;
+            assert_eq!(result, Ok(ProgressResult::Applied));
+            server.verify().await;
+        }
+    }
+
+    async fn progress_status(template: ResponseTemplate) -> Result<ProgressResult, PortalError> {
+        let server = MockServer::start().await;
+        mount(&server, "POST", "/internal/jobs/7/progress", template).await;
+        client_for(&server)
+            .await
+            .progress(7, "c-1", &Progress::default())
+            .await
+    }
+
+    #[tokio::test]
+    async fn progress_maps_the_portals_answers_like_a_report() {
+        let stale = ResponseTemplate::new(409)
+            .set_body_json(json!({"error": "stale_claim", "rd_torrent_id": "ABC123"}));
+        assert_eq!(
+            progress_status(stale).await,
+            Ok(ProgressResult::Abandon(Abandon::StaleClaim {
+                rd_torrent_id: Some("ABC123".into())
+            }))
+        );
+        let stale_bare = ResponseTemplate::new(409).set_body_json(json!({"error": "stale_claim"}));
+        assert_eq!(
+            progress_status(stale_bare).await,
+            Ok(ProgressResult::Abandon(Abandon::StaleClaim {
+                rd_torrent_id: None
+            }))
+        );
+        assert_eq!(
+            progress_status(ResponseTemplate::new(404)).await,
+            Ok(ProgressResult::Abandon(Abandon::NotFound))
+        );
+        let locked = ResponseTemplate::new(400).set_body_json(json!({"error": "picked_locked"}));
+        assert_eq!(
+            progress_status(locked).await,
+            Ok(ProgressResult::Abandon(Abandon::PickedLocked))
+        );
+        let bad = ResponseTemplate::new(400).set_body_json(json!({"error": "bad_request"}));
+        assert!(matches!(
+            progress_status(bad).await,
+            Err(PortalError::Fatal(_))
+        ));
+        assert!(matches!(
+            progress_status(ResponseTemplate::new(503)).await,
+            Err(PortalError::Transient(_))
+        ));
+        assert!(matches!(
+            progress_status(ResponseTemplate::new(401)).await,
+            Err(PortalError::Fatal(text)) if text.starts_with("status 401")
+        ));
     }
 
     #[tokio::test]

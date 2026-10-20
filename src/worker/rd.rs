@@ -9,7 +9,7 @@
 //! [`Secret`] that prints as nothing and is sent only as a sensitive header.
 //! There are no retries here.
 
-use std::{fmt, time::Duration};
+use std::{fmt, sync::Arc, time::Duration};
 
 use reqwest::{
     Method, RequestBuilder, StatusCode, Url,
@@ -19,7 +19,10 @@ use reqwest::{
 use serde::{Deserialize, Deserializer};
 use tokio::{sync::Mutex, time::Instant};
 
-use super::state::{StateStore, Trip};
+use super::{
+    config::RdConfig,
+    state::{Limits, StateStore, SystemClock, Trip},
+};
 
 pub const DEFAULT_BASE_URL: &str = "https://api.real-debrid.com/rest/1.0";
 
@@ -31,6 +34,52 @@ const MAX_PAGES: usize = 20;
 /// Calls that may go out back to back before the budget starts spacing them.
 const BURST: u32 = 4;
 
+/// Everything the worker needs to act at Real-Debrid: the client, the
+/// counters file it shares with it, and the limits the run checks.
+pub struct RdRuntime {
+    pub client: RdClient,
+    pub state: StateStore,
+    /// The cap on one torrent's file, checked against Real-Debrid's size.
+    pub max_bytes: u64,
+    /// Active slots left unused for the admin's own downloads.
+    pub keep_free_slots: u32,
+}
+
+impl RdRuntime {
+    pub fn new(config: &RdConfig) -> Result<Self, RdError> {
+        let state = StateStore::open_with(
+            &config.state_dir,
+            Arc::new(SystemClock),
+            Limits {
+                max_adds: config.max_adds_per_day,
+                max_uncached: config.max_uncached_per_day,
+            },
+        );
+        let client = RdClient::new(
+            &config.base_url,
+            &config.token,
+            state.clone(),
+            config.per_min,
+        )?;
+        Ok(Self {
+            client,
+            state,
+            max_bytes: config.max_bytes,
+            keep_free_slots: config.keep_free_slots,
+        })
+    }
+}
+
+impl fmt::Debug for RdRuntime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RdRuntime")
+            .field("client", &self.client)
+            .field("max_bytes", &self.max_bytes)
+            .field("keep_free_slots", &self.keep_free_slots)
+            .finish_non_exhaustive()
+    }
+}
+
 /// The Real-Debrid API token. Not `Display`, not serializable, and `Debug`
 /// shows nothing of it.
 #[derive(Clone)]
@@ -39,6 +88,11 @@ pub struct Secret(String);
 impl Secret {
     pub fn new(token: impl Into<String>) -> Self {
         Self(token.into())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn expose(&self) -> &str {
+        &self.0
     }
 
     /// The `Authorization` header value, marked sensitive so the HTTP stack
