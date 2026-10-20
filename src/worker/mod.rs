@@ -7,6 +7,7 @@ pub mod backoff;
 pub mod candidate;
 pub mod config;
 pub mod portal;
+pub mod rd;
 pub mod release;
 pub mod rules;
 pub mod run;

@@ -127,6 +127,9 @@ struct Cell {
     state: State,
     unreadable: bool,
     auth_failed: bool,
+    /// Which trip opened the breaker; not persisted, so after a restart an
+    /// open breaker reads as a rate limit.
+    last_trip: Option<Trip>,
 }
 
 struct Inner {
@@ -169,6 +172,7 @@ impl StateStore {
                     state,
                     unreadable,
                     auth_failed: false,
+                    last_trip: None,
                 }),
             }),
         }
@@ -244,6 +248,15 @@ impl StateStore {
             .map(Duration::from_secs)
     }
 
+    /// The trip that keeps Real-Debrid closed right now, if any.
+    pub fn breaker_trip(&self, now: u64) -> Option<Trip> {
+        let (cell, _) = self.lock_rolled();
+        if cell.auth_failed {
+            return Some(Trip::Auth);
+        }
+        (cell.state.breaker_until > now).then(|| cell.last_trip.unwrap_or(Trip::RateLimit))
+    }
+
     /// Opens the breaker. It takes effect in memory even when the file
     /// cannot be written; the error says the write failed. A trip while the
     /// breaker is already open (a call that was in flight) changes nothing.
@@ -251,6 +264,7 @@ impl StateStore {
         let (mut cell, _) = self.lock_rolled();
         if trip == Trip::Auth {
             cell.auth_failed = true;
+            cell.last_trip = Some(Trip::Auth);
             return Ok(());
         }
         if cell.auth_failed || cell.state.breaker_until > now {
@@ -269,6 +283,7 @@ impl StateStore {
             }
             Trip::Auth => {}
         }
+        cell.last_trip = Some(trip);
         self.persist(&cell)
     }
 
@@ -453,19 +468,20 @@ fn utc_date(unix: u64) -> String {
     format!("{year:04}-{month:02}-{day:02}")
 }
 
+/// Test helpers shared with the other worker tests.
 #[cfg(test)]
-mod tests {
+pub(crate) mod testutil {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::*;
 
-    struct FakeClock(AtomicU64);
+    pub(crate) struct FakeClock(AtomicU64);
 
     impl FakeClock {
-        fn at(unix: u64) -> Arc<Self> {
+        pub(crate) fn at(unix: u64) -> Arc<Self> {
             Arc::new(Self(AtomicU64::new(unix)))
         }
-        fn set(&self, unix: u64) {
+        pub(crate) fn set(&self, unix: u64) {
             self.0.store(unix, Ordering::SeqCst);
         }
     }
@@ -477,10 +493,10 @@ mod tests {
     }
 
     /// A fresh directory under the system temp dir, removed on drop.
-    struct Dir(PathBuf);
+    pub(crate) struct Dir(pub PathBuf);
 
     impl Dir {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             static N: AtomicU64 = AtomicU64::new(0);
             let nanos = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -492,7 +508,7 @@ mod tests {
             fs::create_dir_all(&path).unwrap();
             Self(path)
         }
-        fn file(&self) -> PathBuf {
+        pub(crate) fn file(&self) -> PathBuf {
             self.0.join(FILE_NAME)
         }
     }
@@ -502,6 +518,12 @@ mod tests {
             let _ = fs::remove_dir_all(&self.0);
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testutil::{Dir, FakeClock};
+    use super::*;
 
     // 2026-10-20 12:00:00 UTC
     const NOON: u64 = 1_792_497_600;
@@ -746,6 +768,18 @@ mod tests {
             store.breaker_open(NOON + 10),
             Some(Duration::from_secs(890))
         );
+    }
+
+    #[test]
+    fn breaker_trip_names_what_opened_it() {
+        let dir = Dir::new();
+        let store = open(&dir, &FakeClock::at(NOON));
+        assert_eq!(store.breaker_trip(NOON), None);
+        store.trip(Trip::Forbidden, NOON).unwrap();
+        assert_eq!(store.breaker_trip(NOON), Some(Trip::Forbidden));
+        assert_eq!(store.breaker_trip(NOON + 6 * 3600), None);
+        store.trip(Trip::Auth, NOON).unwrap();
+        assert_eq!(store.breaker_trip(NOON + 6 * 3600), Some(Trip::Auth));
     }
 
     #[test]

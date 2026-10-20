@@ -83,6 +83,8 @@ jsonwebtoken = { version = "10.3", default-features = false, features = [
 
 [dev-dependencies]
 wiremock = "0.6"
+# Paused clocks for the request budget tests; same crate, one more feature.
+tokio = { version = "1", features = ["test-util"] }
 
 [profile.release]
 lto = "thin"
