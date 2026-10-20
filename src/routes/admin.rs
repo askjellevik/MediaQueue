@@ -884,9 +884,6 @@ pub async fn post_job_not_playing(
         db::NotPlayingOutcome::NotAllowed => Err(AppError::Conflict(
             "forespørselen må være ventende eller lagt til og ha IMDb-ID",
         )),
-        db::NotPlayingOutcome::HasTorrent => Err(AppError::Conflict(
-            "jobben har en torrent hos Real-Debrid som må ryddes bort først",
-        )),
         db::NotPlayingOutcome::Requeued { reopened } => {
             tracing::info!(job_id = id, reopened, "fetch job marked not playing");
             state.events.publish(Tick::Admin);

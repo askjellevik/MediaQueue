@@ -614,6 +614,7 @@ async fn claim_hands_out_only_the_allowed_fields_and_only_while_enabled() {
             "chosen_infohash",
             "picked",
             "rd_torrent_id",
+            "remove_rd_torrent_id",
             "blocked_hashes",
         ])
     );
@@ -890,6 +891,9 @@ async fn progress_rejects_bad_input_without_touching_the_job() {
         json!({"claim_id": claim, "rd_torrent_id": long_id}),
         json!({"claim_id": claim, "rd_torrent_id": ""}),
         json!({"claim_id": claim, "rd_torrent_id": "a/b"}),
+        json!({"claim_id": claim, "removed_rd_torrent_id": ""}),
+        json!({"claim_id": claim, "removed_rd_torrent_id": "a/b"}),
+        json!({"claim_id": claim, "removed_rd_torrent_id": "A".repeat(65)}),
         json!({"claim_id": ""}),
         json!({"rd_torrent_id": "ABC"}),
     ];
@@ -1739,6 +1743,87 @@ async fn not_playing_makes_the_running_workers_next_report_stale() {
     assert_eq!(claim["chosen_infohash"], Value::Null);
 }
 
+async fn removal_column(pool: &SqlitePool, id: i64) -> Option<String> {
+    sqlx::query_scalar("SELECT remove_rd_torrent_id FROM fetch_jobs WHERE id = ?")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn not_playing_hands_the_torrent_to_the_next_claim_and_progress_clears_it() {
+    let app = common::spawn_app().await;
+    let run = running(&app).await;
+    let progress_path = format!("/internal/jobs/{}/progress", run.job_id);
+    let progress = worker(
+        &app,
+        "POST",
+        &progress_path,
+        Some(&json!({
+            "claim_id": run.claim_id,
+            "chosen_infohash": HASH_A,
+            "rd_torrent_id": "RD1",
+        })),
+    )
+    .await;
+    assert_eq!(progress.status, 200, "{}", progress.body);
+
+    let response = admin_call(
+        &app,
+        &run.admin,
+        "POST",
+        &format!("/api/admin/jobs/{}/not-playing", run.job_id),
+        Some("{}"),
+    )
+    .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    let row = job_row(&app.pool, run.job_id).await;
+    assert_eq!(row.rd_torrent_id, None);
+    assert_eq!(
+        removal_column(&app.pool, run.job_id).await.as_deref(),
+        Some("RD1")
+    );
+
+    // The old run is stale and cannot clear anything.
+    let stale = worker(
+        &app,
+        "POST",
+        &progress_path,
+        Some(&json!({"claim_id": run.claim_id, "removed_rd_torrent_id": "RD1"})),
+    )
+    .await;
+    assert_error(&stale, 409, "stale_claim");
+    assert_eq!(
+        removal_column(&app.pool, run.job_id).await.as_deref(),
+        Some("RD1")
+    );
+
+    // The next claim carries the removal and no torrent to resume.
+    let claim = json_of(&worker(&app, "POST", "/internal/jobs/claim", None).await);
+    assert_eq!(claim["id"], run.job_id);
+    assert_eq!(claim["remove_rd_torrent_id"], "RD1");
+    assert_eq!(claim["rd_torrent_id"], Value::Null);
+    let claim_id = claim["claim_id"].as_str().unwrap();
+
+    // Naming another torrent clears nothing; naming this one does.
+    for (removed, left) in [("OTHER", Some("RD1")), ("RD1", None)] {
+        let response = worker(
+            &app,
+            "POST",
+            &progress_path,
+            Some(&json!({"claim_id": claim_id, "removed_rd_torrent_id": removed})),
+        )
+        .await;
+        assert_eq!(response.status, 200, "{}", response.body);
+        assert_eq!(
+            removal_column(&app.pool, run.job_id).await.as_deref(),
+            left,
+            "{removed}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn not_playing_checks_the_job_and_the_request() {
     let app = common::spawn_app().await;
@@ -1768,18 +1853,9 @@ async fn not_playing_checks_the_job_and_the_request() {
 
     sql(
         &app.pool,
-        &format!(
-            "UPDATE fetch_jobs SET chosen_infohash = '{HASH_A}', picked = 1, rd_torrent_id = 'RD1'"
-        ),
+        &format!("UPDATE fetch_jobs SET chosen_infohash = '{HASH_A}', picked = 1"),
     )
     .await;
-    // A stored Real-Debrid torrent is step 4's to clean up.
-    assert_error(
-        &admin_call(&app, &admin, "POST", &path, Some("{}")).await,
-        409,
-        "conflict",
-    );
-    sql(&app.pool, "UPDATE fetch_jobs SET rd_torrent_id = NULL").await;
     sql(&app.pool, "UPDATE requests SET status = 'refused'").await;
     assert_error(
         &admin_call(&app, &admin, "POST", &path, Some("{}")).await,

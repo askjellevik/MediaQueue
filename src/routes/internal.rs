@@ -216,6 +216,7 @@ struct ClaimView {
     /// back to another candidate.
     picked: bool,
     rd_torrent_id: Option<String>,
+    remove_rd_torrent_id: Option<String>,
     blocked_hashes: Vec<String>,
 }
 
@@ -249,6 +250,7 @@ pub async fn post_claim(
         chosen_infohash: job.chosen_infohash,
         picked: job.picked,
         rd_torrent_id: job.rd_torrent_id,
+        remove_rd_torrent_id: job.remove_rd_torrent_id,
         blocked_hashes: job.blocked_hashes,
     })
     .into_response())
@@ -261,6 +263,7 @@ pub struct ProgressBody {
     rd_torrent_id: Option<String>,
     chosen_infohash: Option<String>,
     uncached_adds: Option<i64>,
+    removed_rd_torrent_id: Option<String>,
 }
 
 /// `POST /internal/jobs/{id}/progress`: a sign of life that also saves a
@@ -273,6 +276,7 @@ pub async fn post_progress(
 ) -> Result<Json<Value>, AppError> {
     let claim_id = clean_claim_id(&body.claim_id)?;
     let rd_torrent_id = clean_rd_torrent_id(body.rd_torrent_id.as_deref())?;
+    let removed_rd_torrent_id = clean_rd_torrent_id(body.removed_rd_torrent_id.as_deref())?;
     let chosen_infohash = clean_optional_infohash(body.chosen_infohash.as_deref())?;
     let uncached_adds = body.uncached_adds.unwrap_or(0);
     if !(0..=MAX_UNCACHED_ADDS).contains(&uncached_adds) {
@@ -281,6 +285,7 @@ pub async fn post_progress(
     let progress = db::Progress {
         rd_torrent_id: rd_torrent_id.as_deref(),
         chosen_infohash: chosen_infohash.as_deref(),
+        removed_rd_torrent_id: removed_rd_torrent_id.as_deref(),
         uncached_adds,
     };
     match db::progress_fetch_job(&state.pool, id, claim_id, &progress, admin::now(&state)).await? {

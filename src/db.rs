@@ -1535,6 +1535,10 @@ pub struct ClaimedJob {
     pub picked: bool,
     /// A torrent an earlier run already added, to resume from.
     pub rd_torrent_id: Option<String>,
+    /// A torrent the admin wants gone (the release did not play). The worker
+    /// deletes it only if its own run created it, then clears it with a
+    /// progress call.
+    pub remove_rd_torrent_id: Option<String>,
     pub blocked_hashes: Vec<String>,
 }
 
@@ -1646,7 +1650,7 @@ pub async fn claim_fetch_job_with_changes(
                   r.tmdb_id AS "tmdb_id!", r.media_type AS "media_type!",
                   r.imdb_id AS "imdb_id!", r.title AS "title!", r.year,
                   j.infuse_pro AS "infuse_pro!: bool", j.chosen_infohash,
-                  j.picked AS "picked!: bool", j.rd_torrent_id
+                  j.picked AS "picked!: bool", j.rd_torrent_id, j.remove_rd_torrent_id
            FROM fetch_jobs j JOIN requests r ON r.id = j.request_id
            WHERE j.state = 'queued' AND r.status = 'pending' AND r.imdb_id IS NOT NULL
            ORDER BY j.created_at, j.id
@@ -1693,6 +1697,7 @@ pub async fn claim_fetch_job_with_changes(
         chosen_infohash: next.chosen_infohash,
         picked: next.picked,
         rd_torrent_id: next.rd_torrent_id,
+        remove_rd_torrent_id: next.remove_rd_torrent_id,
         blocked_hashes,
     };
     Ok(ClaimResult {
@@ -1885,6 +1890,9 @@ pub async fn report_fetch_job(
 pub struct Progress<'a> {
     pub rd_torrent_id: Option<&'a str>,
     pub chosen_infohash: Option<&'a str>,
+    /// The worker deleted this torrent for a removal request; clears
+    /// `remove_rd_torrent_id` if it still names it.
+    pub removed_rd_torrent_id: Option<&'a str>,
     /// Add-and-delete cycles since the last call, 0 to 5.
     pub uncached_adds: i64,
 }
@@ -1917,7 +1925,9 @@ pub async fn progress_fetch_job(
              updated_at = ?1,
              rd_torrent_id = COALESCE(?2, rd_torrent_id),
              chosen_infohash = COALESCE(?3, chosen_infohash),
-             uncached_adds = uncached_adds + ?4
+             uncached_adds = uncached_adds + ?4,
+             remove_rd_torrent_id = CASE WHEN remove_rd_torrent_id = ?7 THEN NULL
+                                         ELSE remove_rd_torrent_id END
          WHERE id = ?5 AND state = 'fetching' AND claim_id = ?6
            AND NOT (picked = 1 AND ?3 IS NOT NULL AND ?3 IS NOT chosen_infohash)",
         now,
@@ -1925,7 +1935,8 @@ pub async fn progress_fetch_job(
         progress.chosen_infohash,
         uncached,
         job_id,
-        claim_id
+        claim_id,
+        progress.removed_rd_torrent_id
     )
     .execute(&mut *tx)
     .await?
@@ -2106,15 +2117,15 @@ pub enum NotPlayingOutcome {
     NoChosenHash,
     /// The request is not `pending` or `added`, or has no IMDb ID.
     NotAllowed,
-    /// A Real-Debrid torrent is still stored; cleaning it up is step 4's.
-    HasTorrent,
 }
 
 /// The admin says the job's chosen release did not play: blocks the hash
 /// for the request, reopens the request if it was already `added`, and
 /// requeues the job without a choice. Candidates stay; the next report
-/// overwrites them. All in one transaction. A running worker's next call
-/// is stale, because `claim_id` is cleared.
+/// overwrites them. A stored Real-Debrid torrent id moves to
+/// `remove_rd_torrent_id` for the worker to delete (an older pending
+/// removal stays when there is no new id). All in one transaction. A
+/// running worker's next call is stale, because `claim_id` is cleared.
 pub async fn not_playing_fetch_job(
     pool: &SqlitePool,
     job_id: i64,
@@ -2122,7 +2133,7 @@ pub async fn not_playing_fetch_job(
 ) -> Result<NotPlayingOutcome, sqlx::Error> {
     let mut tx = begin_immediate(pool).await?;
     let Some(job) = sqlx::query!(
-        r#"SELECT j.request_id AS "request_id!", j.chosen_infohash, j.rd_torrent_id,
+        r#"SELECT j.request_id AS "request_id!", j.chosen_infohash,
                   r.status AS "status!", r.imdb_id
            FROM fetch_jobs j JOIN requests r ON r.id = j.request_id
            WHERE j.id = ?"#,
@@ -2142,10 +2153,6 @@ pub async fn not_playing_fetch_job(
         tx.rollback().await?;
         return Ok(NotPlayingOutcome::NotAllowed);
     }
-    if job.rd_torrent_id.is_some() {
-        tx.rollback().await?;
-        return Ok(NotPlayingOutcome::HasTorrent);
-    }
     sqlx::query!(
         "INSERT OR IGNORE INTO blocked_hashes (request_id, infohash, created_at) VALUES (?, ?, ?)",
         job.request_id,
@@ -2162,7 +2169,9 @@ pub async fn not_playing_fetch_job(
     sqlx::query!(
         "UPDATE fetch_jobs
          SET state = 'queued', chosen_infohash = NULL, picked = 0, claim_id = NULL,
-             claimed_at = NULL, attempts = 0, reason = NULL, last_error = NULL, updated_at = ?
+             claimed_at = NULL, attempts = 0, reason = NULL, last_error = NULL,
+             remove_rd_torrent_id = COALESCE(rd_torrent_id, remove_rd_torrent_id),
+             rd_torrent_id = NULL, updated_at = ?
          WHERE id = ?",
         now,
         job_id
@@ -2993,6 +3002,7 @@ mod tests {
             rd_torrent_id: Some("RD9"),
             chosen_infohash: Some(HASH_A),
             uncached_adds: 1,
+            ..Default::default()
         };
         let at_44_minutes = 1000 + 44 * 60;
         assert_eq!(
@@ -3049,6 +3059,7 @@ mod tests {
             rd_torrent_id: Some("RD2"),
             chosen_infohash: Some(HASH_B),
             uncached_adds: 2,
+            ..Default::default()
         };
         assert_eq!(
             progress_fetch_job(&pool, claim.id, "not-the-claim", &progress, 2000)
@@ -3968,7 +3979,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn not_playing_refuses_without_a_hash_or_with_a_stored_torrent() {
+    async fn not_playing_refuses_without_a_hash() {
         let pool = test_pool().await;
         assert_eq!(
             not_playing_fetch_job(&pool, 999, 50).await.unwrap(),
@@ -3981,7 +3992,19 @@ mod tests {
             not_playing_fetch_job(&pool, job_id, 50).await.unwrap(),
             NotPlayingOutcome::NoChosenHash
         );
+    }
 
+    async fn removal_of(pool: &SqlitePool, job_id: i64) -> (Option<String>, Option<String>) {
+        sqlx::query_as("SELECT rd_torrent_id, remove_rd_torrent_id FROM fetch_jobs WHERE id = ?")
+            .bind(job_id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn not_playing_moves_a_stored_torrent_to_the_removal_column() {
+        let pool = test_pool().await;
         let (request_id, job_id) = chosen_job(&pool, 2, "failed").await;
         sql(
             &pool,
@@ -3993,21 +4016,108 @@ mod tests {
             .unwrap();
         assert_eq!(
             not_playing_fetch_job(&pool, job_id, 50).await.unwrap(),
-            NotPlayingOutcome::HasTorrent
+            NotPlayingOutcome::Requeued { reopened: true }
         );
-        // Nothing moved: not the block, not the request, not the job.
-        assert_eq!(count(&pool, "blocked_hashes").await, 0);
-        assert_eq!(request_status(&pool, request_id).await, "added");
+        assert_eq!(count(&pool, "blocked_hashes").await, 1);
+        assert_eq!(request_status(&pool, request_id).await, "pending");
+        assert_eq!(
+            removal_of(&pool, job_id).await,
+            (None, Some("RD1".to_string()))
+        );
         let row = job(&pool, job_id).await;
         assert_eq!(
             (
                 row.state.as_str(),
                 row.chosen_infohash.as_deref(),
-                row.picked,
-                row.rd_torrent_id.as_deref()
+                row.picked
             ),
-            ("failed", Some(HASH_A), true, Some("RD1"))
+            ("queued", None, false)
         );
+
+        // The requeued job hands the removal to the next claim.
+        let claim = claim_fetch_job(&pool, true, 60)
+            .await
+            .unwrap()
+            .expect("the requeued job");
+        assert_eq!(claim.id, job_id);
+        assert_eq!(claim.rd_torrent_id, None);
+        assert_eq!(claim.remove_rd_torrent_id.as_deref(), Some("RD1"));
+    }
+
+    #[tokio::test]
+    async fn not_playing_keeps_an_older_removal_unless_there_is_a_new_torrent() {
+        let pool = test_pool().await;
+        let (_, job_id) = chosen_job(&pool, 1, "done").await;
+        sql(
+            &pool,
+            &format!("UPDATE fetch_jobs SET remove_rd_torrent_id = 'OLD' WHERE id = {job_id}"),
+        )
+        .await;
+        not_playing_fetch_job(&pool, job_id, 50).await.unwrap();
+        assert_eq!(removal_of(&pool, job_id).await, (None, Some("OLD".into())));
+
+        // A new torrent is the one to remove next; nothing becomes NULL.
+        sql(
+            &pool,
+            &format!(
+                "UPDATE fetch_jobs SET chosen_infohash = '{HASH_A}', rd_torrent_id = 'NEW'
+                 WHERE id = {job_id}"
+            ),
+        )
+        .await;
+        not_playing_fetch_job(&pool, job_id, 60).await.unwrap();
+        assert_eq!(removal_of(&pool, job_id).await, (None, Some("NEW".into())));
+    }
+
+    #[tokio::test]
+    async fn progress_clears_a_removal_only_when_it_names_the_same_id() {
+        let pool = test_pool().await;
+        let claim = claimed(&pool, 1, 1000).await;
+        sql(
+            &pool,
+            &format!(
+                "UPDATE fetch_jobs SET remove_rd_torrent_id = 'RD1' WHERE id = {}",
+                claim.id
+            ),
+        )
+        .await;
+        let call = |removed: Option<&'static str>, claim_id: String| {
+            let pool = pool.clone();
+            let id = claim.id;
+            async move {
+                let progress = Progress {
+                    removed_rd_torrent_id: removed,
+                    ..Default::default()
+                };
+                progress_fetch_job(&pool, id, &claim_id, &progress, 1100)
+                    .await
+                    .unwrap()
+            }
+        };
+
+        // Nothing named, or another id: untouched.
+        assert_eq!(
+            call(None, claim.claim_id.clone()).await,
+            ProgressOutcome::Applied
+        );
+        assert_eq!(
+            call(Some("OTHER"), claim.claim_id.clone()).await,
+            ProgressOutcome::Applied
+        );
+        assert_eq!(removal_of(&pool, claim.id).await.1.as_deref(), Some("RD1"));
+
+        // A stale claim cannot clear it.
+        assert!(matches!(
+            call(Some("RD1"), "not-the-claim".into()).await,
+            ProgressOutcome::Stale { .. }
+        ));
+        assert_eq!(removal_of(&pool, claim.id).await.1.as_deref(), Some("RD1"));
+
+        assert_eq!(
+            call(Some("RD1"), claim.claim_id.clone()).await,
+            ProgressOutcome::Applied
+        );
+        assert_eq!(removal_of(&pool, claim.id).await.1, None);
     }
 
     #[tokio::test]

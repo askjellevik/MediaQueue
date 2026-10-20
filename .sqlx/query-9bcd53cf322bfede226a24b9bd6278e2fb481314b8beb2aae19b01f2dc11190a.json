@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT j.request_id AS \"request_id!\", j.chosen_infohash, j.rd_torrent_id,\n                  r.status AS \"status!\", r.imdb_id\n           FROM fetch_jobs j JOIN requests r ON r.id = j.request_id\n           WHERE j.id = ?",
+  "query": "SELECT j.request_id AS \"request_id!\", j.chosen_infohash,\n                  r.status AS \"status!\", r.imdb_id\n           FROM fetch_jobs j JOIN requests r ON r.id = j.request_id\n           WHERE j.id = ?",
   "describe": {
     "columns": [
       {
@@ -26,19 +26,8 @@
         }
       },
       {
-        "name": "rd_torrent_id",
-        "ordinal": 2,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "fetch_jobs",
-            "name": "rd_torrent_id"
-          }
-        }
-      },
-      {
         "name": "status!",
-        "ordinal": 3,
+        "ordinal": 2,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -49,7 +38,7 @@
       },
       {
         "name": "imdb_id",
-        "ordinal": 4,
+        "ordinal": 3,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -65,10 +54,9 @@
     "nullable": [
       false,
       true,
-      true,
       false,
       true
     ]
   },
-  "hash": "119ed3c869882ec01affc72743b656ad50f8ca9e47f66e2d6476b7a2dfb476f0"
+  "hash": "9bcd53cf322bfede226a24b9bd6278e2fb481314b8beb2aae19b01f2dc11190a"
 }
