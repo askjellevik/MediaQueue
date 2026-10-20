@@ -19,7 +19,8 @@ const LONGEST_STRING: usize = 300;
 const LARGEST_NUMBER: u64 = 999_999_999_999;
 const MOST_LANGUAGES: usize = 8;
 
-/// The points a candidate earned, by part. `language` is zero or negative.
+/// The points a candidate earned, by part. `language` is zero or negative;
+/// `free_badge` is zero unless a free job's candidate has a `yes` badge.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ScoreParts {
     pub resolution: f64,
@@ -28,11 +29,18 @@ pub struct ScoreParts {
     pub size: f64,
     pub seeders: f64,
     pub language: f64,
+    pub free_badge: f64,
 }
 
 impl ScoreParts {
     fn total(self) -> f64 {
-        self.resolution + self.source + self.codec + self.size + self.seeders + self.language
+        self.resolution
+            + self.source
+            + self.codec
+            + self.size
+            + self.seeders
+            + self.language
+            + self.free_badge
     }
 }
 
@@ -158,7 +166,12 @@ fn seeder_points(seeders: Option<u32>, settings: &RankSettings) -> f64 {
     (settings.seeder_factor * (1.0 + seeders).log10()).min(settings.seeder_max_points)
 }
 
-fn score(raw: &RawCandidate, accepted: &Accepted, settings: &RankSettings) -> ScoreParts {
+fn score(
+    raw: &RawCandidate,
+    accepted: &Accepted,
+    infuse_pro: bool,
+    settings: &RankSettings,
+) -> ScoreParts {
     let release = &accepted.release;
     ScoreParts {
         resolution: resolution_points(release.resolution, settings),
@@ -168,6 +181,11 @@ fn score(raw: &RawCandidate, accepted: &Accepted, settings: &RankSettings) -> Sc
         seeders: seeder_points(raw.seeders, settings),
         language: if accepted.language == LanguageFit::Foreign {
             -settings.foreign_language_penalty
+        } else {
+            0.0
+        },
+        free_badge: if !infuse_pro && accepted.badge == FreeBadge::Yes {
+            settings.free_badge_bonus
         } else {
             0.0
         },
@@ -206,7 +224,7 @@ pub fn evaluate(job: &JobSpec, raw: &[RawCandidate], settings: &RankSettings) ->
         match passes_hard_filters(candidate, job, settings) {
             Err(reason) => *dropped.entry(reason).or_insert(0) += 1,
             Ok(accepted) => {
-                let parts = score(candidate, &accepted, settings);
+                let parts = score(candidate, &accepted, job.infuse_pro, settings);
                 survivors.push(Candidate {
                     languages: language_codes(candidate, &accepted.release),
                     raw: candidate.clone(),
@@ -299,6 +317,7 @@ impl Candidate {
                 round1(p.size),
                 round1(p.seeders),
                 round1(p.language),
+                round1(p.free_badge),
             ]),
         );
         map.insert("resolution".into(), json!(self.release.resolution.lines()));
@@ -615,6 +634,47 @@ mod tests {
         assert!(tagged.clear_winner);
     }
 
+    /// A verified (`yes`) WEB-DL and an unverified BluRay that leads it by
+    /// `lead` points before the bonus. Seeders are off so only the source and
+    /// the bonus differ.
+    fn verified_against_unverified(pro: bool, lead: f64) -> Evaluation {
+        let mut settings = open_settings();
+        settings.seeder_factor = 0.0;
+        settings.source.web_dl = 20.0;
+        settings.source.bluray = 20.0 + lead;
+        let verified = raw(
+            'a',
+            "Example.Movie.1994.1080p.WEB-DL.x264.AAC-GRPONE",
+            3.0,
+            50,
+        );
+        let unverified = raw('b', "Example.Movie.1994.1080p.BluRay.x264-GRPTWO", 3.0, 50);
+        evaluate(&job(pro), &[verified, unverified], &settings)
+    }
+
+    #[test]
+    fn a_verified_badge_earns_a_free_job_a_bonus_of_about_six_points() {
+        let top = |lead: f64| {
+            let eval = verified_against_unverified(false, lead);
+            eval.shortlist[0].raw.infohash.chars().next().unwrap()
+        };
+        assert_eq!(top(5.0), 'a', "five points ahead is not enough");
+        assert_eq!(top(7.0), 'b', "seven points ahead is");
+        let eval = verified_against_unverified(false, 5.0);
+        assert_eq!(eval.shortlist[0].parts.free_badge, 6.0);
+        assert_eq!(eval.shortlist[1].parts.free_badge, 0.0);
+    }
+
+    #[test]
+    fn a_pro_job_scores_without_the_badge_bonus() {
+        let eval = verified_against_unverified(true, 5.0);
+        assert!(eval.shortlist.iter().all(|c| c.parts.free_badge == 0.0));
+        assert_eq!(eval.shortlist[0].raw.infohash.chars().next(), Some('b'));
+        let map = eval.shortlist[0].to_report_map();
+        assert_eq!(map["score_parts"].as_array().unwrap().len(), 7);
+        assert_eq!(map["score_parts"][6], json!(0.0));
+    }
+
     #[test]
     fn a_foreign_language_candidate_is_penalised_kept_and_never_a_clear_winner() {
         let mut dubbed = raw('b', BEST, 3.0, 50);
@@ -766,7 +826,7 @@ mod tests {
         assert_eq!(map["score"], json!(107.0));
         assert_eq!(
             map["score_parts"],
-            json!([40.0, 30.0, 10.0, 15.0, 12.0, 0.0])
+            json!([40.0, 30.0, 10.0, 15.0, 12.0, 0.0, 0.0])
         );
         assert_eq!(map["resolution"], json!(1080));
         assert_eq!(map["source"], json!("bluray"));

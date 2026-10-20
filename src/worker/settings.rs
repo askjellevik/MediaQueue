@@ -77,6 +77,9 @@ pub struct RankSettings {
     pub seeder_factor: f64,
     /// Subtracted when the language signals say a likely dub.
     pub foreign_language_penalty: f64,
+    /// Added for a free job's candidate whose badge is `yes`, so a verified
+    /// release beats an unverified one a few points ahead. PRO jobs get none.
+    pub free_badge_bonus: f64,
 
     // The shortlist and the clear-winner rule.
     pub shortlist_len: usize,
@@ -140,6 +143,7 @@ impl Default for RankSettings {
             seeder_max_points: 20.0,
             seeder_factor: 7.0,
             foreign_language_penalty: 25.0,
+            free_badge_bonus: 6.0,
             shortlist_len: 10,
             clear_min_score: 70.0,
             clear_margin: 8.0,

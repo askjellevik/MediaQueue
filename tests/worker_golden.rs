@@ -264,7 +264,9 @@ fn a_multi_file_torrent_named_for_the_film_is_kept() {
         let eval = run(pro);
         let film = find(&eval, 13).expect("kept");
         assert_eq!(film.badge, FreeBadge::Yes, "pro={pro}");
-        assert_eq!(film.score, 105.4, "pro={pro}");
+        // A free job adds the verified-badge bonus.
+        let expected = if pro { 105.4 } else { 111.4 };
+        assert_eq!(film.score, expected, "pro={pro}");
     }
 }
 
@@ -289,9 +291,11 @@ fn the_popular_untagged_release_is_unknown_and_does_not_win_a_free_job() {
     let untagged = find(&eval, 9).expect("in the free shortlist");
     assert_eq!(untagged.badge, FreeBadge::Unknown);
     assert!(!untagged.clear_winner && !eval.clear_winner);
-    // It is the runner-up, close behind the AAC release.
+    // It still ranks third, behind two verified AAC releases that the
+    // badge bonus lifts above it.
     assert_eq!(eval.top_infohash, Some(h(1)));
-    assert_eq!(eval.shortlist[1].raw.infohash, h(9));
+    assert_eq!(eval.shortlist[1].raw.infohash, h(13));
+    assert_eq!(eval.shortlist[2].raw.infohash, h(9));
 }
 
 #[test]
