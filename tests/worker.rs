@@ -1870,6 +1870,37 @@ async fn deleting_the_request_removes_its_job() {
     assert_error(&response, 404, "not_found");
 }
 
+/// `jobs_needs_pick` from the admin counts.
+async fn waiting(app: &TestApp, admin: &str) -> Value {
+    let response = app
+        .request("GET", "/api/admin/counts", &[("Cookie", admin)], None)
+        .await;
+    json_of(&response)["jobs_needs_pick"].clone()
+}
+
+#[tokio::test]
+async fn the_counts_report_jobs_waiting_for_a_pick() {
+    let app = common::spawn_app().await;
+    let admin = login_admin_cookie(&app).await;
+    assert_eq!(waiting(&app, &admin).await, json!(0));
+
+    // Without an IMDb ID the job waits for the admin from the start.
+    let request = seed_request(&app, 1, "pending", None, false).await;
+    let job = create_job(&app, &admin, request).await;
+    assert_eq!(waiting(&app, &admin).await, json!(1));
+
+    let response = admin_call(
+        &app,
+        &admin,
+        "POST",
+        &format!("/api/admin/jobs/{job}/cancel"),
+        Some("{}"),
+    )
+    .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    assert_eq!(waiting(&app, &admin).await, json!(0));
+}
+
 // ---------------------------------------------------------------------
 // Ticks
 // ---------------------------------------------------------------------

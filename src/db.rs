@@ -310,6 +310,17 @@ pub async fn status_counts(pool: &SqlitePool) -> Result<Vec<(String, i64)>, sqlx
     Ok(rows.into_iter().map(|r| (r.status, r.n)).collect())
 }
 
+/// Jobs waiting for the admin's pick, for the Jobs tab badge. Such a job
+/// always has a pending request: a request leaving `pending` closes its
+/// open jobs.
+pub async fn needs_pick_job_count(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "n!: i64" FROM fetch_jobs WHERE state = 'needs_pick'"#
+    )
+    .fetch_one(pool)
+    .await
+}
+
 /// Creates a new admin session. Admin logins aren't capped by `max_sessions`
 /// (that column only applies to members); each login is independent.
 pub async fn create_admin_session(

@@ -192,6 +192,7 @@ function renderAdmin() {
   // The section on show; its refresh() merges in what changed on the server.
   let current = null;
   const pendingCount = el('span', { class: 'count', hidden: true });
+  const jobsCount = el('span', { class: 'count', hidden: true });
   const tabButtons = TABS.map((tab) =>
     el(
       'button',
@@ -205,6 +206,7 @@ function renderAdmin() {
       },
       tab.label,
       tab.id === 'pending' ? pendingCount : null,
+      tab.id === 'jobs' ? jobsCount : null,
     ),
   );
 
@@ -213,6 +215,8 @@ function renderAdmin() {
     if (expired(res) || !res.ok) return;
     pendingCount.textContent = String(res.data.pending);
     pendingCount.hidden = res.data.pending === 0;
+    jobsCount.textContent = String(res.data.jobs_needs_pick);
+    jobsCount.hidden = !res.data.jobs_needs_pick;
   };
   const tablist = el('div', { class: 'tabs', role: 'tablist', 'aria-label': ta.sections }, tabButtons);
 

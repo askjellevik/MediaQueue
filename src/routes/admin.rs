@@ -316,7 +316,8 @@ pub async fn get_events(
     })
 }
 
-/// `GET /api/admin/counts`: requests per status, for the tab badges.
+/// `GET /api/admin/counts`: requests per status and the jobs waiting for a
+/// pick, for the tab badges.
 pub async fn get_counts(
     State(state): State<AppState>,
     _admin: RequireAdmin,
@@ -328,6 +329,10 @@ pub async fn get_counts(
     for (status, n) in db::status_counts(&state.pool).await? {
         counts.insert(status, json!(n));
     }
+    counts.insert(
+        "jobs_needs_pick".to_string(),
+        json!(db::needs_pick_job_count(&state.pool).await?),
+    );
     Ok(Json(counts))
 }
 

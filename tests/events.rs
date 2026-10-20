@@ -345,7 +345,7 @@ async fn counts_need_admin_and_cover_every_status() {
     let empty: Value = serde_json::from_str(&empty.body).unwrap();
     assert_eq!(
         empty,
-        json!({"pending": 0, "added": 0, "already_had": 0, "refused": 0})
+        json!({"pending": 0, "added": 0, "already_had": 0, "refused": 0, "jobs_needs_pick": 0})
     );
 
     common::insert_request(&app.pool, 1, 1, "movie", "pending").await;
@@ -357,6 +357,6 @@ async fn counts_need_admin_and_cover_every_status() {
     let counts: Value = serde_json::from_str(&counts.body).unwrap();
     assert_eq!(
         counts,
-        json!({"pending": 2, "added": 0, "already_had": 0, "refused": 1})
+        json!({"pending": 2, "added": 0, "already_had": 0, "refused": 1, "jobs_needs_pick": 0})
     );
 }
