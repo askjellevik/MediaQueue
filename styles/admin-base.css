@@ -8,6 +8,7 @@
 
 /* The same raised card as in base.css, for the admin's own surfaces. */
 .req-card,
+.job-card,
 .table-wrap {
   @apply rounded-xl border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800;
   box-shadow: var(--shadow-card);
@@ -83,6 +84,28 @@
 
 .row-actions {
   @apply flex flex-wrap items-center gap-2;
+}
+
+/* ---------- Admin: jobs and their shortlist ---------- */
+
+.job-card {
+  @apply grid gap-3 p-3;
+}
+
+.cand-list {
+  @apply grid gap-2;
+}
+
+.cand {
+  @apply grid gap-1 rounded-lg border border-slate-200 p-2 text-sm dark:border-slate-700;
+}
+
+.cand-top {
+  @apply border-sky-600/50 bg-sky-50 dark:border-sky-400/50 dark:bg-sky-950/30;
+}
+
+.cand-dim {
+  @apply opacity-60;
 }
 
 /* The Handlinger dropdown: a panel that floats over what follows. */

@@ -36,6 +36,7 @@ const TABS = [
   { id: 'refused', label: ta.tabs.refused, status: 'refused', empty: ta.empty.refused },
   { id: 'already_had', label: ta.tabs.already_had, status: 'already_had', empty: ta.empty.already_had },
   { id: 'archive', label: ta.tabs.archive, status: 'all', empty: ta.empty.archive },
+  { id: 'jobs', label: ta.tabs.jobs },
   { id: 'members', label: ta.tabs.members },
 ];
 
@@ -224,6 +225,7 @@ function renderAdmin() {
     say('');
     const tab = TABS[index];
     if (tab.id === 'members') current = renderMembers(panel, { say, expired });
+    else if (tab.id === 'jobs') current = renderJobs(panel, { say, expired });
     else current = renderQueue(panel, tab, { say, expired });
     if (location.hash !== `#${tab.id}`) history.replaceState(null, '', `#${tab.id}`);
   };
@@ -684,6 +686,344 @@ function renderQueue(panel, tab, { say, expired }) {
     clearTimeout(filterTimer);
     filterTimer = setTimeout(() => load(true), 250);
   });
+  refresh.addEventListener('click', () => load(true));
+  more.addEventListener('click', () => load(false));
+
+  clear(panel);
+  panel.append(toolbar, list, empty, more);
+  load(true);
+  return { refresh: merge };
+}
+
+// ---------------------------------------------------------------------
+// Jobs tab
+// ---------------------------------------------------------------------
+
+// Job state -> the existing chip colour keys.
+const JOB_CHIP = { needs_pick: 'pending', done: 'added', failed: 'refused' };
+const FREE_CHIP = { yes: 'added', unknown: 'pending', no: 'refused' };
+const JOB_FILTERS = ['needs_pick', 'all', 'queued', 'fetching', 'failed', 'done'];
+
+const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+const text = (v) => (typeof v === 'string' && v !== '' ? v : null);
+const finite = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+const NUMBER = new Intl.NumberFormat('nb-NO', { maximumFractionDigits: 1 });
+
+// Everything a card shows that can change without the job's own timestamp
+// moving: the request's status and the blocked hashes.
+const jobSignature = (job) => `${job.updated_at}|${job.request_status}|${job.blocked_hashes.join(',')}`;
+
+function renderJobs(panel, { say, expired }) {
+  let cursor = null;
+  let generation = 0;
+  let loading = 0;
+  let loaded = false;
+
+  const filter = el(
+    'select',
+    { id: 'job-filter', class: 'field' },
+    JOB_FILTERS.map((value) =>
+      el('option', { value, text: value === 'all' ? ta.jobFilterAll : ta.jobStates[value] }),
+    ),
+  );
+  filter.value = 'needs_pick';
+  const refresh = el('button', { class: 'btn btn-small', type: 'button', text: ta.refresh });
+  const toolbar = el(
+    'div',
+    { class: 'toolbar' },
+    el('label', { class: 'sr-only', for: 'job-filter', text: ta.jobFilter }),
+    filter,
+    refresh,
+  );
+  const list = el('ul', { class: 'req-list' });
+  const empty = el('p', { class: 'muted', text: ta.empty.jobs, hidden: true });
+  const more = el('button', { class: 'btn btn-small', type: 'button', text: t.loadMore, hidden: true });
+
+  // Cards on show, by job id, so a refresh can update them in place.
+  const known = new Map();
+
+  const query = () => new URLSearchParams({ state: filter.value });
+
+  const load = async (reset) => {
+    const mine = ++generation;
+    loading++;
+    const params = query();
+    if (!reset && cursor) params.set('cursor', cursor);
+    more.disabled = true;
+    refresh.disabled = true;
+    const res = await get(`/api/admin/jobs?${params}`);
+    loading--;
+    more.disabled = false;
+    refresh.disabled = false;
+    if (mine !== generation || expired(res)) return;
+    if (!res.ok) {
+      say(ta.loadJobsFailed, 'status-bad');
+      return;
+    }
+    if (reset) {
+      clear(list);
+      known.clear();
+    }
+    for (const job of res.data.items) {
+      const shown = known.get(job.id);
+      if (shown && shown.card.isConnected) continue;
+      list.append(cardFor(job).card);
+    }
+    loaded = true;
+    cursor = res.data.next_cursor;
+    more.hidden = !cursor;
+    empty.hidden = list.children.length > 0;
+  };
+
+  // A job's card. Worker-supplied text only ever goes in through textContent.
+  const cardFor = (initial) => {
+    let job = initial;
+    // True while an action is in flight; the buttons stay disabled.
+    let busy = false;
+    const card = el('li', { class: 'job-card', 'data-id': job.id });
+
+    const post = async (path, body) => {
+      busy = true;
+      paint();
+      const res = await send('POST', `/api/admin/jobs/${job.id}/${path}`, body);
+      busy = false;
+      if (expired(res)) return null;
+      return res;
+    };
+
+    const pick = async (infohash) => {
+      const res = await post('pick', { infohash });
+      if (!res) return;
+      if (res.ok) {
+        job.state = res.data.state;
+        job.chosen_infohash = infohash;
+        job.picked = true;
+        job.reason = res.data.state === 'done' ? 'dry_run' : null;
+        toast(res.data.state === 'done' ? ta.pickedDryRun(job.title) : ta.pickedQueued(job.title));
+      } else {
+        toast(res.status === 409 ? ta.pickFailed : ta.jobActionFailed(job.title), { kind: 'bad' });
+      }
+      paint();
+    };
+
+    const retry = async () => {
+      const res = await post('retry');
+      if (!res) return;
+      if (res.ok) {
+        job.state = 'queued';
+        job.reason = null;
+        job.last_error = null;
+        job.attempts = 0;
+        toast(ta.jobRetried(job.title));
+      } else {
+        toast(ta.jobActionFailed(job.title), { kind: 'bad' });
+      }
+      paint();
+    };
+
+    const cancel = async () => {
+      const res = await post('cancel');
+      if (!res) return;
+      if (res.ok) {
+        job.state = 'failed';
+        job.reason = 'cancelled';
+        toast(ta.jobCancelled(job.title));
+      } else {
+        toast(ta.jobActionFailed(job.title), { kind: 'bad' });
+      }
+      paint();
+    };
+
+    const notPlaying = async () => {
+      if (!window.confirm(ta.notPlayingConfirm(job.title))) return;
+      const res = await post('not-playing');
+      if (!res) return;
+      if (res.ok) {
+        if (!job.blocked_hashes.includes(job.chosen_infohash)) job.blocked_hashes.push(job.chosen_infohash);
+        job.state = 'queued';
+        job.chosen_infohash = null;
+        job.picked = false;
+        job.reason = null;
+        job.last_error = null;
+        job.attempts = 0;
+        if (res.data.reopened) job.request_status = 'pending';
+        toast(ta.notPlayingDone(job.title));
+      } else {
+        toast(ta.notPlayingFailed, { kind: 'bad' });
+      }
+      paint();
+    };
+
+    const button = (label, ariaTitle, onclick, cls = 'btn btn-small') =>
+      el('button', {
+        class: cls,
+        type: 'button',
+        text: label,
+        'aria-label': ta.actionLabel(label, ariaTitle),
+        disabled: busy,
+        onclick,
+      });
+
+    // One shortlist entry.
+    const candidateFor = (c, index) => {
+      const hash = text(c.infohash);
+      const name = text(c.title) || hash || '';
+      const blocked = hash !== null && job.blocked_hashes.includes(hash);
+      const free = typeof c.free_badge === 'string' && Object.hasOwn(ta.freeBadge, c.free_badge) ? c.free_badge : null;
+      const specs = [c.resolution, c.source, c.video, ...(Array.isArray(c.audio) ? c.audio : [])]
+        .filter((s) => text(s))
+        .join(' · ');
+      const score = finite(c.score);
+      const size = finite(c.size_bytes);
+      const seeders = finite(c.seeders);
+      const rank = finite(c.rank) ?? index + 1;
+      const facts = [
+        score === null ? null : ta.scoreOf(NUMBER.format(score)),
+        size === null ? null : ta.sizeGb(NUMBER.format(size / 1e9)),
+        seeders === null ? null : ta.seedersOf(seeders),
+        specs || null,
+      ].filter(Boolean);
+      const tag = (label) => el('span', { class: 'badge', text: label });
+      const tags = [];
+      if (hash !== null && hash === job.top_infohash) tags.push(tag(ta.topPick));
+      if (c.clear_winner === true) tags.push(tag(ta.clearWinner));
+      if (hash !== null && hash === job.chosen_infohash) tags.push(tag(ta.chosenTag));
+      if (hash !== null && hash === job.chosen_infohash && job.reason === 'picked_failed') tags.push(tag(ta.lastFailed));
+      if (blocked) tags.push(tag(ta.blockedTag));
+      if (c.foreign_language === true) tags.push(tag(ta.foreignLang));
+      const canPick = job.state === 'needs_pick' && job.request_status === 'pending' && hash !== null && !blocked;
+      const freeChip = free ? chip(FREE_CHIP[free], ta.freeBadge[free]) : null;
+      if (freeChip) freeChip.setAttribute('title', ta.freeBadgeClaim);
+      const cls = ['cand', hash !== null && hash === job.top_infohash ? 'cand-top' : '', blocked ? 'cand-dim' : '']
+        .filter(Boolean)
+        .join(' ');
+      return el(
+        'li',
+        { class: cls },
+        el('p', { class: 'req-title' }, el('strong', { text: `#${rank}` }), el('span', { text: name }), tags, freeChip),
+        facts.length > 0 ? el('p', { class: 'req-meta', text: facts.join(' · ') }) : null,
+        canPick ? el('div', { class: 'row-actions' }, button(ta.pick, name, () => pick(hash), 'btn btn-small btn-primary')) : null,
+      );
+    };
+
+    // The shortlist, or null when the job has no parsed list.
+    let candidateBox = null;
+    const shortlist = () => {
+      if (!Array.isArray(job.candidates)) return null;
+      const entries = job.candidates.filter(isObject);
+      const survivors = entries.length > 0 ? finite(entries[0].survivors) : null;
+      const summary = survivors === null ? ta.shownOnly(entries.length) : ta.shownOfSurvived(entries.length, survivors);
+      const hasFree = entries.some((c) => typeof c.free_badge === 'string' && Object.hasOwn(ta.freeBadge, c.free_badge));
+      const body =
+        entries.length === 0
+          ? el('p', { class: 'muted', text: ta.noCandidates })
+          : [
+              el('p', { class: 'muted', text: summary }),
+              hasFree ? el('p', { class: 'muted', text: ta.freeBadgeClaim }) : null,
+              el('ol', { class: 'cand-list' }, entries.map(candidateFor)),
+            ];
+      if (job.state === 'needs_pick') {
+        return el('div', { class: 'grid gap-2' }, el('strong', { text: ta.candidatesHeading }), body);
+      }
+      const wasOpen = candidateBox instanceof HTMLDetailsElement && candidateBox.open;
+      return el('details', { class: 'grid gap-2', open: wasOpen }, el('summary', { text: ta.candidatesHeading }), body);
+    };
+
+    const paint = () => {
+      const actions = el('div', { class: 'row-actions' });
+      const pending = job.request_status === 'pending';
+      if (['failed', 'needs_pick', 'done'].includes(job.state) && pending && job.reason !== 'no_imdb_id') {
+        actions.append(button(t.retry, job.title, retry));
+      }
+      if (['queued', 'fetching', 'needs_pick'].includes(job.state)) {
+        actions.append(button(ta.cancelJob, job.title, cancel));
+      }
+      if (job.chosen_infohash && (pending || job.request_status === 'added')) {
+        actions.append(button(ta.notPlaying, job.title, notPlaying));
+      }
+      const reason = job.reason ? (Object.hasOwn(ta.reasons, job.reason) ? ta.reasons[job.reason] : job.reason) : null;
+      const next = shortlist();
+      candidateBox = next;
+      const parts = [
+        el(
+          'div',
+          { class: 'min-w-0' },
+          el(
+            'p',
+            { class: 'req-title' },
+            el('strong', { text: job.title }),
+            job.year ? ` (${job.year})` : null,
+            badge(job.type),
+            proBadge(job.infuse_pro ? ta.withPro : ta.withoutPro),
+            chip(JOB_CHIP[job.state] ?? job.state, ta.jobStates[job.state] ?? job.state),
+          ),
+          el('p', { class: 'req-meta', text: ta.attemptsOf(job.attempts) }),
+          reason ? el('p', { class: 'req-note', text: reason }) : null,
+          job.last_error ? el('p', { class: 'muted', text: job.last_error }) : null,
+        ),
+        next,
+        actions.children.length > 0 ? actions : null,
+      ];
+      card.replaceChildren(...parts.filter(Boolean));
+    };
+
+    // A newer copy of this job from the server. An action in flight wins.
+    const update = (fresh) => {
+      if (busy || jobSignature(fresh) === jobSignature(job)) return;
+      job = fresh;
+      paint();
+    };
+
+    paint();
+    const entry = { card, update, job: () => job };
+    known.set(job.id, entry);
+    return entry;
+  };
+
+  // Is `job` at or before `last` in the list's order (newest first)?
+  const withinPage = (job, last) =>
+    job.created_at > last.created_at || (job.created_at === last.created_at && job.id >= last.id);
+
+  // Merges the first page of the server's list into what is on show: cards
+  // update where they are, new ones appear, and ones that no longer belong go.
+  const merge = async () => {
+    if (loading > 0 || !loaded) return;
+    const mine = generation;
+    const res = await get(`/api/admin/jobs?${query()}`);
+    if (expired(res) || !res.ok || mine !== generation) return;
+
+    const items = res.data.items;
+    const fresh = new Set(items.map((j) => j.id));
+    const last = items.length > 0 ? items[items.length - 1] : null;
+    for (const [id, entry] of known) {
+      if (!entry.card.isConnected || fresh.has(id)) continue;
+      if (!last || !res.data.next_cursor || withinPage(entry.job(), last)) {
+        entry.card.remove();
+        known.delete(id);
+      }
+    }
+
+    let previous = null;
+    for (const job of items) {
+      const entry = known.get(job.id);
+      if (entry && entry.card.isConnected) {
+        entry.update(job);
+        previous = entry.card;
+        continue;
+      }
+      const added = cardFor(job);
+      if (previous) previous.after(added.card);
+      else list.prepend(added.card);
+      previous = added.card;
+    }
+    if (!cursor && res.data.next_cursor && list.children.length === items.length) {
+      cursor = res.data.next_cursor;
+    }
+    more.hidden = !cursor;
+    empty.hidden = list.children.length > 0;
+  };
+
+  filter.addEventListener('change', () => load(true));
   refresh.addEventListener('click', () => load(true));
   more.addEventListener('click', () => load(false));
 
