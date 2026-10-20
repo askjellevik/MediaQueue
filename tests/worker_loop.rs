@@ -186,6 +186,10 @@ async fn a_free_job_ends_needs_pick_with_candidates_the_portal_accepts() {
         first["infohash"].as_str(),
         "the top hash is the first candidate"
     );
+    for candidate in &candidates {
+        let survivors = candidate["survivors"].as_u64().unwrap();
+        assert!(survivors >= candidates.len() as u64);
+    }
     assert_eq!(source_requests(&rig.stub).await, 1);
 }
 

@@ -10,6 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use serde_json::json;
 use thiserror::Error;
 use tokio::sync::watch;
 
@@ -18,7 +19,7 @@ use super::{
     candidate::RawCandidate,
     portal::{Abandon, Job, Mode, PortalClient, PortalError, Report, ReportResult},
     rules::{DropReason, JobSpec},
-    score::{Candidate, Evaluation, evaluate},
+    score::{Evaluation, evaluate},
     settings::RankSettings,
     source::{CandidateSource, MediaKind, SourceError},
 };
@@ -309,11 +310,16 @@ impl<S: CandidateSource> Worker<S> {
         } else if evaluation.shortlist.is_empty() {
             bare_needs_pick("no_safe_candidate")
         } else {
+            let survivors = json!(evaluation.survivors);
             Report::needs_pick(
                 evaluation
                     .shortlist
                     .iter()
-                    .map(Candidate::to_report_map)
+                    .map(|candidate| {
+                        let mut map = candidate.to_report_map();
+                        map.insert("survivors".into(), survivors.clone());
+                        map
+                    })
                     .collect(),
                 evaluation.top_infohash,
                 "dry_run",
