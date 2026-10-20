@@ -182,6 +182,7 @@ pub fn internal_router(state: AppState) -> Router {
             post(routes::internal::post_report),
         )
         .route("/internal/settings", get(routes::internal::get_settings))
+        .route("/internal/alert", post(routes::internal::post_alert))
         .fallback(|| async { error::AppError::NotFound })
         .layer(middleware::no_store_layer())
         .layer(middleware::catch_panic_layer())

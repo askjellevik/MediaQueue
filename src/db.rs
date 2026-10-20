@@ -1886,6 +1886,23 @@ pub async fn report_fetch_job(
     })
 }
 
+/// Title and year of the request behind an automatic job (`origin = 'auto'`);
+/// `None` for a job the admin created, or no such job.
+pub async fn auto_job_title(
+    pool: &SqlitePool,
+    job_id: i64,
+) -> Result<Option<(String, Option<i64>)>, sqlx::Error> {
+    let row = sqlx::query!(
+        r#"SELECT r.title AS "title!", r.year
+           FROM fetch_jobs j JOIN requests r ON r.id = j.request_id
+           WHERE j.id = ? AND j.origin = 'auto'"#,
+        job_id
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| (r.title, r.year)))
+}
+
 #[derive(Debug, Default)]
 pub struct Progress<'a> {
     pub rd_torrent_id: Option<&'a str>,
@@ -2298,6 +2315,20 @@ mod tests {
             .await
             .expect("members table should exist and be empty");
         assert_eq!(row.0, 0);
+    }
+
+    #[tokio::test]
+    async fn auto_job_title_answers_only_for_auto_jobs() {
+        let pool = test_pool().await;
+        let request_id = request(&pool, 1, Some("tt1"), false).await;
+        let job_id = job_for(&pool, request_id, 10).await;
+        assert_eq!(auto_job_title(&pool, job_id).await.unwrap(), None);
+        assert_eq!(auto_job_title(&pool, 999).await.unwrap(), None);
+        sql(&pool, "UPDATE fetch_jobs SET origin = 'auto'").await;
+        assert_eq!(
+            auto_job_title(&pool, job_id).await.unwrap(),
+            Some(("Dune".to_string(), Some(2021)))
+        );
     }
 
     #[tokio::test]

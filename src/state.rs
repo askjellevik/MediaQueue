@@ -7,7 +7,12 @@ use sqlx::SqlitePool;
 use tokio::sync::Semaphore;
 
 use crate::{
-    clock::Clock, config::Config, events::Hub, notify::Notifier, ratelimit::RateLimits, tmdb::Tmdb,
+    clock::Clock,
+    config::Config,
+    events::Hub,
+    notify::{AlertThrottle, Notifier},
+    ratelimit::RateLimits,
+    tmdb::Tmdb,
 };
 
 /// Upstream calls (TMDB, ntfy) must never hold a request open for long.
@@ -21,6 +26,8 @@ pub struct AppState {
     /// The one shared outbound HTTP client (connection pooling, rustls).
     pub http: reqwest::Client,
     pub notifier: Notifier,
+    /// Holds back repeated worker alerts of the same kind.
+    pub worker_alerts: Arc<AlertThrottle>,
     pub limits: Arc<RateLimits>,
     pub tmdb: Arc<Tmdb>,
     /// Live-update ticks for open event streams.
@@ -67,6 +74,7 @@ impl AppState {
             clock,
             http,
             notifier,
+            worker_alerts: Arc::new(AlertThrottle::default()),
             limits: Arc::new(limits),
             tmdb: Arc::new(tmdb),
             events: Hub::new(),

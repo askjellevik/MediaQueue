@@ -23,6 +23,7 @@ use crate::{
     db::{self, ProgressOutcome, ReportOutcome, ReportState},
     error::{AppError, AppJson, AppPath},
     events::Tick,
+    notify::{AlertKind, Message},
     state::AppState,
 };
 
@@ -377,6 +378,9 @@ pub async fn post_report(
             state.events.publish(Tick::Admin);
             if request_status_changed {
                 state.events.publish(Tick::Members);
+                if report_state == ReportState::Done && reason != Some("already_had") {
+                    push_auto_added(&state, id).await;
+                }
             }
             Ok(ok())
         }
@@ -385,6 +389,49 @@ pub async fn post_report(
         ReportOutcome::MissingTorrent => Err(AppError::BadRequest),
         ReportOutcome::NotFound => Err(AppError::NotFound),
     }
+}
+
+/// Tells the admin that the worker added a title on its own. Only jobs the
+/// auto sweep created count; a failed lookup never fails the report.
+async fn push_auto_added(state: &AppState, job_id: i64) {
+    match db::auto_job_title(&state.pool, job_id).await {
+        Ok(Some((title, year))) => {
+            state.notifier.send(Message::auto_added(
+                &title,
+                year,
+                &state.config.public_origin,
+            ));
+            tracing::info!(job_id, "automatic add announced");
+        }
+        Ok(None) => {}
+        Err(error) => tracing::warn!(job_id, %error, "could not look up the automatic job"),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AlertBody {
+    kind: AlertKind,
+}
+
+/// `POST /internal/alert`: the worker names what went wrong; the portal
+/// writes the text and sends it on the ntfy topic, at most once per kind
+/// per 30 minutes. 200 either way. The log carries the kind only.
+pub async fn post_alert(
+    _worker: RequireWorker,
+    State(state): State<AppState>,
+    AppJson(body): AppJson<AlertBody>,
+) -> Result<Json<Value>, AppError> {
+    let kind = body.kind;
+    if state.worker_alerts.allow(kind, state.clock.unix_secs()) {
+        state
+            .notifier
+            .send(Message::worker_alert(kind, &state.config.public_origin));
+        tracing::info!(kind = kind.as_str(), "worker alert sent");
+    } else {
+        tracing::info!(kind = kind.as_str(), "worker alert held back");
+    }
+    Ok(ok())
 }
 
 /// `GET /internal/settings`: the kill switch and mode the worker obeys.

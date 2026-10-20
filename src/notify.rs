@@ -5,9 +5,13 @@
 //! a little later, because the public ntfy.sh does have such moments. Used
 //! for throttle alerts and for genuinely new requests (never duplicates).
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, PoisonError},
+    time::Duration,
+};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config::NtfyConfig;
 
@@ -63,6 +67,104 @@ impl Message {
             message: lines.join("\n"),
             tags: vec![if info.is_movie { "movie_camera" } else { "tv" }],
             click: Some(format!("{public_origin}/admin#pending")),
+            priority: None,
+        }
+    }
+}
+
+/// What the worker may raise an alert about. The worker only names the
+/// kind; the text is written here, so the ntfy token and topic never leave
+/// the portal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AlertKind {
+    BreakerOpen,
+    RdAuth,
+    CountersUnreadable,
+    RepeatedFailures,
+}
+
+impl AlertKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AlertKind::BreakerOpen => "breaker_open",
+            AlertKind::RdAuth => "rd_auth",
+            AlertKind::CountersUnreadable => "counters_unreadable",
+            AlertKind::RepeatedFailures => "repeated_failures",
+        }
+    }
+}
+
+/// How long a worker alert of one kind is held back after it was sent.
+const ALERT_INTERVAL_SECS: u64 = 30 * 60;
+
+/// One alert per kind per 30 minutes, so a worker that keeps failing does
+/// not flood the phone.
+#[derive(Debug, Default)]
+pub struct AlertThrottle {
+    last_sent: Mutex<HashMap<AlertKind, u64>>,
+}
+
+impl AlertThrottle {
+    /// True, and remembered, when an alert of `kind` may go out at `now`
+    /// (unix seconds).
+    pub fn allow(&self, kind: AlertKind, now: u64) -> bool {
+        let mut last_sent = self
+            .last_sent
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        match last_sent.get(&kind) {
+            Some(&at) if now.saturating_sub(at) < ALERT_INTERVAL_SECS => false,
+            _ => {
+                last_sent.insert(kind, now);
+                true
+            }
+        }
+    }
+}
+
+impl Message {
+    /// A warning about the worker, always high priority with the `warning`
+    /// tag like the login throttle's, and a click-through to the admin page.
+    pub fn worker_alert(kind: AlertKind, public_origin: &str) -> Self {
+        let (title, message) = match kind {
+            AlertKind::BreakerOpen => (
+                "Arbeideren: Real-Debrid holder pause",
+                "Real-Debrid ba oss vente eller avviste forespørslene. Arbeideren henter ingenting før pausen er over.",
+            ),
+            AlertKind::RdAuth => (
+                "Arbeideren: Real-Debrid avviser nøkkelen",
+                "Real-Debrid godtar ikke API-nøkkelen. Arbeideren henter ingenting før nøkkelen er byttet og arbeideren er startet på nytt.",
+            ),
+            AlertKind::CountersUnreadable => (
+                "Arbeideren: tellerfilen kan ikke stoles på",
+                "Dagstellerne kan ikke leses, så arbeideren legger ikke til noe før filen er sjekket.",
+            ),
+            AlertKind::RepeatedFailures => (
+                "Arbeideren: flere mislykkede kjøringer på rad",
+                "Tre kjøringer mot Real-Debrid på rad endte uten resultat. Sjekk jobbene i admin.",
+            ),
+        };
+        Message {
+            title: title.into(),
+            message: message.into(),
+            tags: vec!["warning"],
+            click: Some(format!("{public_origin}/admin")),
+            priority: Some(4),
+        }
+    }
+
+    /// The worker added a title on its own.
+    pub fn auto_added(title: &str, year: Option<i64>, public_origin: &str) -> Self {
+        let name = match year {
+            Some(year) => format!("{title} ({year})"),
+            None => title.to_string(),
+        };
+        Message {
+            title: format!("Lagt til automatisk: {title}"),
+            message: format!("{name} ble hentet av arbeideren og er merket som lagt til."),
+            tags: vec!["white_check_mark"],
+            click: Some(format!("{public_origin}/admin")),
             priority: None,
         }
     }
@@ -192,6 +294,40 @@ mod tests {
                 "priority": 4,
             })
         );
+    }
+
+    #[test]
+    fn alerts_are_held_back_per_kind_for_thirty_minutes() {
+        let throttle = AlertThrottle::default();
+        assert!(throttle.allow(AlertKind::BreakerOpen, 1_000));
+        assert!(!throttle.allow(AlertKind::BreakerOpen, 1_000 + 29 * 60));
+        assert!(throttle.allow(AlertKind::RdAuth, 1_000 + 29 * 60));
+        // The held-back call did not move the window.
+        assert!(throttle.allow(AlertKind::BreakerOpen, 1_000 + 30 * 60));
+        assert!(!throttle.allow(AlertKind::BreakerOpen, 1_000 + 31 * 60));
+    }
+
+    #[test]
+    fn every_alert_is_high_priority_with_the_warning_tag() {
+        for kind in [
+            AlertKind::BreakerOpen,
+            AlertKind::RdAuth,
+            AlertKind::CountersUnreadable,
+            AlertKind::RepeatedFailures,
+        ] {
+            let message = Message::worker_alert(kind, "https://example.com");
+            assert_eq!(message.priority, Some(4), "{kind:?}");
+            assert_eq!(message.tags, vec!["warning"]);
+            assert!(!message.title.is_empty() && !message.message.is_empty());
+        }
+    }
+
+    #[test]
+    fn auto_added_message_names_the_title() {
+        let message = Message::auto_added("Dune", Some(2021), "https://example.com");
+        assert_eq!(message.title, "Lagt til automatisk: Dune");
+        assert!(message.message.contains("Dune (2021)"));
+        assert_eq!(message.priority, None);
     }
 
     #[test]
