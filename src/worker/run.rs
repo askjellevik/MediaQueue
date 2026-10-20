@@ -490,6 +490,7 @@ fn log_run(job: &Job, evaluation: &Evaluation) {
             .copied()
             .unwrap_or(0),
         survivors = evaluation.survivors,
+        collapsed = evaluation.collapsed,
         foreign_language = evaluation.foreign_language,
         foreign_in_shortlist = evaluation.foreign_in_shortlist,
         shortlist = evaluation.shortlist.len(),

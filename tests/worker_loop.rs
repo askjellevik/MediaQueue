@@ -178,9 +178,17 @@ async fn a_free_job_ends_needs_pick_with_candidates_the_portal_accepts() {
     let candidates: Vec<Value> = serde_json::from_str(row.candidates.as_deref().unwrap()).unwrap();
     assert!(!candidates.is_empty());
     let first = candidates[0].as_object().unwrap();
-    for key in ["infohash", "title", "score", "free_badge", "clear_winner"] {
+    for key in [
+        "infohash",
+        "title",
+        "score",
+        "free_badge",
+        "clear_winner",
+        "similar",
+    ] {
         assert!(first.contains_key(key), "missing {key}");
     }
+    assert!(!first.contains_key("rank"), "the list position is the rank");
     assert_eq!(
         row.top_infohash.as_deref(),
         first["infohash"].as_str(),

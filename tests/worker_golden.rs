@@ -173,6 +173,7 @@ fn render(label: &str, eval: &Evaluation) -> String {
     let mut out = format!("# {label}\n");
     out += &format!("considered\t{}\n", eval.considered);
     out += &format!("survivors\t{}\n", eval.survivors);
+    out += &format!("collapsed\t{}\n", eval.collapsed);
     out += &format!("top\t{}\n", eval.top_infohash.as_deref().unwrap_or("-"));
     match eval.margin {
         Some(margin) => out += &format!("margin\t{margin:.1}\n"),
@@ -186,16 +187,17 @@ fn render(label: &str, eval: &Evaluation) -> String {
     for (reason, count) in &eval.dropped {
         out += &format!("dropped\t{}\t{count}\n", reason.as_str());
     }
-    out += "# rank\tinfohash\tscore\tfree_badge\tforeign_language\tclear_winner\n";
+    out += "# rank\tinfohash\tscore\tfree_badge\tforeign_language\tclear_winner\tsimilar\n";
     for c in &eval.shortlist {
         out += &format!(
-            "{}\t{}\t{:.1}\t{}\t{}\t{}\n",
+            "{}\t{}\t{:.1}\t{}\t{}\t{}\t{}\n",
             c.rank,
             c.raw.infohash,
             c.score,
             c.badge.as_str(),
             c.foreign_language,
-            c.clear_winner
+            c.clear_winner,
+            c.similar
         );
     }
     out

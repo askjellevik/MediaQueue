@@ -58,6 +58,8 @@ pub struct Candidate {
     pub rank: usize,
     /// Only ever true on rank 1.
     pub clear_winner: bool,
+    /// How many later near-identical candidates were folded into this one.
+    pub similar: usize,
     /// Language codes seen for the candidate: the source's flags and the
     /// languages named in the release.
     pub languages: Vec<String>,
@@ -73,8 +75,10 @@ pub struct Evaluation {
     /// What the source offered, duplicates included.
     pub considered: usize,
     pub dropped: BTreeMap<DropReason, usize>,
-    /// Candidates that passed the filters.
+    /// Candidates that passed the filters, before near-duplicates fold.
     pub survivors: usize,
+    /// Survivors folded into an earlier near-identical one.
+    pub collapsed: usize,
     /// The top score minus the runner-up's, when there is a runner-up.
     pub margin: Option<f64>,
     /// Survivors with the foreign-language penalty, and how many of them
@@ -203,6 +207,43 @@ fn language_codes(raw: &RawCandidate, release: &ParsedRelease) -> Vec<String> {
     codes
 }
 
+/// True when `a` and `b` are the same release in all but the group: equal
+/// resolution, source, video, audio set, hdr, dv, bit10 and language fit, and
+/// both sizes known and within `tolerance` of the earlier one's.
+fn is_twin(earlier: &Candidate, later: &Candidate, tolerance: f64) -> bool {
+    let (Some(a), Some(b)) = (earlier.raw.size_bytes, later.raw.size_bytes) else {
+        return false;
+    };
+    let (e, l) = (&earlier.release, &later.release);
+    e.resolution == l.resolution
+        && e.source == l.source
+        && e.video == l.video
+        && e.audio == l.audio
+        && e.hdr == l.hdr
+        && e.dolby_vision == l.dolby_vision
+        && e.bit10 == l.bit10
+        && earlier.foreign_language == later.foreign_language
+        && (a as f64 - b as f64).abs() <= a as f64 * tolerance
+}
+
+/// Folds each candidate into the first earlier one it is a twin of. The
+/// input is sorted best first, so the better one stays and counts the rest in
+/// `similar`. A folded candidate is never compared again, so a chain of
+/// twins each 1% apart does not drift away from the one that stayed.
+fn collapse_twins(sorted: Vec<Candidate>, tolerance: f64) -> Vec<Candidate> {
+    let mut kept: Vec<Candidate> = Vec::new();
+    for candidate in sorted {
+        match kept
+            .iter_mut()
+            .find(|earlier| is_twin(earlier, &candidate, tolerance))
+        {
+            Some(earlier) => earlier.similar += 1,
+            None => kept.push(candidate),
+        }
+    }
+    kept
+}
+
 /// Filters, scores and ranks what a source offered for one job.
 ///
 /// `top_infohash` is the best survivor whether or not it is a clear winner:
@@ -210,7 +251,10 @@ fn language_codes(raw: &RawCandidate, release: &ParsedRelease) -> Vec<String> {
 /// needs a top score of at least `clear_min_score`, a lead of at least
 /// `clear_margin` over the runner-up (a lone survivor needs only the
 /// score), a free-Infuse badge of `yes` unless the job is PRO, and no
-/// foreign-language penalty. Only the top candidate can be one.
+/// foreign-language penalty. Only the top candidate can be one. Near-
+/// identical survivors fold into the better one first (see `collapse_twins`),
+/// so the margin, the winner and the shortlist see the collapsed list while
+/// `survivors` counts the list before.
 pub fn evaluate(job: &JobSpec, raw: &[RawCandidate], settings: &RankSettings) -> Evaluation {
     let mut dropped: BTreeMap<DropReason, usize> = BTreeMap::new();
     let mut seen: HashSet<&str> = HashSet::new();
@@ -235,6 +279,7 @@ pub fn evaluate(job: &JobSpec, raw: &[RawCandidate], settings: &RankSettings) ->
                     score: round1(parts.total()),
                     rank: 0,
                     clear_winner: false,
+                    similar: 0,
                 });
             }
         }
@@ -251,6 +296,8 @@ pub fn evaluate(job: &JobSpec, raw: &[RawCandidate], settings: &RankSettings) ->
 
     let survivor_count = survivors.len();
     let foreign_language = survivors.iter().filter(|c| c.foreign_language).count();
+    let mut survivors = collapse_twins(survivors, settings.dup_size_tolerance);
+    let collapsed = survivor_count - survivors.len();
     let margin = match survivors.as_slice() {
         [top, second, ..] => Some(round1(top.score - second.score)),
         _ => None,
@@ -278,6 +325,7 @@ pub fn evaluate(job: &JobSpec, raw: &[RawCandidate], settings: &RankSettings) ->
         considered: raw.len(),
         dropped,
         survivors: survivor_count,
+        collapsed,
         margin,
         foreign_language,
         foreign_in_shortlist,
@@ -305,7 +353,6 @@ impl Candidate {
         if let Some(filename) = &self.raw.filename {
             map.insert("filename".into(), json!(cap(filename, LONGEST_STRING)));
         }
-        map.insert("rank".into(), json!(self.rank));
         map.insert("score".into(), json!(self.score));
         let p = self.parts;
         map.insert(
@@ -342,6 +389,7 @@ impl Candidate {
         map.insert("foreign_language".into(), json!(self.foreign_language));
         map.insert("truncated".into(), json!(self.release.truncated));
         map.insert("clear_winner".into(), json!(self.clear_winner));
+        map.insert("similar".into(), json!(self.similar));
         map
     }
 }
@@ -461,9 +509,9 @@ mod tests {
             &job(true),
             &[
                 raw('f', BEST, 3.0, 50),
-                raw('2', BEST, 3.0, 50),
+                raw('2', BEST, 4.0, 50),
                 raw('f', BEST, 3.0, 50),
-                raw('9', BEST, 3.0, 50),
+                raw('9', BEST, 5.0, 50),
             ],
             &RankSettings::default(),
         );
@@ -493,15 +541,141 @@ mod tests {
 
     #[test]
     fn the_shortlist_is_cut_but_the_counts_are_not() {
+        // Sizes 2 to 9.5 GiB all earn the full size points but are no twins.
         let many: Vec<RawCandidate> = "0123456789abcdef"
             .chars()
             .take(15)
-            .map(|d| raw(d, BEST, 3.0, 10))
+            .enumerate()
+            .map(|(i, d)| raw(d, BEST, 2.0 + i as f64 * 0.5, 10))
             .collect();
         let eval = evaluate(&job(true), &many, &RankSettings::default());
         assert_eq!(eval.shortlist.len(), 10);
         assert_eq!(eval.survivors, 15);
         assert_eq!(eval.considered, 15);
+    }
+
+    /// The first hash digit of each shortlist entry, in order.
+    fn order(eval: &Evaluation) -> String {
+        eval.shortlist
+            .iter()
+            .map(|c| c.raw.infohash.chars().next().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn twins_fold_into_the_better_one_and_the_lead_is_the_gap_to_a_real_alternative() {
+        let eval = evaluate(
+            &job(true),
+            &[
+                raw('b', BEST, 3.02, 40),
+                raw('a', BEST, 3.0, 50),
+                raw('c', WEB_720, 3.0, 50),
+            ],
+            &open_settings(),
+        );
+        assert_eq!(order(&eval), "ac", "the better-scored twin stays");
+        assert_eq!(eval.shortlist[0].similar, 1);
+        assert_eq!(eval.shortlist[1].similar, 0);
+        assert_eq!(eval.survivors, 3, "counted before folding");
+        assert_eq!(eval.collapsed, 1);
+        assert_eq!(eval.margin, Some(20.0), "to the 720p release, not the twin");
+        assert_eq!(eval.shortlist[0].rank, 1);
+        assert_eq!(eval.shortlist[1].rank, 2);
+    }
+
+    #[test]
+    fn a_twin_no_longer_blocks_a_clear_winner() {
+        let twins = [raw('a', BEST, 3.0, 50), raw('b', BEST, 3.02, 40)];
+        let settings = RankSettings::default();
+        let eval = evaluate(&job(true), &twins, &settings);
+        assert!(eval.margin.is_none(), "one release is left");
+        assert!(eval.clear_winner);
+        let apart = [raw('a', BEST, 3.0, 50), raw('b', BEST, 3.2, 40)];
+        let eval = evaluate(&job(true), &apart, &settings);
+        assert!(eval.margin.is_some_and(|m| m < settings.clear_margin));
+        assert!(!eval.clear_winner);
+    }
+
+    #[test]
+    fn different_audio_or_hdr_do_not_collapse() {
+        let eval = evaluate(
+            &job(true),
+            &[
+                raw('a', BEST, 3.0, 50),
+                raw(
+                    'b',
+                    "Example.Movie.1994.1080p.BluRay.x264.DTS-GRPONE",
+                    3.0,
+                    50,
+                ),
+                raw(
+                    'c',
+                    "Example.Movie.1994.1080p.BluRay.HDR.x264.AAC-GRPONE",
+                    3.0,
+                    50,
+                ),
+            ],
+            &open_settings(),
+        );
+        assert_eq!(eval.shortlist.len(), 3);
+        assert_eq!(eval.collapsed, 0);
+        assert!(eval.shortlist.iter().all(|c| c.similar == 0));
+    }
+
+    #[test]
+    fn sizes_further_apart_than_one_percent_do_not_collapse() {
+        let eval = evaluate(
+            &job(true),
+            &[raw('a', BEST, 3.0, 50), raw('b', BEST, 3.045, 50)],
+            &open_settings(),
+        );
+        assert_eq!(eval.shortlist.len(), 2, "1.5% apart");
+    }
+
+    #[test]
+    fn an_unknown_size_never_collapses() {
+        let mut unknown = raw('b', BEST, 3.0, 50);
+        unknown.size_bytes = None;
+        let mut also = raw('c', BEST, 3.0, 50);
+        also.size_bytes = None;
+        let eval = evaluate(
+            &job(true),
+            &[raw('a', BEST, 3.0, 50), unknown, also],
+            &open_settings(),
+        );
+        assert_eq!(eval.shortlist.len(), 3);
+        assert_eq!(eval.collapsed, 0);
+    }
+
+    #[test]
+    fn the_tolerance_is_measured_from_the_one_that_stays() {
+        // 0.9% apart each, 1.8% from the first: the third is not a twin.
+        let eval = evaluate(
+            &job(true),
+            &[
+                raw('a', BEST, 3.0, 50),
+                raw('b', BEST, 3.027, 40),
+                raw('c', BEST, 3.054, 30),
+            ],
+            &open_settings(),
+        );
+        assert_eq!(order(&eval), "ac");
+        assert_eq!(eval.shortlist[0].similar, 1);
+    }
+
+    #[test]
+    fn blocked_twins_are_still_drops_and_never_folded() {
+        let mut spec = job(true);
+        spec.blocked.insert("b".repeat(40));
+        let eval = evaluate(
+            &spec,
+            &[raw('a', BEST, 3.0, 50), raw('b', BEST, 3.0, 50)],
+            &open_settings(),
+        );
+        assert_eq!(eval.dropped.get(&DropReason::Blocked), Some(&1));
+        assert_eq!(eval.survivors, 1);
+        assert_eq!(eval.collapsed, 0);
+        assert_eq!(eval.shortlist[0].similar, 0);
     }
 
     #[test]
@@ -725,9 +899,9 @@ mod tests {
         big.size_bytes = Some(5_000_000_000_000);
         let mut many: Vec<RawCandidate> = "bcdefghij"
             .chars()
-            .map(|_| raw('b', BEST, 3.0, 50))
             .enumerate()
-            .map(|(i, mut c)| {
+            .map(|(i, _)| {
+                let mut c = raw('b', BEST, 2.0 + i as f64, 50);
                 c.infohash = format!("{i:040x}");
                 c
             })
@@ -801,7 +975,6 @@ mod tests {
         let mut expected = vec![
             "infohash",
             "title",
-            "rank",
             "score",
             "score_parts",
             "resolution",
@@ -819,10 +992,12 @@ mod tests {
             "foreign_language",
             "truncated",
             "clear_winner",
+            "similar",
         ];
         expected.sort_unstable();
         assert_eq!(keys, expected, "no filename: the source gave none");
-        assert_eq!(map["rank"], json!(1));
+        assert!(!map.contains_key("rank"), "the position is the rank");
+        assert_eq!(map["similar"], json!(0));
         assert_eq!(map["score"], json!(107.0));
         assert_eq!(
             map["score_parts"],

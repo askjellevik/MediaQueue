@@ -87,6 +87,9 @@ pub struct RankSettings {
     pub clear_min_score: f64,
     /// The top score must lead the runner-up by this much.
     pub clear_margin: f64,
+    /// Two otherwise identical candidates whose sizes differ by at most this
+    /// fraction of the better one's are one release; the worse one folds in.
+    pub dup_size_tolerance: f64,
 }
 
 impl Default for RankSettings {
@@ -147,6 +150,7 @@ impl Default for RankSettings {
             shortlist_len: 10,
             clear_min_score: 70.0,
             clear_margin: 8.0,
+            dup_size_tolerance: 0.01,
         }
     }
 }
