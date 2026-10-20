@@ -54,6 +54,7 @@ async fn rig() -> Rig {
         Worker::new(portal, source, RankSettings::default(), POLL, shutdown).with_timing(Timing {
             source_retries: [Duration::ZERO; 2],
             report_retries: [Duration::ZERO; 3],
+            ..Timing::default()
         });
     Rig {
         app,

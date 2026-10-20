@@ -17,6 +17,7 @@ use tokio::sync::watch;
 use super::{
     backoff::Backoff,
     candidate::RawCandidate,
+    fetch::{self, Env, Outcome, Trace},
     portal::{Abandon, Job, Mode, PortalClient, PortalError, Report, ReportResult},
     rd::RdRuntime,
     rules::{DropReason, JobSpec},
@@ -51,6 +52,14 @@ pub struct Timing {
     pub source_retries: [Duration; 2],
     /// Before each new try at a report the portal could not take.
     pub report_retries: [Duration; 3],
+    /// Between two looks at a torrent at Real-Debrid; the last one repeats.
+    pub rd_poll: [Duration; 7],
+    /// How long a magnet may take to turn into a file list.
+    pub rd_conversion: Duration,
+    /// How long a picked torrent may take after its file was selected.
+    pub rd_picked_wait: Duration,
+    /// The whole run of a picked job, well under the portal's reclaim.
+    pub rd_picked_deadline: Duration,
 }
 
 impl Default for Timing {
@@ -62,6 +71,10 @@ impl Default for Timing {
                 Duration::from_secs(10),
                 Duration::from_secs(30),
             ],
+            rd_poll: [3, 3, 5, 5, 10, 10, 15].map(Duration::from_secs),
+            rd_conversion: Duration::from_secs(60),
+            rd_picked_wait: Duration::from_secs(10 * 60),
+            rd_picked_deadline: Duration::from_secs(15 * 60),
         }
     }
 }
@@ -109,6 +122,8 @@ pub enum Cycle {
 enum Idle {
     KillSwitch,
     Mode(Mode),
+    /// Real-Debrid is being left alone, or today's allowance is used up.
+    Hold(&'static str),
 }
 
 #[derive(Default)]
@@ -127,9 +142,7 @@ pub struct Worker<S> {
     shutdown: Shutdown,
     timing: Timing,
     source_backoff: Backoff,
-    /// Present when `RD_TOKEN_FILE` is configured. Not used until the
-    /// assisted run is wired in.
-    #[allow(dead_code)]
+    /// Present when `RD_TOKEN_FILE` is configured.
     rd: Option<RdRuntime>,
     idle: Option<Idle>,
     first_call: bool,
@@ -183,12 +196,13 @@ impl<S: CandidateSource> Worker<S> {
             Ok(settings) => settings,
             Err(e) => return self.portal_failed(&e, first),
         };
+        let rd_mode = settings.mode != Mode::DryRun;
         let idle = if !settings.enabled {
             Some(Idle::KillSwitch)
-        } else if settings.mode != Mode::DryRun {
+        } else if rd_mode && self.rd.is_none() {
             Some(Idle::Mode(settings.mode))
         } else {
-            None
+            self.rd_hold(rd_mode)
         };
         if let Some(reason) = idle {
             if self.idle != Some(reason) {
@@ -198,6 +212,7 @@ impl<S: CandidateSource> Worker<S> {
                         "idle: mode {} needs the Real-Debrid worker",
                         mode_name(mode)
                     ),
+                    Idle::Hold(why) => tracing::info!("idle: {why}"),
                 }
             }
             self.idle = idle;
@@ -210,9 +225,24 @@ impl<S: CandidateSource> Worker<S> {
             Ok(None) => Ok(Cycle::Wait(self.poll)),
             Ok(Some(job)) => {
                 self.stats.claims += 1;
-                self.work(job, now).await;
+                self.work(job, now, settings.mode).await;
                 Ok(Cycle::Worked)
             }
+        }
+    }
+
+    /// In the Real-Debrid modes: no job is claimed while the breaker is
+    /// open or today's allowance is used up (or cannot be read).
+    fn rd_hold(&self, rd_mode: bool) -> Option<Idle> {
+        let rd = self.rd.as_ref().filter(|_| rd_mode)?;
+        if rd.state.breaker_trip(rd.state.now()).is_some() {
+            Some(Idle::Hold("real-debrid is being left alone (breaker open)"))
+        } else if rd.state.unreadable() {
+            Some(Idle::Hold("the counters file cannot be trusted"))
+        } else if rd.state.caps_reached() {
+            Some(Idle::Hold("today's allowance of adds is used up"))
+        } else {
+            None
         }
     }
 
@@ -234,11 +264,17 @@ impl<S: CandidateSource> Worker<S> {
 
     /// Runs and reports one job. A stop asked for meanwhile gives it a few
     /// seconds, after which it is dropped and the portal reclaims the job.
-    async fn work(&mut self, job: Job, now: Instant) {
+    async fn work(&mut self, job: Job, now: Instant, mode: Mode) {
         let mut stop = self.shutdown.clone();
         let run = async {
-            let report = self.report_for(&job, now).await;
-            self.deliver(&job, &report).await;
+            let report = if mode != Mode::DryRun && self.rd.is_some() {
+                self.report_rd(&job, now).await
+            } else {
+                Some(self.report_for(&job, now, mode).await)
+            };
+            if let Some(report) = report {
+                self.deliver(&job, &report).await;
+            }
         };
         tokio::select! {
             () = run => {}
@@ -249,8 +285,8 @@ impl<S: CandidateSource> Worker<S> {
         }
     }
 
-    async fn report_for(&mut self, job: &Job, now: Instant) -> Report {
-        match tokio::time::timeout(RUN_DEADLINE, self.plan(job, now)).await {
+    async fn report_for(&mut self, job: &Job, now: Instant, mode: Mode) -> Report {
+        match tokio::time::timeout(RUN_DEADLINE, self.plan(job, now, mode)).await {
             Ok(report) => report,
             Err(_) => {
                 self.stats.errors += 1;
@@ -261,20 +297,26 @@ impl<S: CandidateSource> Worker<S> {
     }
 
     /// What to tell the portal about this job.
-    async fn plan(&mut self, job: &Job, now: Instant) -> Report {
-        if job.media_type == "tv" {
-            return Report::failed(None, "series are not supported by the worker yet");
+    async fn plan(&mut self, job: &Job, now: Instant, mode: Mode) -> Report {
+        if let Some(report) = refuse_unsupported(job) {
+            return report;
         }
-        if !is_imdb_id(&job.imdb_id) {
-            return Report::failed(None, "invalid imdb id from the portal");
-        }
-        if let Some(hash) = &job.chosen_infohash {
+        let dry_run = mode == Mode::DryRun;
+        if dry_run && let Some(hash) = &job.chosen_infohash {
             tracing::info!(job = job.id, "would add {hash} (picked: {})", job.picked);
             return Report {
                 chosen_infohash: Some(hash.clone()),
                 ..bare_needs_pick("dry_run")
             };
         }
+        // Nothing picked: the shortlist goes to the admin. In dry-run that
+        // is the whole point; in the Real-Debrid modes it is the fallback
+        // until the auto rule decides.
+        let pick_reason = if dry_run {
+            "dry_run"
+        } else {
+            "no_clear_choice"
+        };
 
         let began = Instant::now();
         let raw = match self.fetch(&job.imdb_id).await {
@@ -333,8 +375,45 @@ impl<S: CandidateSource> Worker<S> {
                     })
                     .collect(),
                 evaluation.top_infohash,
-                "dry_run",
+                pick_reason,
             )
+        }
+    }
+
+    /// The Real-Debrid modes. Returns `None` when the claim is gone and
+    /// there is nothing to report.
+    async fn report_rd(&mut self, job: &Job, now: Instant) -> Option<Report> {
+        if let Some(report) = refuse_unsupported(job) {
+            return Some(report);
+        }
+        let Some(rd) = &self.rd else {
+            return Some(Report::failed(None, "no real-debrid runtime"));
+        };
+        let env = Env {
+            rd,
+            portal: &self.portal,
+            timing: &self.timing,
+        };
+        fetch::handle_removal(&env, job).await;
+
+        if !(job.picked && job.chosen_infohash.is_some()) {
+            return Some(self.report_for(job, now, Mode::Assisted).await);
+        }
+
+        let mut trace = Trace::default();
+        let deadline = self.timing.rd_picked_deadline;
+        match tokio::time::timeout(deadline, fetch::picked(&env, job, &mut trace)).await {
+            Ok(Outcome::Report(report)) => Some(report),
+            Ok(Outcome::Dropped) => None,
+            Err(_) => {
+                fetch::cleanup(&env, &mut trace, None).await;
+                self.stats.errors += 1;
+                tracing::warn!(job = job.id, "picked run exceeded its deadline");
+                Some(Report::needs_pick_with(
+                    "picked_failed",
+                    "the run took too long",
+                ))
+            }
         }
     }
 
@@ -436,6 +515,20 @@ pub async fn run<S: CandidateSource>(
     }
     tracing::info!("worker stopped");
     Ok(())
+}
+
+/// A job no mode can run: a series, or an IMDb id that is not one.
+fn refuse_unsupported(job: &Job) -> Option<Report> {
+    if job.media_type == "tv" {
+        return Some(Report::failed(
+            None,
+            "series are not supported by the worker yet",
+        ));
+    }
+    if !is_imdb_id(&job.imdb_id) {
+        return Some(Report::failed(None, "invalid imdb id from the portal"));
+    }
+    None
 }
 
 /// `needs_pick` with no candidates sent, so the portal keeps any it holds.

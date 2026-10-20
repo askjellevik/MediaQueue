@@ -103,6 +103,16 @@ pub fn choose(files: &[RdFile], rules: &FileRules) -> Choice {
     Choice::One(main.id)
 }
 
+/// True when Real-Debrid has a video of movie size selected in this
+/// torrent: what makes a library hit count as "already there".
+pub fn has_selected_video(info: &TorrentInfo, rules: &FileRules) -> bool {
+    info.files.iter().any(|f| {
+        f.selected
+            && VIDEO_EXTENSIONS.contains(&extension(&f.path).as_str())
+            && f.bytes >= rules.min_video_bytes
+    })
+}
+
 /// Why a finished torrent is not accepted. The text goes to the portal's
 /// `last_error`, so it holds no file names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -432,6 +442,25 @@ mod tests {
         assert_eq!(check(&info), Ok(()));
         info.files[0].bytes = 15 * GIB;
         assert_eq!(check(&info), Ok(()));
+    }
+
+    #[test]
+    fn a_selected_movie_sized_video_is_what_makes_a_hit_count() {
+        let rules = FileRules::default();
+        assert!(has_selected_video(&done_info(), &rules));
+
+        let mut info = done_info();
+        info.files[0].selected = false;
+        assert!(!has_selected_video(&info, &rules));
+
+        let mut info = done_info();
+        info.files[0].bytes = 99 * MIB;
+        assert!(!has_selected_video(&info, &rules));
+
+        let mut info = done_info();
+        info.files[1].selected = true;
+        info.files[0].selected = false;
+        assert!(!has_selected_video(&info, &rules), "an nfo is not a video");
     }
 
     #[test]

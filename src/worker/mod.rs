@@ -6,6 +6,7 @@
 pub mod backoff;
 pub mod candidate;
 pub mod config;
+pub mod fetch;
 pub mod files;
 pub mod portal;
 pub mod rd;
