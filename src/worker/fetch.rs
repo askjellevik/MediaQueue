@@ -45,7 +45,7 @@ pub enum Outcome {
 }
 
 enum Stop {
-    Report(Report),
+    Report(Box<Report>),
     /// The portal said the claim is no longer ours. `keep` is the torrent
     /// the portal now holds for the job, which must not be deleted.
     Dropped {
@@ -56,11 +56,14 @@ enum Stop {
 type Step<T> = Result<T, Stop>;
 
 fn picked_failed(text: impl AsRef<str>) -> Stop {
-    Stop::Report(Report::needs_pick_with("picked_failed", text.as_ref()))
+    Stop::Report(Box::new(Report::needs_pick_with(
+        "picked_failed",
+        text.as_ref(),
+    )))
 }
 
 fn gate(reason: &'static str, text: &str) -> Stop {
-    Stop::Report(Report::needs_pick_with(reason, text))
+    Stop::Report(Box::new(Report::needs_pick_with(reason, text)))
 }
 
 /// An error from Real-Debrid as the end of a picked run: the breaker is a
@@ -190,7 +193,7 @@ pub async fn picked(env: &Env<'_>, job: &Job, trace: &mut Trace) -> Outcome {
         }
         Err(Stop::Report(report)) => {
             cleanup(env, trace, None).await;
-            Outcome::Report(report)
+            Outcome::Report(*report)
         }
         Err(Stop::Dropped { keep }) => {
             cleanup(env, trace, keep.as_deref()).await;
@@ -226,10 +229,10 @@ async fn drive(env: &Env<'_>, job: &Job, trace: &mut Trace) -> Step<Report> {
     }
 
     let snapshot = env.rd.client.list_torrents().await.map_err(rd_stop)?;
-    if let Some(hit) = snapshot.iter().find(|t| t.hash == hash) {
-        if let Some(report) = library_hit(env, job, hit, &hash, trace).await? {
-            return Ok(report);
-        }
+    if let Some(hit) = snapshot.iter().find(|t| t.hash == hash)
+        && let Some(report) = library_hit(env, job, hit, &hash, trace).await?
+    {
+        return Ok(report);
     }
 
     gate_caps_and_slots(env).await?;

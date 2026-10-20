@@ -507,19 +507,8 @@ async fn the_token_is_nowhere_in_the_portal_or_the_state_file() {
     let job = picked_job(&rig).await;
     run(&mut rig).await;
 
-    let rows: Vec<(
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    )> = sqlx::query_as(
-        "SELECT candidates, last_error, reason, rd_torrent_id FROM fetch_jobs WHERE id = ?",
-    )
-    .bind(job)
-    .fetch_all(&rig.app.pool)
-    .await
-    .unwrap();
-    assert!(!format!("{rows:?}").contains("test-token"));
+    let row = job_row(&rig.app.pool, job).await;
+    assert!(!format!("{row:?}").contains("test-token"));
     let events: Vec<(Option<String>,)> = sqlx::query_as("SELECT actor FROM request_events")
         .fetch_all(&rig.app.pool)
         .await
