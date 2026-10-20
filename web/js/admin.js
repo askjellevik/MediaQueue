@@ -728,6 +728,7 @@ function renderQueue(panel, tab, { say, expired }) {
 // Job state -> the existing chip colour keys.
 const JOB_CHIP = { needs_pick: 'pending', done: 'added', failed: 'refused' };
 const FREE_CHIP = { yes: 'added', unknown: 'pending', no: 'refused' };
+const WORKER_MODES = ['dry_run', 'assisted', 'auto'];
 const JOB_FILTERS = ['needs_pick', 'all', 'queued', 'fetching', 'failed', 'done'];
 
 const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -764,6 +765,68 @@ function renderJobs(panel, { say, expired }) {
   const list = el('ul', { class: 'req-list' });
   const empty = el('p', { class: 'muted', text: ta.empty.jobs, hidden: true });
   const more = el('button', { class: 'btn btn-small', type: 'button', text: t.loadMore, hidden: true });
+
+  // The worker switch. `worker` is what the server last said; the controls
+  // always repaint from it, so a failed save puts them back.
+  let worker = null;
+  const enabledBox = el('input', { id: 'worker-enabled', type: 'checkbox', disabled: true });
+  const modeSelect = el(
+    'select',
+    { id: 'worker-mode', class: 'field', disabled: true },
+    WORKER_MODES.map((value) =>
+      el('option', {
+        value,
+        text: value === 'dry_run' ? ta.workerModes[value] : ta.workerModes[value] + ta.workerModeLater,
+        disabled: value !== 'dry_run',
+      }),
+    ),
+  );
+  const lockedNote = el('span', { class: 'muted', text: ta.workerLocked, hidden: true });
+  const workerBar = el(
+    'div',
+    { class: 'toolbar', role: 'group', 'aria-label': ta.workerHeading },
+    el('strong', { text: ta.workerHeading }),
+    el('label', {}, enabledBox, ` ${ta.workerOn}`),
+    el('label', { for: 'worker-mode', text: ta.workerModeLabel }),
+    modeSelect,
+    lockedNote,
+  );
+
+  const paintWorker = (saving = false) => {
+    if (!worker) return;
+    enabledBox.checked = worker.enabled;
+    modeSelect.value = worker.mode;
+    enabledBox.disabled = saving || worker.enabled_from_env;
+    modeSelect.disabled = saving || worker.mode_from_env;
+    lockedNote.hidden = !(worker.enabled_from_env || worker.mode_from_env);
+  };
+
+  const loadWorker = async () => {
+    const res = await get('/api/admin/worker');
+    if (expired(res)) return;
+    if (!res.ok) {
+      say(ta.loadWorkerFailed, 'status-bad');
+      return;
+    }
+    worker = res.data;
+    paintWorker();
+  };
+
+  // Sends only the field that changed.
+  const saveWorker = async (patch) => {
+    paintWorker(true);
+    const res = await send('PUT', '/api/admin/worker', patch);
+    if (expired(res)) return;
+    if (res.ok) {
+      worker = res.data;
+      toast(ta.workerSaved);
+    } else {
+      toast(ta.workerSaveFailed, { kind: 'bad' });
+    }
+    paintWorker();
+  };
+  enabledBox.addEventListener('change', () => saveWorker({ enabled: enabledBox.checked }));
+  modeSelect.addEventListener('change', () => saveWorker({ mode: modeSelect.value }));
 
   // Cards on show, by job id, so a refresh can update them in place.
   const known = new Map();
@@ -1054,9 +1117,10 @@ function renderJobs(panel, { say, expired }) {
   more.addEventListener('click', () => load(false));
 
   clear(panel);
-  panel.append(toolbar, list, empty, more);
+  panel.append(workerBar, toolbar, list, empty, more);
+  loadWorker();
   load(true);
-  return { refresh: merge };
+  return { refresh: () => Promise.all([loadWorker(), merge()]) };
 }
 
 // ---------------------------------------------------------------------

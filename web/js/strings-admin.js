@@ -139,6 +139,15 @@ export const ta = {
   fetchStarted: (title) => `Sendte «${title}» til arbeideren.`,
   fetchExists: (title) => `«${title}» har allerede en jobb. Se fanen Jobber.`,
   fetchFailed: (title) => `Kunne ikke hente «${title}» automatisk.`,
+  workerHeading: 'Arbeider',
+  workerOn: 'Slått på',
+  workerModeLabel: 'Modus',
+  workerModes: { dry_run: 'Prøvekjøring', assisted: 'Assistert', auto: 'Automatisk' },
+  workerModeLater: ' (virker først med Real-Debrid)',
+  workerLocked: 'Låst av serverinnstillingene.',
+  workerSaved: 'Lagret arbeiderinnstillingene.',
+  workerSaveFailed: 'Kunne ikke lagre arbeiderinnstillingene.',
+  loadWorkerFailed: 'Kunne ikke laste arbeiderinnstillingene.',
 
   // ----- Admin: users -----
   users: 'Brukere',
