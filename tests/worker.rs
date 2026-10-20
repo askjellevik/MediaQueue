@@ -2032,6 +2032,26 @@ async fn the_jobs_list_pages_filters_and_parses_candidates() {
         ),
     )
     .await;
+    sql(
+        &app.pool,
+        &format!(
+            "INSERT INTO blocked_hashes (request_id, infohash, created_at)
+             SELECT request_id, '{hash}', 1 FROM fetch_jobs WHERE id = {job}",
+            hash = HASH_A,
+            job = jobs[0]
+        ),
+    )
+    .await;
+    sql(
+        &app.pool,
+        &format!(
+            "INSERT INTO blocked_hashes (request_id, infohash, created_at)
+             SELECT request_id, '{hash}', 2 FROM fetch_jobs WHERE id = {job}",
+            hash = HASH_B,
+            job = jobs[0]
+        ),
+    )
+    .await;
 
     let response = admin_call(&app, &admin, "GET", "/api/admin/jobs", None).await;
     assert_eq!(response.status, 200, "{}", response.body);
@@ -2062,6 +2082,8 @@ async fn the_jobs_list_pages_filters_and_parses_candidates() {
             "title",
             "year",
             "type",
+            "request_status",
+            "blocked_hashes",
         ])
     );
     assert_eq!(newest["state"], "needs_pick");
@@ -2075,6 +2097,16 @@ async fn the_jobs_list_pages_filters_and_parses_candidates() {
     assert_eq!(items[2]["candidates"], json!([{"title": "A", "score": 1}]));
     assert_eq!(items[2]["top_infohash"], HASH_A);
     assert_eq!(items[2]["picked"], false);
+    assert_eq!(newest["request_status"], "pending");
+    assert_eq!(newest["blocked_hashes"], json!([]));
+    let mut blocked: Vec<&str> = items[2]["blocked_hashes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h.as_str().unwrap())
+        .collect();
+    blocked.sort_unstable();
+    assert_eq!(blocked, vec![HASH_A, HASH_B]);
 
     // Filter by state.
     let queued =

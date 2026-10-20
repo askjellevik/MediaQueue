@@ -1463,6 +1463,10 @@ pub struct FetchJobRow {
     pub title: String,
     pub year: Option<i64>,
     pub media_type: String,
+    pub request_status: String,
+    /// The request's blocked infohashes, comma-joined; `None` when there are
+    /// none.
+    pub blocked_hashes: Option<String>,
 }
 
 /// One page of jobs with their request's title, newest first, keyset-
@@ -1482,7 +1486,10 @@ pub async fn list_fetch_jobs(
                   j.top_infohash, j.chosen_infohash, j.picked AS "picked!: bool",
                   j.candidates, j.rd_torrent_id, j.last_error,
                   j.created_at AS "created_at!", j.updated_at AS "updated_at!",
-                  r.title AS "title!", r.year, r.media_type AS "media_type!"
+                  r.title AS "title!", r.year, r.media_type AS "media_type!",
+                  r.status AS "request_status!",
+                  (SELECT group_concat(b.infohash) FROM blocked_hashes b
+                    WHERE b.request_id = j.request_id) AS blocked_hashes
            FROM fetch_jobs j JOIN requests r ON r.id = j.request_id
            WHERE (?1 IS NULL OR j.state = ?1)
              AND (j.created_at < ?2 OR (j.created_at = ?2 AND j.id < ?3))

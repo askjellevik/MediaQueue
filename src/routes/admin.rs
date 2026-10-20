@@ -949,6 +949,8 @@ struct JobView {
     year: Option<i64>,
     #[serde(rename = "type")]
     media_type: String,
+    request_status: String,
+    blocked_hashes: Vec<String>,
 }
 
 /// `GET /api/admin/jobs?state=&limit=&cursor=`. `candidates` and
@@ -986,6 +988,11 @@ pub async fn get_jobs(
             title: r.title,
             year: r.year,
             media_type: r.media_type,
+            request_status: r.request_status,
+            blocked_hashes: r
+                .blocked_hashes
+                .map(|joined| joined.split(',').map(str::to_string).collect())
+                .unwrap_or_default(),
         })
         .collect();
     Ok(Json(json!({ "items": items, "next_cursor": next_cursor })))
