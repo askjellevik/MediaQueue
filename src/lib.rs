@@ -87,6 +87,10 @@ fn api_router(state: AppState) -> Router<()> {
         )
         .route("/admin/jobs/{id}/pick", post(routes::admin::post_job_pick))
         .route(
+            "/admin/jobs/{id}/not-playing",
+            post(routes::admin::post_job_not_playing),
+        )
+        .route(
             "/admin/worker",
             get(routes::admin::get_worker).put(routes::admin::put_worker),
         )

@@ -863,6 +863,38 @@ pub async fn post_job_pick(
     }
 }
 
+/// `POST /api/admin/jobs/{id}/not-playing`: the job's chosen release did
+/// not play. Blocks it for the request, reopens an added request and
+/// requeues the job.
+pub async fn post_job_not_playing(
+    State(state): State<AppState>,
+    _admin: RequireAdmin,
+    AppPath(id): AppPath<i64>,
+) -> Result<impl IntoResponse, AppError> {
+    match db::not_playing_fetch_job(&state.pool, id, now(&state)).await? {
+        db::NotPlayingOutcome::NotFound => Err(AppError::NotFound),
+        db::NotPlayingOutcome::NoChosenHash => {
+            Err(AppError::Conflict("jobben har ingen valgt utgivelse"))
+        }
+        db::NotPlayingOutcome::NotAllowed => Err(AppError::Conflict(
+            "forespørselen må være ventende eller lagt til og ha IMDb-ID",
+        )),
+        db::NotPlayingOutcome::HasTorrent => Err(AppError::Conflict(
+            "jobben har en torrent hos Real-Debrid som må ryddes bort først",
+        )),
+        db::NotPlayingOutcome::Requeued { reopened } => {
+            tracing::info!(job_id = id, reopened, "fetch job marked not playing");
+            state.events.publish(Tick::Admin);
+            if reopened {
+                state.events.publish(Tick::Members);
+            }
+            Ok(Json(
+                json!({ "id": id, "state": "queued", "reopened": reopened }),
+            ))
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobStateFilter {

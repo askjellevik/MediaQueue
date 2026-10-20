@@ -1686,6 +1686,166 @@ async fn a_pick_ticks_the_admin_only_when_it_applies() {
 }
 
 #[tokio::test]
+async fn not_playing_makes_the_running_workers_next_report_stale() {
+    let app = common::spawn_app().await;
+    let run = running(&app).await;
+    let progress = worker(
+        &app,
+        "POST",
+        &format!("/internal/jobs/{}/progress", run.job_id),
+        Some(&json!({"claim_id": run.claim_id, "chosen_infohash": HASH_A})),
+    )
+    .await;
+    assert_eq!(progress.status, 200, "{}", progress.body);
+    assert_eq!(job_row(&app.pool, run.job_id).await.state, "fetching");
+
+    let response = admin_call(
+        &app,
+        &run.admin,
+        "POST",
+        &format!("/api/admin/jobs/{}/not-playing", run.job_id),
+        Some("{}"),
+    )
+    .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    let body = json_of(&response);
+    assert_eq!(
+        (
+            body["id"].as_i64(),
+            body["state"].as_str(),
+            &body["reopened"]
+        ),
+        (Some(run.job_id), Some("queued"), &json!(false))
+    );
+    let row = job_row(&app.pool, run.job_id).await;
+    assert_eq!(
+        (row.state.as_str(), row.claim_id, row.chosen_infohash),
+        ("queued", None, None)
+    );
+
+    let report = worker(
+        &app,
+        "POST",
+        &format!("/internal/jobs/{}/report", run.job_id),
+        Some(&json!({"claim_id": run.claim_id, "state": "needs_pick", "reason": "dry_run"})),
+    )
+    .await;
+    assert_error(&report, 409, "stale_claim");
+
+    // The next claim is a new run that excludes the hash.
+    let claim = json_of(&worker(&app, "POST", "/internal/jobs/claim", None).await);
+    assert_eq!(claim["id"], run.job_id);
+    assert_eq!(claim["blocked_hashes"], json!([HASH_A]));
+    assert_eq!(claim["chosen_infohash"], Value::Null);
+}
+
+#[tokio::test]
+async fn not_playing_checks_the_job_and_the_request() {
+    let app = common::spawn_app().await;
+    let admin = login_admin_cookie(&app).await;
+    let request = seed_request(&app, 1, "pending", Some("tt0000001"), false).await;
+    let job = create_job(&app, &admin, request).await;
+    let path = format!("/api/admin/jobs/{job}/not-playing");
+
+    assert_error(
+        &admin_call(
+            &app,
+            &admin,
+            "POST",
+            "/api/admin/jobs/9999/not-playing",
+            Some("{}"),
+        )
+        .await,
+        404,
+        "not_found",
+    );
+    // No chosen hash.
+    assert_error(
+        &admin_call(&app, &admin, "POST", &path, Some("{}")).await,
+        409,
+        "conflict",
+    );
+
+    sql(
+        &app.pool,
+        &format!(
+            "UPDATE fetch_jobs SET chosen_infohash = '{HASH_A}', picked = 1, rd_torrent_id = 'RD1'"
+        ),
+    )
+    .await;
+    // A stored Real-Debrid torrent is step 4's to clean up.
+    assert_error(
+        &admin_call(&app, &admin, "POST", &path, Some("{}")).await,
+        409,
+        "conflict",
+    );
+    sql(&app.pool, "UPDATE fetch_jobs SET rd_torrent_id = NULL").await;
+    sql(&app.pool, "UPDATE requests SET status = 'refused'").await;
+    assert_error(
+        &admin_call(&app, &admin, "POST", &path, Some("{}")).await,
+        409,
+        "conflict",
+    );
+
+    assert_eq!(
+        count(&app.pool, "SELECT COUNT(*) FROM blocked_hashes").await,
+        0
+    );
+    let row = job_row(&app.pool, job).await;
+    assert_eq!(row.chosen_infohash.as_deref(), Some(HASH_A));
+}
+
+#[tokio::test]
+async fn not_playing_ticks_the_members_only_when_it_reopens_the_request() {
+    let app = common::spawn_app().await;
+    let admin = login_admin_cookie(&app).await;
+    let first = seed_request(&app, 1, "pending", Some("tt0000001"), false).await;
+    let second = seed_request(&app, 2, "pending", Some("tt0000002"), false).await;
+    let pending_job = create_job(&app, &admin, first).await;
+    let added_job = create_job(&app, &admin, second).await;
+    sql(
+        &app.pool,
+        &format!("UPDATE fetch_jobs SET state = 'done', chosen_infohash = '{HASH_A}', picked = 1"),
+    )
+    .await;
+    sql(
+        &app.pool,
+        &format!("UPDATE requests SET status = 'added' WHERE id = {second}"),
+    )
+    .await;
+    let mut admins = EventStream::open(app.addr, "/api/admin/events", Some(&admin)).await;
+    let mut members = {
+        let member = common::login_new_member(&app, "Bob").await;
+        EventStream::open(app.addr, "/api/events", Some(&member)).await
+    };
+
+    let response = admin_call(
+        &app,
+        &admin,
+        "POST",
+        &format!("/api/admin/jobs/{pending_job}/not-playing"),
+        Some("{}"),
+    )
+    .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    assert!(admins.saw("event: tick", SOON).await, "no admin tick");
+    assert!(!members.saw("event: tick", QUIET).await);
+
+    let response = admin_call(
+        &app,
+        &admin,
+        "POST",
+        &format!("/api/admin/jobs/{added_job}/not-playing"),
+        Some("{}"),
+    )
+    .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    assert_eq!(json_of(&response)["reopened"], true);
+    assert_eq!(request_status(&app.pool, second).await, "pending");
+    assert!(members.saw("event: tick", SOON).await, "no members tick");
+}
+
+#[tokio::test]
 async fn deleting_the_request_removes_its_job() {
     let app = common::spawn_app().await;
     let run = running(&app).await;

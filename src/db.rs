@@ -2079,6 +2079,83 @@ pub async fn pick_fetch_job(
 }
 
 #[derive(Debug, PartialEq, Eq)]
+pub enum NotPlayingOutcome {
+    /// `reopened` is true when an `added` request went back to `pending`.
+    Requeued {
+        reopened: bool,
+    },
+    NotFound,
+    NoChosenHash,
+    /// The request is not `pending` or `added`, or has no IMDb ID.
+    NotAllowed,
+    /// A Real-Debrid torrent is still stored; cleaning it up is step 4's.
+    HasTorrent,
+}
+
+/// The admin says the job's chosen release did not play: blocks the hash
+/// for the request, reopens the request if it was already `added`, and
+/// requeues the job without a choice. Candidates stay; the next report
+/// overwrites them. All in one transaction. A running worker's next call
+/// is stale, because `claim_id` is cleared.
+pub async fn not_playing_fetch_job(
+    pool: &SqlitePool,
+    job_id: i64,
+    now: i64,
+) -> Result<NotPlayingOutcome, sqlx::Error> {
+    let mut tx = begin_immediate(pool).await?;
+    let Some(job) = sqlx::query!(
+        r#"SELECT j.request_id AS "request_id!", j.chosen_infohash, j.rd_torrent_id,
+                  r.status AS "status!", r.imdb_id
+           FROM fetch_jobs j JOIN requests r ON r.id = j.request_id
+           WHERE j.id = ?"#,
+        job_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    else {
+        tx.rollback().await?;
+        return Ok(NotPlayingOutcome::NotFound);
+    };
+    let Some(chosen) = job.chosen_infohash else {
+        tx.rollback().await?;
+        return Ok(NotPlayingOutcome::NoChosenHash);
+    };
+    if !matches!(job.status.as_str(), "pending" | "added") || job.imdb_id.is_none() {
+        tx.rollback().await?;
+        return Ok(NotPlayingOutcome::NotAllowed);
+    }
+    if job.rd_torrent_id.is_some() {
+        tx.rollback().await?;
+        return Ok(NotPlayingOutcome::HasTorrent);
+    }
+    sqlx::query!(
+        "INSERT OR IGNORE INTO blocked_hashes (request_id, infohash, created_at) VALUES (?, ?, ?)",
+        job.request_id,
+        chosen,
+        now
+    )
+    .execute(&mut *tx)
+    .await?;
+    let reopened = job.status == "added"
+        && matches!(
+            set_request_status_in(&mut tx, job.request_id, "pending", None, "admin", now).await?,
+            StatusChange::Changed { .. }
+        );
+    sqlx::query!(
+        "UPDATE fetch_jobs
+         SET state = 'queued', chosen_infohash = NULL, picked = 0, claim_id = NULL,
+             claimed_at = NULL, attempts = 0, reason = NULL, last_error = NULL, updated_at = ?
+         WHERE id = ?",
+        now,
+        job_id
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(NotPlayingOutcome::Requeued { reopened })
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub enum CancelJobOutcome {
     Cancelled,
     NotFound,
@@ -3649,6 +3726,198 @@ mod tests {
         assert_eq!(
             (row.chosen_infohash.as_deref(), row.picked),
             (Some(HASH_B), true)
+        );
+    }
+
+    /// A pending request with a job in `state` that has `HASH_A` chosen,
+    /// picked, a claim and some run history.
+    async fn chosen_job(pool: &SqlitePool, tmdb_id: i64, state: &str) -> (i64, i64) {
+        let request_id = request(pool, tmdb_id, Some("tt1"), false).await;
+        let job_id = job_for(pool, request_id, 10).await;
+        sql(
+            pool,
+            &format!(
+                "UPDATE fetch_jobs SET state = '{state}', chosen_infohash = '{HASH_A}', picked = 1,
+                        claim_id = 'c1', claimed_at = 10, attempts = 2, reason = 'dry_run',
+                        last_error = 'boom', top_infohash = '{HASH_B}', candidates = '[1]'
+                 WHERE id = {job_id}"
+            ),
+        )
+        .await;
+        (request_id, job_id)
+    }
+
+    #[tokio::test]
+    async fn not_playing_blocks_the_hash_and_requeues_from_every_state() {
+        let pool = test_pool().await;
+        for (n, state) in ["queued", "fetching", "needs_pick", "failed", "done"]
+            .into_iter()
+            .enumerate()
+        {
+            let tmdb_id = i64::try_from(n).unwrap() + 1;
+            let (request_id, job_id) = chosen_job(&pool, tmdb_id, state).await;
+            assert_eq!(
+                not_playing_fetch_job(&pool, job_id, 50).await.unwrap(),
+                NotPlayingOutcome::Requeued { reopened: false },
+                "{state}"
+            );
+            let row = job(&pool, job_id).await;
+            assert_eq!(
+                (
+                    row.state.as_str(),
+                    row.chosen_infohash.as_deref(),
+                    row.picked,
+                    row.claim_id.as_deref(),
+                    row.claimed_at,
+                    row.attempts,
+                    row.reason.as_deref(),
+                    row.last_error.as_deref()
+                ),
+                ("queued", None, false, None, None, 0, None, None),
+                "{state}"
+            );
+            // The list and the top hash stay for the admin to look at.
+            assert_eq!(
+                (row.top_infohash.as_deref(), row.candidates.as_deref()),
+                (Some(HASH_B), Some("[1]"))
+            );
+            assert_eq!(request_status(&pool, request_id).await, "pending");
+
+            // The next claim carries the blocked hash.
+            let claimed = claim_fetch_job(&pool, true, 60).await.unwrap().unwrap();
+            assert_eq!(claimed.id, job_id);
+            assert_eq!(claimed.blocked_hashes, vec![HASH_A], "{state}");
+            sql(
+                &pool,
+                &format!("UPDATE fetch_jobs SET state = 'failed' WHERE id = {job_id}"),
+            )
+            .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn not_playing_reopens_an_added_request_with_a_status_event() {
+        let pool = test_pool().await;
+        let (request_id, job_id) = chosen_job(&pool, 1, "done").await;
+        set_request_status(&pool, request_id, "added", None, 20)
+            .await
+            .unwrap();
+        // Closing the request by hand leaves the chosen hash in place.
+        assert_eq!(request_status(&pool, request_id).await, "added");
+
+        assert_eq!(
+            not_playing_fetch_job(&pool, job_id, 50).await.unwrap(),
+            NotPlayingOutcome::Requeued { reopened: true }
+        );
+        assert_eq!(request_status(&pool, request_id).await, "pending");
+        let event: (String, Option<String>, Option<String>, i64) = sqlx::query_as(
+            "SELECT actor, from_status, to_status, created_at FROM request_events
+             WHERE request_id = ? AND kind = 'status' ORDER BY id DESC LIMIT 1",
+        )
+        .bind(request_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            event,
+            (
+                "admin".into(),
+                Some("added".into()),
+                Some("pending".into()),
+                50
+            )
+        );
+        let (state, hash): (String, Option<String>) =
+            sqlx::query_as("SELECT state, chosen_infohash FROM fetch_jobs WHERE id = ?")
+                .bind(job_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!((state.as_str(), hash), ("queued", None));
+        assert_eq!(count(&pool, "blocked_hashes").await, 1);
+    }
+
+    #[tokio::test]
+    async fn not_playing_leaves_settled_and_unfit_requests_alone() {
+        let pool = test_pool().await;
+        for (n, status) in ["refused", "already_had"].into_iter().enumerate() {
+            let (request_id, job_id) =
+                chosen_job(&pool, i64::try_from(n).unwrap() + 1, "done").await;
+            sql(
+                &pool,
+                &format!("UPDATE requests SET status = '{status}' WHERE id = {request_id}"),
+            )
+            .await;
+            assert_eq!(
+                not_playing_fetch_job(&pool, job_id, 50).await.unwrap(),
+                NotPlayingOutcome::NotAllowed,
+                "{status}"
+            );
+            assert_eq!(request_status(&pool, request_id).await, status);
+            let row = job(&pool, job_id).await;
+            assert_eq!(
+                (
+                    row.state.as_str(),
+                    row.chosen_infohash.as_deref(),
+                    row.picked
+                ),
+                ("done", Some(HASH_A), true)
+            );
+        }
+
+        let (request_id, job_id) = chosen_job(&pool, 3, "needs_pick").await;
+        sql(
+            &pool,
+            &format!("UPDATE requests SET imdb_id = NULL WHERE id = {request_id}"),
+        )
+        .await;
+        assert_eq!(
+            not_playing_fetch_job(&pool, job_id, 50).await.unwrap(),
+            NotPlayingOutcome::NotAllowed
+        );
+        assert_eq!(count(&pool, "blocked_hashes").await, 0);
+    }
+
+    #[tokio::test]
+    async fn not_playing_refuses_without_a_hash_or_with_a_stored_torrent() {
+        let pool = test_pool().await;
+        assert_eq!(
+            not_playing_fetch_job(&pool, 999, 50).await.unwrap(),
+            NotPlayingOutcome::NotFound
+        );
+
+        let request_id = request(&pool, 1, Some("tt1"), false).await;
+        let job_id = job_for(&pool, request_id, 10).await;
+        assert_eq!(
+            not_playing_fetch_job(&pool, job_id, 50).await.unwrap(),
+            NotPlayingOutcome::NoChosenHash
+        );
+
+        let (request_id, job_id) = chosen_job(&pool, 2, "failed").await;
+        sql(
+            &pool,
+            &format!("UPDATE fetch_jobs SET rd_torrent_id = 'RD1' WHERE id = {job_id}"),
+        )
+        .await;
+        set_request_status(&pool, request_id, "added", None, 20)
+            .await
+            .unwrap();
+        assert_eq!(
+            not_playing_fetch_job(&pool, job_id, 50).await.unwrap(),
+            NotPlayingOutcome::HasTorrent
+        );
+        // Nothing moved: not the block, not the request, not the job.
+        assert_eq!(count(&pool, "blocked_hashes").await, 0);
+        assert_eq!(request_status(&pool, request_id).await, "added");
+        let row = job(&pool, job_id).await;
+        assert_eq!(
+            (
+                row.state.as_str(),
+                row.chosen_infohash.as_deref(),
+                row.picked,
+                row.rd_torrent_id.as_deref()
+            ),
+            ("failed", Some(HASH_A), true, Some("RD1"))
         );
     }
 
