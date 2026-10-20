@@ -1986,6 +1986,99 @@ pub async fn retry_fetch_job(
 }
 
 #[derive(Debug, PartialEq, Eq)]
+pub enum PickOutcome {
+    Picked { state: String },
+    NotFound,
+    WrongState,
+    NotInShortlist,
+    Blocked,
+}
+
+/// Records the admin's choice for a `needs_pick` job. The hash must be in
+/// the stored shortlist and not blocked for the request. A live pick
+/// requeues the job; in dry-run it closes the job as `done` / `dry_run`.
+/// The request is untouched either way. This is not `report_fetch_job`: the
+/// worker's picked lock does not apply, so an already picked job can be
+/// picked again.
+pub async fn pick_fetch_job(
+    pool: &SqlitePool,
+    job_id: i64,
+    infohash: &str,
+    dry_run: bool,
+    now: i64,
+) -> Result<PickOutcome, sqlx::Error> {
+    let mut tx = begin_immediate(pool).await?;
+    let Some(job) = sqlx::query!(
+        r#"SELECT state AS "state!", request_id AS "request_id!", candidates
+           FROM fetch_jobs WHERE id = ?"#,
+        job_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    else {
+        tx.rollback().await?;
+        return Ok(PickOutcome::NotFound);
+    };
+    if job.state != "needs_pick" {
+        tx.rollback().await?;
+        return Ok(PickOutcome::WrongState);
+    }
+    let listed = job
+        .candidates
+        .as_deref()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+        .is_some_and(|list| {
+            list.as_array().is_some_and(|items| {
+                items.iter().any(|item| {
+                    item.get("infohash").and_then(serde_json::Value::as_str) == Some(infohash)
+                })
+            })
+        });
+    if !listed {
+        tx.rollback().await?;
+        return Ok(PickOutcome::NotInShortlist);
+    }
+    let blocked = sqlx::query_scalar!(
+        r#"SELECT 1 AS "one!: i64" FROM blocked_hashes WHERE request_id = ? AND infohash = ?"#,
+        job.request_id,
+        infohash
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    if blocked.is_some() {
+        tx.rollback().await?;
+        return Ok(PickOutcome::Blocked);
+    }
+    let (state, reason) = if dry_run {
+        ("done", Some("dry_run"))
+    } else {
+        ("queued", None)
+    };
+    let changed = sqlx::query!(
+        "UPDATE fetch_jobs
+         SET chosen_infohash = ?, picked = 1, attempts = 0, last_error = NULL,
+             claim_id = NULL, claimed_at = NULL, state = ?, reason = ?, updated_at = ?
+         WHERE id = ? AND state = 'needs_pick'",
+        infohash,
+        state,
+        reason,
+        now,
+        job_id
+    )
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    if changed == 0 {
+        tx.rollback().await?;
+        return Ok(PickOutcome::WrongState);
+    }
+    tx.commit().await?;
+    Ok(PickOutcome::Picked {
+        state: state.to_string(),
+    })
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub enum CancelJobOutcome {
     Cancelled,
     NotFound,
@@ -3350,6 +3443,213 @@ mod tests {
             report(&pool, &claim, ReportState::Done, &Report::default(), 1200).await,
             ReportOutcome::Stale { .. }
         ));
+    }
+
+    /// A pending request whose job waits in `needs_pick` with a two-entry
+    /// shortlist (`HASH_A`, `HASH_B`).
+    async fn needs_pick_job(pool: &SqlitePool, tmdb_id: i64) -> (i64, i64) {
+        let request_id = request(pool, tmdb_id, Some("tt1"), false).await;
+        let job_id = job_for(pool, request_id, 10).await;
+        sql(
+            pool,
+            &format!(
+                "UPDATE fetch_jobs SET state = 'needs_pick', reason = 'dry_run', attempts = 2,
+                        last_error = 'boom', claim_id = 'c1', claimed_at = 10,
+                        candidates = '[{{\"infohash\":\"{HASH_A}\"}},{{\"infohash\":\"{HASH_B}\"}}]'
+                 WHERE id = {job_id}"
+            ),
+        )
+        .await;
+        (request_id, job_id)
+    }
+
+    #[tokio::test]
+    async fn pick_queues_the_job_and_resets_the_run() {
+        let pool = test_pool().await;
+        let (request_id, job_id) = needs_pick_job(&pool, 1).await;
+
+        assert_eq!(
+            pick_fetch_job(&pool, job_id, HASH_B, false, 50)
+                .await
+                .unwrap(),
+            PickOutcome::Picked {
+                state: "queued".into()
+            }
+        );
+        let row = job(&pool, job_id).await;
+        assert_eq!(
+            (
+                row.state.as_str(),
+                row.chosen_infohash.as_deref(),
+                row.picked,
+                row.attempts,
+                row.reason,
+                row.last_error,
+                row.claim_id,
+                row.claimed_at
+            ),
+            ("queued", Some(HASH_B), true, 0, None, None, None, None)
+        );
+        assert!(row.candidates.is_some());
+        let status: String = sqlx::query_scalar("SELECT status FROM requests WHERE id = ?")
+            .bind(request_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(status, "pending");
+    }
+
+    #[tokio::test]
+    async fn a_dry_run_pick_closes_the_job_and_leaves_the_request_pending() {
+        let pool = test_pool().await;
+        let (request_id, job_id) = needs_pick_job(&pool, 1).await;
+
+        assert_eq!(
+            pick_fetch_job(&pool, job_id, HASH_A, true, 50)
+                .await
+                .unwrap(),
+            PickOutcome::Picked {
+                state: "done".into()
+            }
+        );
+        let row = job(&pool, job_id).await;
+        assert_eq!(
+            (
+                row.state.as_str(),
+                row.reason.as_deref(),
+                row.chosen_infohash.as_deref(),
+                row.picked
+            ),
+            ("done", Some("dry_run"), Some(HASH_A), true)
+        );
+        let status: String = sqlx::query_scalar("SELECT status FROM requests WHERE id = ?")
+            .bind(request_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(status, "pending");
+        assert_eq!(
+            count(&pool, "request_events WHERE kind = 'status'").await,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn pick_only_works_on_a_needs_pick_job() {
+        let pool = test_pool().await;
+        let (_, job_id) = needs_pick_job(&pool, 1).await;
+        assert_eq!(
+            pick_fetch_job(&pool, 999, HASH_A, false, 50).await.unwrap(),
+            PickOutcome::NotFound
+        );
+        for state in ["queued", "fetching", "failed", "done"] {
+            sql(
+                &pool,
+                &format!("UPDATE fetch_jobs SET state = '{state}' WHERE id = {job_id}"),
+            )
+            .await;
+            assert_eq!(
+                pick_fetch_job(&pool, job_id, HASH_A, false, 50)
+                    .await
+                    .unwrap(),
+                PickOutcome::WrongState,
+                "{state}"
+            );
+        }
+        let row = job(&pool, job_id).await;
+        assert_eq!((row.chosen_infohash, row.picked), (None, false));
+    }
+
+    #[tokio::test]
+    async fn pick_needs_the_hash_in_a_readable_shortlist() {
+        let pool = test_pool().await;
+        let (_, job_id) = needs_pick_job(&pool, 1).await;
+        let other = "cccccccccccccccccccccccccccccccccccccccc";
+        assert_eq!(
+            pick_fetch_job(&pool, job_id, other, false, 50)
+                .await
+                .unwrap(),
+            PickOutcome::NotInShortlist
+        );
+        for candidates in [
+            "NULL",
+            "'not json'",
+            "'{\"infohash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}'",
+            "'[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"]'",
+            "'[{\"infohash\":7}]'",
+        ] {
+            sql(
+                &pool,
+                &format!("UPDATE fetch_jobs SET candidates = {candidates} WHERE id = {job_id}"),
+            )
+            .await;
+            assert_eq!(
+                pick_fetch_job(&pool, job_id, HASH_A, false, 50)
+                    .await
+                    .unwrap(),
+                PickOutcome::NotInShortlist,
+                "{candidates}"
+            );
+        }
+        let row = job(&pool, job_id).await;
+        assert_eq!((row.state.as_str(), row.picked), ("needs_pick", false));
+    }
+
+    #[tokio::test]
+    async fn pick_refuses_a_blocked_hash_and_changes_nothing() {
+        let pool = test_pool().await;
+        let (request_id, job_id) = needs_pick_job(&pool, 1).await;
+        sql(
+            &pool,
+            &format!("INSERT INTO blocked_hashes VALUES ({request_id}, '{HASH_A}', 1)"),
+        )
+        .await;
+        assert_eq!(
+            pick_fetch_job(&pool, job_id, HASH_A, false, 50)
+                .await
+                .unwrap(),
+            PickOutcome::Blocked
+        );
+        let row = job(&pool, job_id).await;
+        assert_eq!(
+            (row.state.as_str(), row.chosen_infohash, row.attempts),
+            ("needs_pick", None, 2)
+        );
+        // The other candidate is still fine.
+        assert_eq!(
+            pick_fetch_job(&pool, job_id, HASH_B, false, 50)
+                .await
+                .unwrap(),
+            PickOutcome::Picked {
+                state: "queued".into()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn an_already_picked_needs_pick_job_can_be_picked_again() {
+        let pool = test_pool().await;
+        let (_, job_id) = needs_pick_job(&pool, 1).await;
+        sql(
+            &pool,
+            &format!(
+                "UPDATE fetch_jobs SET chosen_infohash = '{HASH_A}', picked = 1 WHERE id = {job_id}"
+            ),
+        )
+        .await;
+        assert_eq!(
+            pick_fetch_job(&pool, job_id, HASH_B, true, 50)
+                .await
+                .unwrap(),
+            PickOutcome::Picked {
+                state: "done".into()
+            }
+        );
+        let row = job(&pool, job_id).await;
+        assert_eq!(
+            (row.chosen_infohash.as_deref(), row.picked),
+            (Some(HASH_B), true)
+        );
     }
 
     #[tokio::test]

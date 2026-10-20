@@ -85,6 +85,7 @@ fn api_router(state: AppState) -> Router<()> {
             "/admin/jobs/{id}/cancel",
             post(routes::admin::post_job_cancel),
         )
+        .route("/admin/jobs/{id}/pick", post(routes::admin::post_job_pick))
         .route(
             "/admin/worker",
             get(routes::admin::get_worker).put(routes::admin::put_worker),

@@ -827,6 +827,42 @@ pub async fn post_job_cancel(
     }
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PickBody {
+    infohash: String,
+}
+
+/// `POST /api/admin/jobs/{id}/pick`: the admin's choice from a
+/// `needs_pick` job's shortlist. In dry-run mode the job closes as done.
+pub async fn post_job_pick(
+    State(state): State<AppState>,
+    _admin: RequireAdmin,
+    AppPath(id): AppPath<i64>,
+    AppJson(body): AppJson<PickBody>,
+) -> Result<impl IntoResponse, AppError> {
+    let infohash = super::internal::clean_infohash(&body.infohash)?;
+    let dry_run = db::worker_settings(&state.pool, &state.config).await?.mode
+        == crate::config::WorkerMode::DryRun;
+    match db::pick_fetch_job(&state.pool, id, &infohash, dry_run, now(&state)).await? {
+        db::PickOutcome::NotFound => Err(AppError::NotFound),
+        db::PickOutcome::WrongState => Err(AppError::Conflict("jobben venter ikke på valg lenger")),
+        db::PickOutcome::NotInShortlist => {
+            Err(AppError::Conflict("utgivelsen står ikke i kandidatlisten"))
+        }
+        db::PickOutcome::Blocked => Err(AppError::Conflict(
+            "utgivelsen er markert som ubrukelig for denne forespørselen",
+        )),
+        db::PickOutcome::Picked { state: job_state } => {
+            tracing::info!(job_id = id, state = %job_state, "fetch job picked");
+            state.events.publish(Tick::Admin);
+            Ok(Json(
+                json!({ "id": id, "state": job_state, "picked": true }),
+            ))
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobStateFilter {

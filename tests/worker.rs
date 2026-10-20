@@ -1521,6 +1521,170 @@ async fn retry_and_cancel_check_the_state_and_the_request() {
     assert_eq!(job_row(&app.pool, job).await.state, "failed");
 }
 
+/// A pending request whose job waits in `needs_pick` with a shortlist of
+/// `HASH_A` and `HASH_B`; returns the request and job ids.
+async fn needs_pick_job(app: &TestApp, admin: &str, tmdb_id: i64) -> (i64, i64) {
+    let request = seed_request(app, tmdb_id, "pending", Some("tt0000001"), false).await;
+    let job = create_job(app, admin, request).await;
+    sql(
+        &app.pool,
+        &format!(
+            "UPDATE fetch_jobs SET state = 'needs_pick', reason = 'dry_run',
+                    candidates = '[{{\"infohash\":\"{HASH_A}\"}},{{\"infohash\":\"{HASH_B}\"}}]'
+             WHERE id = {job}"
+        ),
+    )
+    .await;
+    (request, job)
+}
+
+fn pick_body(hash: &str) -> String {
+    json!({ "infohash": hash }).to_string()
+}
+
+#[tokio::test]
+async fn a_pick_queues_the_job_in_a_live_mode_and_closes_it_in_dry_run() {
+    let app = common::spawn_app().await;
+    let admin = login_admin_cookie(&app).await;
+    enable_worker(&app, &admin).await;
+    let (request, job) = needs_pick_job(&app, &admin, 1).await;
+    let (dry_request, dry_job) = needs_pick_job(&app, &admin, 2).await;
+
+    // The mode is read at pick time: dry-run is the default.
+    let path = format!("/api/admin/jobs/{dry_job}/pick");
+    let response = admin_call(&app, &admin, "POST", &path, Some(&pick_body(HASH_B))).await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    let body = json_of(&response);
+    assert_eq!(
+        (body["id"].as_i64(), body["state"].as_str(), &body["picked"]),
+        (Some(dry_job), Some("done"), &json!(true))
+    );
+    let row = job_row(&app.pool, dry_job).await;
+    assert_eq!(
+        (
+            row.state.as_str(),
+            row.reason.as_deref(),
+            row.chosen_infohash.as_deref()
+        ),
+        ("done", Some("dry_run"), Some(HASH_B))
+    );
+    assert_eq!(request_status(&app.pool, dry_request).await, "pending");
+
+    let response = admin_call(
+        &app,
+        &admin,
+        "PUT",
+        "/api/admin/worker",
+        Some(r#"{"mode":"assisted"}"#),
+    )
+    .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    let path = format!("/api/admin/jobs/{job}/pick");
+    let response = admin_call(&app, &admin, "POST", &path, Some(&pick_body(HASH_A))).await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    let body = json_of(&response);
+    assert_eq!(
+        (body["id"].as_i64(), body["state"].as_str(), &body["picked"]),
+        (Some(job), Some("queued"), &json!(true))
+    );
+    assert_eq!(request_status(&app.pool, request).await, "pending");
+
+    // The worker's next claim carries the pick, flagged as human.
+    let claim = json_of(&worker(&app, "POST", "/internal/jobs/claim", None).await);
+    assert_eq!(claim["id"], job);
+    assert_eq!(claim["chosen_infohash"], HASH_A);
+    assert_eq!(claim["picked"], true);
+}
+
+#[tokio::test]
+async fn a_pick_checks_its_input_the_job_and_the_list() {
+    let app = common::spawn_app().await;
+    let admin = login_admin_cookie(&app).await;
+    let (request, job) = needs_pick_job(&app, &admin, 1).await;
+    let path = format!("/api/admin/jobs/{job}/pick");
+    let pick = |body: String| {
+        let (app, admin, path) = (&app, &admin, &path);
+        async move { admin_call(app, admin, "POST", path, Some(&body)).await }
+    };
+
+    for bad in [
+        r#"{}"#.to_string(),
+        r#"{"infohash":"abc"}"#.to_string(),
+        r#"{"infohash":7}"#.to_string(),
+        format!(r#"{{"infohash":"{HASH_A}","extra":1}}"#),
+        "not json".to_string(),
+    ] {
+        assert_error(&pick(bad.clone()).await, 400, "bad_request");
+        assert_eq!(job_row(&app.pool, job).await.state, "needs_pick", "{bad}");
+    }
+    assert_error(
+        &admin_call(
+            &app,
+            &admin,
+            "POST",
+            "/api/admin/jobs/9999/pick",
+            Some(&pick_body(HASH_A)),
+        )
+        .await,
+        404,
+        "not_found",
+    );
+
+    // Not in the list; blocked for this request.
+    assert_error(&pick(pick_body(&"c".repeat(40))).await, 409, "conflict");
+    sql(
+        &app.pool,
+        &format!("INSERT INTO blocked_hashes VALUES ({request}, '{HASH_A}', 1)"),
+    )
+    .await;
+    assert_error(&pick(pick_body(HASH_A)).await, 409, "conflict");
+    // The upper-case spelling of a listed hash is the same hash.
+    assert_error(
+        &pick(pick_body(&HASH_A.to_uppercase())).await,
+        409,
+        "conflict",
+    );
+    let row = job_row(&app.pool, job).await;
+    assert_eq!(
+        (row.state.as_str(), row.chosen_infohash),
+        ("needs_pick", None)
+    );
+
+    // Only a job that waits for a pick can be picked.
+    sql(&app.pool, "UPDATE fetch_jobs SET state = 'failed'").await;
+    assert_error(&pick(pick_body(HASH_B)).await, 409, "conflict");
+    assert_eq!(job_row(&app.pool, job).await.state, "failed");
+}
+
+#[tokio::test]
+async fn a_pick_ticks_the_admin_only_when_it_applies() {
+    let app = common::spawn_app().await;
+    let admin = login_admin_cookie(&app).await;
+    let (_, job) = needs_pick_job(&app, &admin, 1).await;
+    let mut admins = EventStream::open(app.addr, "/api/admin/events", Some(&admin)).await;
+    let mut members = {
+        let member = common::login_new_member(&app, "Bob").await;
+        EventStream::open(app.addr, "/api/events", Some(&member)).await
+    };
+    let path = format!("/api/admin/jobs/{job}/pick");
+
+    let response = admin_call(
+        &app,
+        &admin,
+        "POST",
+        &path,
+        Some(&pick_body(&"c".repeat(40))),
+    )
+    .await;
+    assert_eq!(response.status, 409);
+    assert!(!admins.saw("event: tick", QUIET).await, "a refusal ticked");
+
+    let response = admin_call(&app, &admin, "POST", &path, Some(&pick_body(HASH_A))).await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    assert!(admins.saw("event: tick", SOON).await, "no admin tick");
+    assert!(!members.saw("event: tick", QUIET).await);
+}
+
 #[tokio::test]
 async fn deleting_the_request_removes_its_job() {
     let app = common::spawn_app().await;

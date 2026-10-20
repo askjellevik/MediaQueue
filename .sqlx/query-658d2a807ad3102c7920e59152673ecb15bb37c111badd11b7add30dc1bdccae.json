@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT state AS \"state!\", request_id AS \"request_id!\", candidates\n           FROM fetch_jobs WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "state!",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "fetch_jobs",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "name": "request_id!",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "fetch_jobs",
+            "name": "request_id"
+          }
+        }
+      },
+      {
+        "name": "candidates",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "fetch_jobs",
+            "name": "candidates"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "658d2a807ad3102c7920e59152673ecb15bb37c111badd11b7add30dc1bdccae"
+}

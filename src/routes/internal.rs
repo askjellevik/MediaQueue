@@ -64,7 +64,7 @@ fn ok() -> Json<Value> {
 // ---------------------------------------------------------------------
 
 /// Exactly 40 hex characters, lowercased.
-fn clean_infohash(hash: &str) -> Result<String, AppError> {
+pub(super) fn clean_infohash(hash: &str) -> Result<String, AppError> {
     if hash.len() == 40 && hash.bytes().all(|b| b.is_ascii_hexdigit()) {
         Ok(hash.to_ascii_lowercase())
     } else {
