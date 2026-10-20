@@ -22,6 +22,9 @@ const MIN_INTERNAL_TOKEN_BYTES: usize = 32;
 const MIB: u64 = 1024 * 1024;
 const GIB: u64 = 1024 * MIB;
 
+const MAX_AUTO_TRIES: u64 = 5;
+const MAX_AUTO_GB: u64 = 100;
+
 #[derive(Debug, Error)]
 pub enum WorkerConfigError {
     #[error("missing required environment variable {0}")]
@@ -142,6 +145,33 @@ impl WorkerConfig {
         }
         if let Some(v) = value("WORKER_CLEAR_MARGIN") {
             rank.clear_margin = points("WORKER_CLEAR_MARGIN", &v)?;
+        }
+        if let Some(v) = value("WORKER_AUTO_MIN_SCORE") {
+            rank.auto_min_score = points("WORKER_AUTO_MIN_SCORE", &v)?;
+        }
+        if let Some(v) = value("WORKER_AUTO_MIN_SEEDERS") {
+            rank.auto_min_seeders = u32::try_from(whole_number("WORKER_AUTO_MIN_SEEDERS", &v)?)
+                .map_err(|_| invalid("WORKER_AUTO_MIN_SEEDERS", "is too large"))?;
+        }
+        if let Some(v) = value("WORKER_AUTO_MAX_TRIES") {
+            let tries = whole_number("WORKER_AUTO_MAX_TRIES", &v)?;
+            if !(1..=MAX_AUTO_TRIES).contains(&tries) {
+                return Err(invalid(
+                    "WORKER_AUTO_MAX_TRIES",
+                    format!("must be between 1 and {MAX_AUTO_TRIES}"),
+                ));
+            }
+            rank.auto_max_tries = tries as usize;
+        }
+        if let Some(v) = value("WORKER_AUTO_MAX_GB") {
+            let gb = whole_number("WORKER_AUTO_MAX_GB", &v)?;
+            if !(1..=MAX_AUTO_GB).contains(&gb) {
+                return Err(invalid(
+                    "WORKER_AUTO_MAX_GB",
+                    format!("must be between 1 and {MAX_AUTO_GB}"),
+                ));
+            }
+            rank.auto_max_bytes = gb * GIB;
         }
 
         Ok(Self {
@@ -330,6 +360,50 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn the_auto_rule_can_be_overridden_within_range() {
+        let config = load(&[
+            ("INTERNAL_TOKEN", TOKEN),
+            ("WORKER_AUTO_MIN_SCORE", "90.5"),
+            ("WORKER_AUTO_MIN_SEEDERS", "25"),
+            ("WORKER_AUTO_MAX_TRIES", "5"),
+            ("WORKER_AUTO_MAX_GB", "100"),
+        ])
+        .unwrap();
+        assert_eq!(config.rank.auto_min_score, 90.5);
+        assert_eq!(config.rank.auto_min_seeders, 25);
+        assert_eq!(config.rank.auto_max_tries, 5);
+        assert_eq!(config.rank.auto_max_bytes, 100 * GIB);
+        let low = load(&[
+            ("INTERNAL_TOKEN", TOKEN),
+            ("WORKER_AUTO_MAX_TRIES", "1"),
+            ("WORKER_AUTO_MAX_GB", "1"),
+        ])
+        .unwrap();
+        assert_eq!((low.rank.auto_max_tries, low.rank.auto_max_bytes), (1, GIB));
+    }
+
+    #[test]
+    fn bad_auto_overrides_are_refused() {
+        for (name, bad) in [
+            ("WORKER_AUTO_MIN_SCORE", "-1"),
+            ("WORKER_AUTO_MIN_SCORE", "NaN"),
+            ("WORKER_AUTO_MIN_SEEDERS", "many"),
+            ("WORKER_AUTO_MIN_SEEDERS", "5000000000"),
+            ("WORKER_AUTO_MAX_TRIES", "0"),
+            ("WORKER_AUTO_MAX_TRIES", "6"),
+            ("WORKER_AUTO_MAX_TRIES", "three"),
+            ("WORKER_AUTO_MAX_GB", "0"),
+            ("WORKER_AUTO_MAX_GB", "101"),
+            ("WORKER_AUTO_MAX_GB", "1.5"),
+        ] {
+            assert!(
+                load(&[("INTERNAL_TOKEN", TOKEN), (name, bad)]).is_err(),
+                "{name}={bad}"
+            );
+        }
     }
 
     #[test]

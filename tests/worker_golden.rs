@@ -180,6 +180,10 @@ fn render(label: &str, eval: &Evaluation) -> String {
         None => out += "margin\t-\n",
     }
     out += &format!("clear_winner\t{}\n", eval.clear_winner);
+    match eval.auto.as_slice() {
+        [] => out += "auto\t-\n",
+        hashes => out += &format!("auto\t{}\n", hashes.join(",")),
+    }
     out += &format!(
         "foreign_language\t{}\t{}\n",
         eval.foreign_language, eval.foreign_in_shortlist

@@ -185,10 +185,15 @@ async fn a_free_job_ends_needs_pick_with_candidates_the_portal_accepts() {
         "free_badge",
         "clear_winner",
         "similar",
+        "auto_rank",
     ] {
         assert!(first.contains_key(key), "missing {key}");
     }
     assert!(!first.contains_key("rank"), "the list position is the rank");
+    for candidate in &candidates {
+        // The portal took every key, `survivors` included: at most 23 of 24.
+        assert!(candidate.as_object().unwrap().len() <= 23);
+    }
     assert_eq!(
         row.top_infohash.as_deref(),
         first["infohash"].as_str(),

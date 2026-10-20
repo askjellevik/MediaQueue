@@ -90,6 +90,17 @@ pub struct RankSettings {
     /// Two otherwise identical candidates whose sizes differ by at most this
     /// fraction of the better one's are one release; the worse one folds in.
     pub dup_size_tolerance: f64,
+
+    // The auto pick rule: which candidates an automatic job may try, in order.
+    /// A candidate must score at least this.
+    pub auto_min_score: f64,
+    /// A candidate must have at least this many seeders, a weak proxy for
+    /// being cached at Real-Debrid.
+    pub auto_min_seeders: u32,
+    /// How many candidates an auto job tries at most.
+    pub auto_max_tries: usize,
+    /// A candidate must have a known size of at most this, free and PRO alike.
+    pub auto_max_bytes: u64,
 }
 
 impl Default for RankSettings {
@@ -151,6 +162,10 @@ impl Default for RankSettings {
             clear_min_score: 70.0,
             clear_margin: 8.0,
             dup_size_tolerance: 0.01,
+            auto_min_score: 85.0,
+            auto_min_seeders: 10,
+            auto_max_tries: 3,
+            auto_max_bytes: 15 * GIB,
         }
     }
 }

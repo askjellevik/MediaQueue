@@ -497,6 +497,12 @@ fn log_run(job: &Job, evaluation: &Evaluation) {
         top_score = top.map(|c| c.score),
         margin = evaluation.margin,
         clear_winner = evaluation.clear_winner,
+        auto = evaluation.auto.len(),
+        auto_top_badge = evaluation
+            .shortlist
+            .iter()
+            .find(|c| c.auto_rank == 1)
+            .map_or("-", |c| c.badge.as_str()),
         top_badge = top.map_or("-", |c| c.badge.as_str()),
         top_name = %top_name,
         "dry run"

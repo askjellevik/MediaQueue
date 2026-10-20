@@ -60,6 +60,9 @@ pub struct Candidate {
     pub clear_winner: bool,
     /// How many later near-identical candidates were folded into this one.
     pub similar: usize,
+    /// 0 when an auto job may not try it, else its place (1 first) in the
+    /// order an auto job would try the shortlist.
+    pub auto_rank: usize,
     /// Language codes seen for the candidate: the source's flags and the
     /// languages named in the release.
     pub languages: Vec<String>,
@@ -79,6 +82,8 @@ pub struct Evaluation {
     pub survivors: usize,
     /// Survivors folded into an earlier near-identical one.
     pub collapsed: usize,
+    /// The hashes an auto job would try, in order (see `assign_auto`).
+    pub auto: Vec<String>,
     /// The top score minus the runner-up's, when there is a runner-up.
     pub margin: Option<f64>,
     /// Survivors with the foreign-language penalty, and how many of them
@@ -244,6 +249,43 @@ fn collapse_twins(sorted: Vec<Candidate>, tolerance: f64) -> Vec<Candidate> {
     kept
 }
 
+/// Whether an auto job may try the candidate: a score of at least
+/// `auto_min_score`, at least `auto_min_seeders` seeders, no foreign-language
+/// penalty, a name that is not cut short, a known size of at most
+/// `auto_max_bytes` (free and PRO alike), and for a free job a `yes` badge.
+fn auto_eligible(candidate: &Candidate, job: &JobSpec, settings: &RankSettings) -> bool {
+    candidate.score >= settings.auto_min_score
+        && candidate
+            .raw
+            .seeders
+            .is_some_and(|n| n >= settings.auto_min_seeders)
+        && !candidate.foreign_language
+        && !candidate.release.truncated
+        && candidate
+            .raw
+            .size_bytes
+            .is_some_and(|n| n <= settings.auto_max_bytes)
+        && (job.infuse_pro || candidate.badge == FreeBadge::Yes)
+}
+
+/// Walks the collapsed, ranked shortlist and numbers the first
+/// `auto_max_tries` eligible candidates 1, 2, ...; returns their hashes in
+/// that order. There is no margin: each is acceptable on its own, so the
+/// best eligible one need not be rank 1. Empty when none is eligible.
+fn assign_auto(shortlist: &mut [Candidate], job: &JobSpec, settings: &RankSettings) -> Vec<String> {
+    let mut order: Vec<String> = Vec::new();
+    for candidate in shortlist {
+        if order.len() >= settings.auto_max_tries {
+            break;
+        }
+        if auto_eligible(candidate, job, settings) {
+            order.push(candidate.raw.infohash.clone());
+            candidate.auto_rank = order.len();
+        }
+    }
+    order
+}
+
 /// Filters, scores and ranks what a source offered for one job.
 ///
 /// `top_infohash` is the best survivor whether or not it is a clear winner:
@@ -254,7 +296,8 @@ fn collapse_twins(sorted: Vec<Candidate>, tolerance: f64) -> Vec<Candidate> {
 /// foreign-language penalty. Only the top candidate can be one. Near-
 /// identical survivors fold into the better one first (see `collapse_twins`),
 /// so the margin, the winner and the shortlist see the collapsed list while
-/// `survivors` counts the list before.
+/// `survivors` counts the list before. `auto` lists what an auto job would
+/// try; the clear winner stays a metric.
 pub fn evaluate(job: &JobSpec, raw: &[RawCandidate], settings: &RankSettings) -> Evaluation {
     let mut dropped: BTreeMap<DropReason, usize> = BTreeMap::new();
     let mut seen: HashSet<&str> = HashSet::new();
@@ -280,6 +323,7 @@ pub fn evaluate(job: &JobSpec, raw: &[RawCandidate], settings: &RankSettings) ->
                     rank: 0,
                     clear_winner: false,
                     similar: 0,
+                    auto_rank: 0,
                 });
             }
         }
@@ -317,6 +361,7 @@ pub fn evaluate(job: &JobSpec, raw: &[RawCandidate], settings: &RankSettings) ->
         top.clear_winner = clear_winner;
     }
     let foreign_in_shortlist = survivors.iter().filter(|c| c.foreign_language).count();
+    let auto = assign_auto(&mut survivors, job, settings);
 
     Evaluation {
         top_infohash: survivors.first().map(|c| c.raw.infohash.clone()),
@@ -326,6 +371,7 @@ pub fn evaluate(job: &JobSpec, raw: &[RawCandidate], settings: &RankSettings) ->
         dropped,
         survivors: survivor_count,
         collapsed,
+        auto,
         margin,
         foreign_language,
         foreign_in_shortlist,
@@ -390,6 +436,10 @@ impl Candidate {
         map.insert("truncated".into(), json!(self.release.truncated));
         map.insert("clear_winner".into(), json!(self.clear_winner));
         map.insert("similar".into(), json!(self.similar));
+        // 23 keys with the `survivors` the run adds, of the portal's 24
+        // (`MAX_CANDIDATE_KEYS` in `routes/internal.rs`): one key is left; the
+        // key after that needs the limit raised there.
+        map.insert("auto_rank".into(), json!(self.auto_rank));
         map
     }
 }
@@ -676,6 +726,160 @@ mod tests {
         assert_eq!(eval.survivors, 1);
         assert_eq!(eval.collapsed, 0);
         assert_eq!(eval.shortlist[0].similar, 0);
+    }
+
+    /// Settings with the auto thresholds off, so a test turns one on.
+    fn lax_auto() -> RankSettings {
+        RankSettings {
+            auto_min_score: 0.0,
+            auto_min_seeders: 0,
+            ..open_settings()
+        }
+    }
+
+    fn auto_hashes(eval: &Evaluation) -> String {
+        eval.auto
+            .iter()
+            .map(|h| h.chars().next().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn a_free_job_skips_an_unknown_badge_down_to_the_next_yes() {
+        // Untagged audio: badge unknown, and it ranks first on seeders.
+        let untagged = raw('a', "Example.Movie.1994.1080p.BrRip.x264-GRPTWO", 3.0, 698);
+        let tagged = raw('b', BEST, 3.0, 50);
+        let eval = evaluate(
+            &job(false),
+            &[untagged.clone(), tagged.clone()],
+            &RankSettings::default(),
+        );
+        assert_eq!(order(&eval), "ab");
+        assert_eq!(eval.shortlist[0].badge, FreeBadge::Unknown);
+        assert_eq!(auto_hashes(&eval), "b");
+        assert_eq!(eval.shortlist[0].auto_rank, 0);
+        assert_eq!(eval.shortlist[1].auto_rank, 1);
+
+        let pro = evaluate(&job(true), &[untagged, tagged], &RankSettings::default());
+        assert_eq!(auto_hashes(&pro), "ab", "the badge does not matter to PRO");
+        assert_eq!(pro.shortlist[0].auto_rank, 1);
+    }
+
+    #[test]
+    fn a_big_or_unsized_candidate_is_skipped_for_free_and_pro_alike() {
+        let at_limit = RankSettings::default().auto_max_bytes;
+        let mut exact = raw('a', BEST, 3.0, 50);
+        exact.size_bytes = Some(at_limit);
+        let mut over = raw('b', BEST, 3.0, 50);
+        over.size_bytes = Some(at_limit + 5 * GIB_BYTES);
+        let mut unknown = raw('c', BEST, 3.0, 50);
+        unknown.size_bytes = None;
+        for pro in [false, true] {
+            let eval = evaluate(
+                &job(pro),
+                &[exact.clone(), over.clone(), unknown.clone()],
+                &lax_auto(),
+            );
+            assert_eq!(eval.shortlist.len(), 3, "pro={pro}: all are ranked");
+            assert_eq!(auto_hashes(&eval), "a", "pro={pro}: exactly 15 GiB is in");
+        }
+    }
+
+    #[test]
+    fn low_seeders_foreign_truncated_and_low_scores_are_skipped() {
+        let mut foreign = raw('b', BEST, 3.0, 50);
+        foreign.flag_languages = vec!["ru".to_string()];
+        let cut = raw(
+            'c',
+            "Example.Movie.1994.1080p.BluRay.x264.AAC-GRPO…",
+            4.0,
+            50,
+        );
+        let few = raw('d', BEST, 6.0, 9);
+        let weak = raw('e', "Example.Movie.1994.720p.HDTV.x264.AAC-GRPONE", 0.5, 50);
+        let fine = raw('a', BEST, 3.0, 10);
+        let all = [foreign, cut, few, weak.clone(), fine];
+
+        let eval = evaluate(&job(true), &all, &RankSettings::default());
+        assert!(
+            eval.shortlist
+                .iter()
+                .any(|c| c.raw.infohash.starts_with('c'))
+        );
+        assert_eq!(auto_hashes(&eval), "a", "10 seeders is enough, 9 is not");
+
+        // Each rule alone, with the others off.
+        let only = |settings: RankSettings| auto_hashes(&evaluate(&job(true), &all, &settings));
+        let none = RankSettings {
+            auto_min_score: 0.0,
+            auto_min_seeders: 0,
+            ..RankSettings::default()
+        };
+        assert_eq!(
+            only(none.clone()).len(),
+            3,
+            "foreign and truncated stay out"
+        );
+        assert!(!only(none.clone()).contains(['b', 'c']));
+        let score_only = RankSettings {
+            auto_min_score: 80.0,
+            ..none.clone()
+        };
+        assert!(!only(score_only).contains('e'), "{}", weak.name);
+        let seeders_only = RankSettings {
+            auto_min_seeders: 10,
+            ..none
+        };
+        assert!(!only(seeders_only).contains('d'));
+    }
+
+    #[test]
+    fn an_auto_job_tries_at_most_the_configured_number() {
+        let many: Vec<RawCandidate> = "0123456"
+            .chars()
+            .enumerate()
+            .map(|(i, d)| raw(d, BEST, 2.0 + i as f64, 50))
+            .collect();
+        let eval = evaluate(&job(true), &many, &lax_auto());
+        assert_eq!(eval.auto.len(), 3, "the default is three");
+        let ranks: Vec<usize> = eval.shortlist.iter().map(|c| c.auto_rank).collect();
+        assert_eq!(ranks, [1, 2, 3, 0, 0, 0, 0]);
+        let five = RankSettings {
+            auto_max_tries: 5,
+            ..lax_auto()
+        };
+        assert_eq!(evaluate(&job(true), &many, &five).auto.len(), 5);
+    }
+
+    #[test]
+    fn with_nothing_eligible_the_auto_list_is_empty() {
+        let eval = evaluate(
+            &job(true),
+            &[raw('a', BEST, 3.0, 2), raw('b', WEB_720, 3.0, 3)],
+            &RankSettings::default(),
+        );
+        assert!(eval.auto.is_empty());
+        assert!(eval.shortlist.iter().all(|c| c.auto_rank == 0));
+        assert!(
+            evaluate(&job(true), &[], &RankSettings::default())
+                .auto
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_auto_walk_follows_the_collapsed_list() {
+        // The twin folds away and so is never a second auto try.
+        let eval = evaluate(
+            &job(true),
+            &[
+                raw('a', BEST, 3.0, 50),
+                raw('b', BEST, 3.02, 40),
+                raw('c', WEB_720, 3.0, 50),
+            ],
+            &RankSettings::default(),
+        );
+        assert_eq!(auto_hashes(&eval), "ac");
     }
 
     #[test]
@@ -993,11 +1197,13 @@ mod tests {
             "truncated",
             "clear_winner",
             "similar",
+            "auto_rank",
         ];
         expected.sort_unstable();
         assert_eq!(keys, expected, "no filename: the source gave none");
         assert!(!map.contains_key("rank"), "the position is the rank");
         assert_eq!(map["similar"], json!(0));
+        assert_eq!(map["auto_rank"], json!(1));
         assert_eq!(map["score"], json!(107.0));
         assert_eq!(
             map["score_parts"],
@@ -1019,6 +1225,6 @@ mod tests {
         let eval = evaluate(&job(true), &[candidate], &open_settings());
         let map = eval.shortlist[0].to_report_map();
         assert_eq!(map["filename"], json!("Example.Movie.1994.mkv"));
-        assert_eq!(map.len(), 21);
+        assert_eq!(map.len(), 22, "23 with the run's survivors key");
     }
 }
