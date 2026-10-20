@@ -13,6 +13,7 @@ pub mod run;
 pub mod score;
 pub mod settings;
 pub mod source;
+pub mod state;
 pub mod torrentio;
 pub mod torrentio_text;
 
