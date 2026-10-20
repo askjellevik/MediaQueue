@@ -59,6 +59,17 @@ pub struct Job {
     pub blocked_hashes: Vec<String>,
 }
 
+/// What the worker may ask the portal to raise an alert about. The portal
+/// writes the text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AlertKind {
+    BreakerOpen,
+    RdAuth,
+    CountersUnreadable,
+    RepeatedFailures,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReportState {
@@ -326,6 +337,20 @@ impl PortalClient {
             None => ProgressResult::Applied,
             Some(why) => ProgressResult::Abandon(why),
         })
+    }
+
+    /// `POST /internal/alert`. Fire and forget for the caller: a failure is
+    /// returned so it can be logged, and nothing depends on it.
+    pub async fn alert(&self, kind: AlertKind) -> Result<(), PortalError> {
+        let request = self
+            .client
+            .post(self.url("/internal/alert"))
+            .json(&serde_json::json!({ "kind": kind }));
+        let response = self.send(request).await?;
+        match answer(&response) {
+            Answer::Ok | Answer::NoContent => Ok(()),
+            Answer::Failed(status) => Err(failure(status, response).await),
+        }
     }
 
     fn url(&self, path: &str) -> String {
@@ -721,6 +746,56 @@ mod tests {
             assert_eq!(result, Ok(ReportResult::Applied));
             server.verify().await;
         }
+    }
+
+    #[tokio::test]
+    async fn an_alert_names_only_its_kind() {
+        for (kind, text) in [
+            (AlertKind::BreakerOpen, "breaker_open"),
+            (AlertKind::RdAuth, "rd_auth"),
+            (AlertKind::CountersUnreadable, "counters_unreadable"),
+            (AlertKind::RepeatedFailures, "repeated_failures"),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/internal/alert"))
+                .and(header("authorization", format!("Bearer {TOKEN}").as_str()))
+                .and(body_json(json!({ "kind": text })))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+                .expect(1)
+                .mount(&server)
+                .await;
+            assert_eq!(client_for(&server).await.alert(kind).await, Ok(()));
+            server.verify().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_alert_is_an_error_the_caller_can_log() {
+        let server = MockServer::start().await;
+        mount(
+            &server,
+            "POST",
+            "/internal/alert",
+            ResponseTemplate::new(503),
+        )
+        .await;
+        assert!(matches!(
+            client_for(&server).await.alert(AlertKind::RdAuth).await,
+            Err(PortalError::Transient(_))
+        ));
+        let server = MockServer::start().await;
+        mount(
+            &server,
+            "POST",
+            "/internal/alert",
+            ResponseTemplate::new(400),
+        )
+        .await;
+        assert!(matches!(
+            client_for(&server).await.alert(AlertKind::RdAuth).await,
+            Err(PortalError::Fatal(_))
+        ));
     }
 
     #[tokio::test]

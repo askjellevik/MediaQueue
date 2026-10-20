@@ -343,6 +343,10 @@ impl StateStore {
         })
     }
 
+    pub fn has_pending_delete(&self) -> bool {
+        !self.lock_rolled().0.state.pending_delete.is_empty()
+    }
+
     /// Hands out the ids to retry and clears the list. An id that fails
     /// again is added back by the caller.
     pub fn pending_delete_take(&self) -> Result<Vec<String>, StateError> {
@@ -839,6 +843,17 @@ mod tests {
         assert!(store.owns("ID204"));
         let on_disk: State = serde_json::from_slice(&fs::read(dir.file()).unwrap()).unwrap();
         assert_eq!(on_disk.owned.len(), 200);
+    }
+
+    #[test]
+    fn has_pending_delete_follows_the_list() {
+        let dir = Dir::new();
+        let store = open(&dir, &FakeClock::at(NOON));
+        assert!(!store.has_pending_delete());
+        store.pending_delete_add("AAA").unwrap();
+        assert!(store.has_pending_delete());
+        store.pending_delete_take().unwrap();
+        assert!(!store.has_pending_delete());
     }
 
     #[test]

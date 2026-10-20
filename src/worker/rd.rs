@@ -21,7 +21,7 @@ use tokio::{sync::Mutex, time::Instant};
 
 use super::{
     config::RdConfig,
-    state::{Limits, StateStore, SystemClock, Trip},
+    state::{Clock, Limits, StateStore, SystemClock, Trip},
 };
 
 pub const DEFAULT_BASE_URL: &str = "https://api.real-debrid.com/rest/1.0";
@@ -47,9 +47,14 @@ pub struct RdRuntime {
 
 impl RdRuntime {
     pub fn new(config: &RdConfig) -> Result<Self, RdError> {
+        Self::with_clock(config, Arc::new(SystemClock))
+    }
+
+    /// With another time source, so a test can move past a breaker.
+    pub fn with_clock(config: &RdConfig, clock: Arc<dyn Clock>) -> Result<Self, RdError> {
         let state = StateStore::open_with(
             &config.state_dir,
-            Arc::new(SystemClock),
+            clock,
             Limits {
                 max_adds: config.max_adds_per_day,
                 max_uncached: config.max_uncached_per_day,

@@ -7,7 +7,11 @@ mod common;
 
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicU32, AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -18,7 +22,7 @@ use mediaqueue::worker::{
     rd::{RdRuntime, Secret},
     run::{Cycle, Shutdown, Timing, Worker},
     settings::RankSettings,
-    state::StateStore,
+    state::{Clock, StateStore},
     torrentio::TorrentioSource,
 };
 use serde_json::{Value, json};
@@ -47,15 +51,41 @@ struct Rig {
     admin: String,
     rd: MockServer,
     stub: MockServer,
-    worker: Worker<TorrentioSource>,
+    worker: Option<Worker<TorrentioSource>>,
     state: StateStore,
     state_dir: PathBuf,
     _stop: watch::Sender<bool>,
+    _dir: TempDir,
 }
 
-impl Drop for Rig {
+/// A directory under the system temp dir, removed on drop.
+struct TempDir(PathBuf);
+
+impl Drop for TempDir {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.state_dir);
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A clock the test moves.
+struct TestClock(AtomicU64);
+
+impl TestClock {
+    fn new() -> Arc<Self> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        Arc::new(Self(AtomicU64::new(now)))
+    }
+    fn advance(&self, secs: u64) {
+        self.0.fetch_add(secs, Ordering::SeqCst);
+    }
+}
+
+impl Clock for TestClock {
+    fn now_unix(&self) -> u64 {
+        self.0.load(Ordering::SeqCst)
     }
 }
 
@@ -70,54 +100,91 @@ fn timing() -> Timing {
     }
 }
 
-fn state_dir() -> PathBuf {
-    static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+fn state_dir() -> TempDir {
+    static N: AtomicU32 = AtomicU32::new(0);
+    let n = N.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("mediaqueue-worker-rd-{}-{n}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
-    dir
+    TempDir(dir)
 }
 
-async fn rig() -> Rig {
-    let app = common::spawn_app().await;
-    let admin = login_admin_cookie(&app).await;
-    let rd = MockServer::start().await;
-    let stub = MockServer::start().await;
-    let state_dir = state_dir();
+struct Built {
+    worker: Worker<TorrentioSource>,
+    state: StateStore,
+    stop: watch::Sender<bool>,
+}
+
+/// A worker against `portal_url`, the Real-Debrid stub and the state in
+/// `dir`. `clock` replaces the system clock for the counters.
+fn build_worker(
+    portal_url: &str,
+    rd: &MockServer,
+    stub: &MockServer,
+    dir: &Path,
+    clock: Option<Arc<dyn Clock>>,
+    timing: Timing,
+) -> Built {
     let config = RdConfig {
         token: Secret::new(RD_TOKEN),
         base_url: rd.uri(),
-        state_dir: state_dir.clone(),
-        max_adds_per_day: 5,
+        state_dir: dir.to_path_buf(),
+        max_adds_per_day: 50,
         max_uncached_per_day: 2,
         max_bytes: 30 * GIB,
         per_min: 60_000,
         keep_free_slots: 2,
     };
-    let runtime = RdRuntime::new(&config).unwrap();
-    let state = runtime.state.clone();
-    let portal = PortalClient::new(
-        &format!("http://{}", app.internal_addr),
-        TEST_INTERNAL_TOKEN,
-    )
+    let runtime = match clock {
+        Some(clock) => RdRuntime::with_clock(&config, clock),
+        None => RdRuntime::new(&config),
+    }
     .unwrap();
+    let state = runtime.state.clone();
+    let portal = PortalClient::new(portal_url, TEST_INTERNAL_TOKEN).unwrap();
     let source = TorrentioSource::new(&stub.uri()).unwrap();
     let (stop, shutdown) = Shutdown::channel();
     let worker = Worker::new(portal, source, RankSettings::default(), POLL, shutdown)
-        .with_timing(timing())
+        .with_timing(timing)
         .with_rd(Some(runtime));
+    Built {
+        worker,
+        state,
+        stop,
+    }
+}
+
+async fn rig() -> Rig {
+    rig_with(None, timing()).await
+}
+
+async fn rig_with(clock: Option<Arc<dyn Clock>>, timing: Timing) -> Rig {
+    let app = common::spawn_app().await;
+    let admin = login_admin_cookie(&app).await;
+    let rd = MockServer::start().await;
+    let stub = MockServer::start().await;
+    let dir = state_dir();
+    let built = build_worker(
+        &format!("http://{}", app.internal_addr),
+        &rd,
+        &stub,
+        &dir.0,
+        clock,
+        timing,
+    );
     let rig = Rig {
         app,
         admin,
         rd,
         stub,
-        worker,
-        state,
-        state_dir,
-        _stop: stop,
+        worker: Some(built.worker),
+        state: built.state,
+        state_dir: dir.0.clone(),
+        _stop: built.stop,
+        _dir: dir,
     };
     let response = admin_call(
-        &rig,
+        &rig.app,
+        &rig.admin,
         "PUT",
         "/api/admin/worker",
         r#"{"enabled":true,"mode":"assisted"}"#,
@@ -127,10 +194,16 @@ async fn rig() -> Rig {
     rig
 }
 
-async fn admin_call(rig: &Rig, method: &str, path: &str, body: &str) -> common::HttpResponse {
+async fn admin_call(
+    app: &TestApp,
+    admin: &str,
+    method: &str,
+    path: &str,
+    body: &str,
+) -> common::HttpResponse {
     let mut headers = json_post_headers();
-    headers.push(("Cookie", &rig.admin));
-    rig.app.request(method, path, &headers, Some(body)).await
+    headers.push(("Cookie", admin));
+    app.request(method, path, &headers, Some(body)).await
 }
 
 /// A queued job for a new pending request; returns the job id.
@@ -163,7 +236,8 @@ async fn queue_job(rig: &Rig, tmdb_id: i64) -> i64 {
     .await
     .unwrap();
     let response = admin_call(
-        rig,
+        app,
+        &rig.admin,
         "POST",
         &format!("/api/admin/requests/{request}/fetch"),
         "{}",
@@ -226,7 +300,12 @@ fn counters(rig: &Rig) -> Value {
 }
 
 async fn run(rig: &mut Rig) -> Cycle {
-    rig.worker.run_once(Instant::now()).await.unwrap()
+    rig.worker
+        .as_mut()
+        .unwrap()
+        .run_once(Instant::now())
+        .await
+        .unwrap()
 }
 
 // ---------------------------------------------------------------------
@@ -317,6 +396,34 @@ async fn mount_cached_torrent(rd: &MockServer) {
         true,
     );
     mount_json(rd, "GET", &format!("/torrents/info/{RD_ID}"), 200, done).await;
+    Mock::given(method("POST"))
+        .and(path(format!("/torrents/selectFiles/{RD_ID}")))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(rd)
+        .await;
+}
+
+/// The file list, then a download that never finishes.
+async fn mount_stalled_torrent(rd: &MockServer) {
+    let waiting = info(
+        "waiting_files_selection",
+        vec![file(1, MOVIE, 4 * GIB, false)],
+        false,
+    );
+    Mock::given(method("GET"))
+        .and(path(format!("/torrents/info/{RD_ID}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(waiting))
+        .up_to_n_times(1)
+        .mount(rd)
+        .await;
+    mount_json(
+        rd,
+        "GET",
+        &format!("/torrents/info/{RD_ID}"),
+        200,
+        info("downloading", vec![file(1, MOVIE, 4 * GIB, true)], false),
+    )
+    .await;
     Mock::given(method("POST"))
         .and(path(format!("/torrents/selectFiles/{RD_ID}")))
         .respond_with(ResponseTemplate::new(204))
@@ -693,7 +800,7 @@ async fn no_free_slot_ends_needs_pick_without_adding() {
 async fn reaching_the_daily_cap_claims_nothing() {
     let mut rig = rig().await;
     mount_roomy(&rig.rd).await;
-    for _ in 0..5 {
+    while rig.state.adds_left() > 0 {
         rig.state.record_add().unwrap();
     }
     let job = picked_job(&rig).await;
@@ -818,7 +925,14 @@ async fn an_unpicked_job_in_assisted_mode_waits_for_a_pick_with_the_shortlist() 
 #[tokio::test]
 async fn auto_mode_behaves_like_assisted_for_now() {
     let mut rig = rig().await;
-    admin_call(&rig, "PUT", "/api/admin/worker", r#"{"mode":"auto"}"#).await;
+    admin_call(
+        &rig.app,
+        &rig.admin,
+        "PUT",
+        "/api/admin/worker",
+        r#"{"mode":"auto"}"#,
+    )
+    .await;
     serve_fixture(&rig.stub).await;
     let job = queue_job(&rig, 1).await;
 
@@ -888,4 +1002,580 @@ async fn a_removal_that_cannot_be_deleted_now_is_queued_and_still_cleared() {
     assert!(rig.state.owns("OWNED1"), "still ours until it is gone");
     assert_eq!(counters(&rig)["pending_delete"], json!(["OWNED1"]));
     assert_eq!(job_row(&rig.app.pool, job).await.remove_rd_torrent_id, None);
+}
+
+// ---------------------------------------------------------------------
+// Runs that are stopped from outside
+// ---------------------------------------------------------------------
+
+/// Waits that last until the test interferes.
+fn slow_timing() -> Timing {
+    Timing {
+        rd_poll: [Duration::from_millis(20); 7],
+        rd_conversion: Duration::from_secs(20),
+        rd_picked_wait: Duration::from_secs(20),
+        rd_picked_deadline: Duration::from_secs(60),
+        ..timing()
+    }
+}
+
+/// Polls until `check` holds, for at most five seconds.
+async fn wait_until<F, Fut>(mut check: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    for _ in 0..500 {
+        if check().await {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the condition never held");
+}
+
+#[tokio::test]
+async fn cancelling_during_the_wait_drops_the_run_and_keeps_the_torrent_the_portal_names() {
+    let mut rig = rig_with(None, slow_timing()).await;
+    mount_roomy(&rig.rd).await;
+    mount_stalled_torrent(&rig.rd).await;
+    mount_delete(&rig.rd, RD_ID).await;
+    let job = picked_job(&rig).await;
+
+    let (cycle, ()) = tokio::join!(
+        rig.worker.as_mut().unwrap().run_once(Instant::now()),
+        async {
+            wait_until(|| async { job_row(&rig.app.pool, job).await.rd_torrent_id.is_some() })
+                .await;
+            let response = admin_call(
+                &rig.app,
+                &rig.admin,
+                "POST",
+                &format!("/api/admin/jobs/{job}/cancel"),
+                "{}",
+            )
+            .await;
+            assert_eq!(response.status, 200, "{}", response.body);
+        }
+    );
+
+    assert_eq!(cycle.unwrap(), Cycle::Worked);
+    // The portal still names the torrent (a retry resumes it), so it stays;
+    // and the run reported nothing over the cancellation.
+    let row = job_row(&rig.app.pool, job).await;
+    assert_eq!(
+        (
+            row.state.as_str(),
+            row.reason.as_deref(),
+            row.rd_torrent_id.as_deref()
+        ),
+        ("failed", Some("cancelled"), Some(RD_ID))
+    );
+    assert_eq!(rd_calls(&rig, "DELETE", "/torrents/delete/").await, 0);
+    assert!(rig.state.owns(RD_ID));
+}
+
+#[tokio::test]
+async fn a_run_whose_claim_is_gone_deletes_a_torrent_the_portal_no_longer_names() {
+    let mut rig = rig_with(None, slow_timing()).await;
+    serve_fixture(&rig.stub).await;
+    mount_roomy(&rig.rd).await;
+    mount_stalled_torrent(&rig.rd).await;
+    mount_delete(&rig.rd, RD_ID).await;
+    let job = picked_job(&rig).await;
+
+    let (cycle, ()) = tokio::join!(
+        rig.worker.as_mut().unwrap().run_once(Instant::now()),
+        async {
+            wait_until(|| async { job_row(&rig.app.pool, job).await.rd_torrent_id.is_some() })
+                .await;
+            // "Didn't play" moves the stored torrent to the removal column,
+            // so the 409 the worker gets names nothing.
+            let response = admin_call(
+                &rig.app,
+                &rig.admin,
+                "POST",
+                &format!("/api/admin/jobs/{job}/not-playing"),
+                "{}",
+            )
+            .await;
+            assert_eq!(response.status, 200, "{}", response.body);
+        }
+    );
+
+    assert_eq!(cycle.unwrap(), Cycle::Worked);
+    assert_eq!(
+        rd_calls(&rig, "DELETE", &format!("/torrents/delete/{RD_ID}")).await,
+        1
+    );
+    assert!(!rig.state.owns(RD_ID));
+    let row = job_row(&rig.app.pool, job).await;
+    assert_eq!(
+        (
+            row.state.as_str(),
+            row.rd_torrent_id,
+            row.remove_rd_torrent_id.as_deref()
+        ),
+        ("queued", None, Some(RD_ID))
+    );
+
+    // The next claim finds a removal for a torrent that is already gone and
+    // clears it without another delete.
+    assert_eq!(run(&mut rig).await, Cycle::Worked);
+    assert_eq!(job_row(&rig.app.pool, job).await.remove_rd_torrent_id, None);
+    assert_eq!(rd_calls(&rig, "DELETE", "/torrents/delete/").await, 1);
+}
+
+#[tokio::test]
+async fn switching_the_worker_off_between_add_and_select_deletes_the_torrent() {
+    let mut rig = rig_with(None, slow_timing()).await;
+    mount_roomy(&rig.rd).await;
+    let waiting = info(
+        "waiting_files_selection",
+        vec![file(1, MOVIE, 4 * GIB, false)],
+        false,
+    );
+    // The first look is slow, which leaves the test time to flip the switch.
+    Mock::given(method("GET"))
+        .and(path(format!("/torrents/info/{RD_ID}")))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(waiting)
+                .set_delay(Duration::from_millis(600)),
+        )
+        .mount(&rig.rd)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(format!("/torrents/selectFiles/{RD_ID}")))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&rig.rd)
+        .await;
+    mount_delete(&rig.rd, RD_ID).await;
+    let job = picked_job(&rig).await;
+
+    let (cycle, ()) = tokio::join!(
+        rig.worker.as_mut().unwrap().run_once(Instant::now()),
+        async {
+            wait_until(|| async { job_row(&rig.app.pool, job).await.rd_torrent_id.is_some() })
+                .await;
+            let response = admin_call(
+                &rig.app,
+                &rig.admin,
+                "PUT",
+                "/api/admin/worker",
+                r#"{"enabled":false}"#,
+            )
+            .await;
+            assert_eq!(response.status, 200, "{}", response.body);
+        }
+    );
+
+    assert_eq!(cycle.unwrap(), Cycle::Worked);
+    let row = job_row(&rig.app.pool, job).await;
+    assert_eq!(
+        (row.state.as_str(), row.reason.as_deref()),
+        ("needs_pick", Some("worker_disabled"))
+    );
+    assert_eq!(rd_calls(&rig, "POST", "/torrents/selectFiles/").await, 0);
+    assert_eq!(
+        rd_calls(&rig, "DELETE", &format!("/torrents/delete/{RD_ID}")).await,
+        1
+    );
+    assert!(!rig.state.owns(RD_ID));
+}
+
+/// The file list, then Real-Debrid asks us to slow down.
+async fn mount_rate_limit_on_the_poll(rd: &MockServer) {
+    let waiting = info(
+        "waiting_files_selection",
+        vec![file(1, MOVIE, 4 * GIB, false)],
+        false,
+    );
+    Mock::given(method("GET"))
+        .and(path(format!("/torrents/info/{RD_ID}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(waiting))
+        .up_to_n_times(1)
+        .mount(rd)
+        .await;
+    mount_json(
+        rd,
+        "GET",
+        &format!("/torrents/info/{RD_ID}"),
+        429,
+        json!({"error": "too_many_requests", "error_code": 34}),
+    )
+    .await;
+    Mock::given(method("POST"))
+        .and(path(format!("/torrents/selectFiles/{RD_ID}")))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(rd)
+        .await;
+}
+
+#[tokio::test]
+async fn a_rate_limit_on_the_poll_opens_the_breaker_and_queues_the_deletion() {
+    let mut rig = rig().await;
+    mount_roomy(&rig.rd).await;
+    mount_rate_limit_on_the_poll(&rig.rd).await;
+    mount_delete(&rig.rd, RD_ID).await;
+    let first = picked_job(&rig).await;
+    let second = queue_job(&rig, 2).await;
+
+    assert_eq!(run(&mut rig).await, Cycle::Worked);
+
+    let row = job_row(&rig.app.pool, first).await;
+    assert_eq!(
+        (row.state.as_str(), row.reason.as_deref()),
+        ("needs_pick", Some("rate_limited"))
+    );
+    let saved = counters(&rig);
+    assert!(saved["breaker_until"].as_u64().unwrap() > 0);
+    assert_eq!(saved["pending_delete"], json!([RD_ID]));
+    assert!(rig.state.owns(RD_ID), "still ours until it is gone");
+    assert_eq!(rd_calls(&rig, "DELETE", "/torrents/delete/").await, 0);
+
+    // While the breaker is open nothing is claimed and nothing is called.
+    let calls = rig.rd.received_requests().await.unwrap().len();
+    assert_eq!(run(&mut rig).await, Cycle::Wait(POLL));
+    assert_eq!(rig.rd.received_requests().await.unwrap().len(), calls);
+    assert_eq!(job_row(&rig.app.pool, second).await.attempts, 0);
+}
+
+#[tokio::test]
+async fn a_restarted_worker_deletes_the_queued_torrent_once_the_breaker_has_passed() {
+    let clock = TestClock::new();
+    let mut rig = rig_with(Some(clock.clone()), timing()).await;
+    mount_roomy(&rig.rd).await;
+    mount_rate_limit_on_the_poll(&rig.rd).await;
+    mount_delete(&rig.rd, RD_ID).await;
+    let first = picked_job(&rig).await;
+    run(&mut rig).await;
+    assert_eq!(counters(&rig)["pending_delete"], json!([RD_ID]));
+    assert_eq!(rd_calls(&rig, "DELETE", "/torrents/delete/").await, 0);
+    assert_eq!(
+        job_row(&rig.app.pool, first).await.reason.as_deref(),
+        Some("rate_limited")
+    );
+
+    // A new process over the same state, while the breaker is still open.
+    let mut again = build_worker(
+        &format!("http://{}", rig.app.internal_addr),
+        &rig.rd,
+        &rig.stub,
+        &rig.state_dir,
+        Some(clock.clone()),
+        timing(),
+    );
+    again.worker.run_once(Instant::now()).await.unwrap();
+    assert_eq!(rd_calls(&rig, "DELETE", "/torrents/delete/").await, 0);
+
+    // Past the breaker, the first cycle clears the queue.
+    clock.advance(16 * 60);
+    again.worker.run_once(Instant::now()).await.unwrap();
+    assert_eq!(
+        rd_calls(&rig, "DELETE", &format!("/torrents/delete/{RD_ID}")).await,
+        1
+    );
+    assert!(!again.state.owns(RD_ID));
+    assert_eq!(counters(&rig)["pending_delete"], json!([]));
+    drop(again.stop);
+}
+
+#[tokio::test]
+async fn a_job_the_portal_reclaimed_resumes_the_owned_torrent() {
+    let mut rig = rig().await;
+    mount_json(
+        &rig.rd,
+        "GET",
+        &format!("/torrents/info/{RD_ID}"),
+        200,
+        info("downloaded", vec![file(1, MOVIE, 4 * GIB, true)], true),
+    )
+    .await;
+    let job = picked_job(&rig).await;
+
+    // An earlier run claimed the job, added the torrent, told the portal,
+    // and then died.
+    let auth = format!("Bearer {TEST_INTERNAL_TOKEN}");
+    let headers = [
+        ("Authorization", auth.as_str()),
+        ("Content-Type", "application/json"),
+    ];
+    let claim = rig
+        .app
+        .internal_request("POST", "/internal/jobs/claim", &headers, None)
+        .await;
+    assert_eq!(claim.status, 200, "{}", claim.body);
+    let claim: Value = serde_json::from_str(&claim.body).unwrap();
+    let progress = rig
+        .app
+        .internal_request(
+            "POST",
+            &format!("/internal/jobs/{job}/progress"),
+            &headers,
+            Some(&json!({"claim_id": claim["claim_id"], "rd_torrent_id": RD_ID}).to_string()),
+        )
+        .await;
+    assert_eq!(progress.status, 200, "{}", progress.body);
+    rig.state.own(RD_ID, HASH).unwrap();
+    rig.app.clock.advance(Duration::from_secs(46 * 60));
+
+    assert_eq!(run(&mut rig).await, Cycle::Worked);
+
+    let row = job_row(&rig.app.pool, job).await;
+    assert_eq!(
+        (
+            row.state.as_str(),
+            row.rd_torrent_id.as_deref(),
+            row.attempts
+        ),
+        ("done", Some(RD_ID), 2)
+    );
+    assert_eq!(rd_calls(&rig, "POST", "/torrents/addMagnet").await, 0);
+}
+
+// ---------------------------------------------------------------------
+// Alerts, against a stub portal so each call can be counted
+// ---------------------------------------------------------------------
+
+struct StubPortal {
+    portal: MockServer,
+    rd: MockServer,
+    worker: Worker<TorrentioSource>,
+    state: StateStore,
+    _stop: watch::Sender<bool>,
+    _dir: TempDir,
+}
+
+fn claim_json() -> Value {
+    json!({
+        "id": 1, "claim_id": "c-1", "tmdb_id": 603, "imdb_id": IMDB, "media_type": "movie",
+        "title": "Example Movie", "year": 1994, "infuse_pro": false,
+        "chosen_infohash": HASH, "picked": true, "rd_torrent_id": null,
+        "remove_rd_torrent_id": null, "blocked_hashes": [],
+    })
+}
+
+async fn stub_portal(
+    clock: Option<Arc<dyn Clock>>,
+    alert_status: u16,
+    untrusted_file: bool,
+) -> StubPortal {
+    let portal = MockServer::start().await;
+    mount_json(
+        &portal,
+        "GET",
+        "/internal/settings",
+        200,
+        json!({"enabled": true, "mode": "assisted"}),
+    )
+    .await;
+    mount_json(&portal, "POST", "/internal/jobs/claim", 200, claim_json()).await;
+    mount_json(
+        &portal,
+        "POST",
+        "/internal/jobs/1/progress",
+        200,
+        json!({"ok": true}),
+    )
+    .await;
+    mount_json(
+        &portal,
+        "POST",
+        "/internal/jobs/1/report",
+        200,
+        json!({"ok": true}),
+    )
+    .await;
+    Mock::given(method("POST"))
+        .and(path("/internal/alert"))
+        .respond_with(ResponseTemplate::new(alert_status).set_body_json(json!({"ok": true})))
+        .mount(&portal)
+        .await;
+    let rd = MockServer::start().await;
+    let stub = MockServer::start().await;
+    let dir = state_dir();
+    if untrusted_file {
+        fs::write(dir.0.join("counters.json"), b"{not json").unwrap();
+    }
+    let built = build_worker(&portal.uri(), &rd, &stub, &dir.0, clock, timing());
+    StubPortal {
+        portal,
+        rd,
+        worker: built.worker,
+        state: built.state,
+        _stop: built.stop,
+        _dir: dir,
+    }
+}
+
+impl StubPortal {
+    async fn run(&mut self) -> Cycle {
+        self.worker.run_once(Instant::now()).await.unwrap()
+    }
+
+    async fn posted(&self, route: &str) -> Vec<Value> {
+        self.portal
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.method.as_str() == "POST" && r.url.path() == route)
+            .map(|r| serde_json::from_slice(&r.body).unwrap_or(Value::Null))
+            .collect()
+    }
+
+    async fn alerts(&self) -> Vec<String> {
+        self.posted("/internal/alert")
+            .await
+            .iter()
+            .map(|b| b["kind"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    /// Every add is refused by Real-Debrid.
+    async fn refuse_adds(&self) {
+        self.rd.reset().await;
+        mount_json(
+            &self.rd,
+            "GET",
+            "/torrents/activeCount",
+            200,
+            json!({"nb": 0, "limit": 25}),
+        )
+        .await;
+        Mock::given(method("GET"))
+            .and(path("/torrents"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&self.rd)
+            .await;
+        mount_json(
+            &self.rd,
+            "POST",
+            "/torrents/addMagnet",
+            403,
+            json!({"error_code": 35}),
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn three_failed_runs_in_a_row_raise_one_alert_and_a_result_starts_the_count_over() {
+    let mut mp = stub_portal(None, 200, false).await;
+    mp.refuse_adds().await;
+    for _ in 0..5 {
+        assert_eq!(mp.run().await, Cycle::Worked);
+    }
+    assert_eq!(mp.alerts().await, ["repeated_failures"]);
+
+    // A result resets the count.
+    mp.rd.reset().await;
+    mount_roomy(&mp.rd).await;
+    mount_cached_torrent(&mp.rd).await;
+    mp.run().await;
+    let reports = mp.posted("/internal/jobs/1/report").await;
+    assert_eq!(reports.last().unwrap()["state"], "done");
+
+    mp.refuse_adds().await;
+    mp.run().await;
+    mp.run().await;
+    assert_eq!(
+        mp.alerts().await,
+        ["repeated_failures"],
+        "two failures are not three"
+    );
+    mp.run().await;
+    assert_eq!(
+        mp.alerts().await,
+        ["repeated_failures", "repeated_failures"]
+    );
+}
+
+async fn rate_limited_active_count(rd: &MockServer) {
+    mount_json(
+        rd,
+        "GET",
+        "/torrents/activeCount",
+        429,
+        json!({"error": "too_many_requests", "error_code": 34}),
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path("/torrents"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(rd)
+        .await;
+}
+
+#[tokio::test]
+async fn each_breaker_trip_raises_exactly_one_alert() {
+    let clock = TestClock::new();
+    let mut mp = stub_portal(Some(clock.clone()), 200, false).await;
+    rate_limited_active_count(&mp.rd).await;
+
+    assert_eq!(mp.run().await, Cycle::Worked);
+    assert_eq!(mp.alerts().await, ["breaker_open"]);
+    let reports = mp.posted("/internal/jobs/1/report").await;
+    assert_eq!(reports[0]["reason"], "rate_limited");
+
+    // Held off: nothing is claimed, and nothing more is said.
+    for _ in 0..3 {
+        assert_eq!(mp.run().await, Cycle::Wait(POLL));
+    }
+    assert_eq!(mp.alerts().await, ["breaker_open"]);
+    assert_eq!(mp.posted("/internal/jobs/claim").await.len(), 1);
+
+    // A second trip after the first has passed is a second alert.
+    clock.advance(16 * 60);
+    assert_eq!(mp.run().await, Cycle::Worked);
+    assert_eq!(mp.alerts().await, ["breaker_open", "breaker_open"]);
+}
+
+#[tokio::test]
+async fn a_rejected_token_raises_rd_auth_once_and_stops_claiming() {
+    let mut mp = stub_portal(None, 200, false).await;
+    mount_json(
+        &mp.rd,
+        "GET",
+        "/torrents/activeCount",
+        401,
+        json!({"error": "bad_token", "error_code": 8}),
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path("/torrents"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&mp.rd)
+        .await;
+    assert_eq!(mp.run().await, Cycle::Worked);
+    for _ in 0..3 {
+        assert_eq!(mp.run().await, Cycle::Wait(POLL));
+    }
+    assert_eq!(mp.alerts().await, ["rd_auth"]);
+    assert_eq!(mp.posted("/internal/jobs/claim").await.len(), 1);
+    assert!(!format!("{:?}", mp.portal.received_requests().await.unwrap()).contains("test-token"));
+}
+
+#[tokio::test]
+async fn an_untrusted_counters_file_raises_its_alert_once_and_claims_nothing() {
+    let mut mp = stub_portal(None, 200, true).await;
+    assert!(mp.state.unreadable());
+    for _ in 0..3 {
+        assert_eq!(mp.run().await, Cycle::Wait(POLL));
+    }
+    assert_eq!(mp.alerts().await, ["counters_unreadable"]);
+    assert!(mp.posted("/internal/jobs/claim").await.is_empty());
+    assert!(mp.rd.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_failing_alert_call_changes_nothing_about_the_run() {
+    let mut mp = stub_portal(None, 503, false).await;
+    rate_limited_active_count(&mp.rd).await;
+    assert_eq!(mp.run().await, Cycle::Worked);
+    let reports = mp.posted("/internal/jobs/1/report").await;
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0]["reason"], "rate_limited");
+    assert_eq!(mp.alerts().await, ["breaker_open"]);
 }

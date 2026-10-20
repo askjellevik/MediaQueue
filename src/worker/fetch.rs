@@ -149,6 +149,36 @@ pub async fn handle_removal(env: &Env<'_>, job: &Job) {
     }
 }
 
+/// Retries deletions that could not be made earlier (the breaker was open,
+/// Real-Debrid was down). Does nothing while the breaker is open.
+pub async fn sweep_pending(rd: &RdRuntime) {
+    if rd.state.breaker_trip(rd.state.now()).is_some() {
+        return;
+    }
+    let ids = match rd.state.pending_delete_take() {
+        Ok(ids) => ids,
+        Err(error) => {
+            tracing::warn!(%error, "could not read the queued deletions");
+            return;
+        }
+    };
+    for id in ids {
+        if !rd.state.owns(&id) {
+            continue;
+        }
+        match rd.client.delete(&id).await {
+            Ok(()) | Err(RdError::NotFound) => {
+                tracing::info!("a queued deletion went through");
+                let _ = rd.state.forget(&id);
+            }
+            Err(error) => {
+                tracing::warn!(%error, "a queued deletion failed again");
+                let _ = rd.state.pending_delete_add(&id);
+            }
+        }
+    }
+}
+
 /// The whole run of a picked job. `trace` names the torrent to delete if
 /// the caller has to cut the run short.
 pub async fn picked(env: &Env<'_>, job: &Job, trace: &mut Trace) -> Outcome {
@@ -316,6 +346,23 @@ async fn library_hit(
     ))
 }
 
+/// A look at the world between steps: the kill switch must still be on and
+/// the claim still ours. A portal that cannot be reached for either does not
+/// end the run; the next look will see.
+async fn checkpoint(env: &Env<'_>, job: &Job) -> Step<()> {
+    match env.portal.settings().await {
+        Ok(settings) if settings.enabled && settings.mode != Mode::DryRun => {}
+        Ok(_) => {
+            return Err(gate(
+                "worker_disabled",
+                "the worker was switched off during the run",
+            ));
+        }
+        Err(error) => tracing::warn!(job = job.id, %error, "could not re-read the worker settings"),
+    }
+    tell_portal(env, job, Progress::default()).await
+}
+
 /// Sends a progress call. A refused claim ends the run; a portal that
 /// cannot be reached does not, because the final report carries the same ids.
 async fn tell_portal(env: &Env<'_>, job: &Job, progress: Progress) -> Step<()> {
@@ -359,6 +406,7 @@ async fn finish(env: &Env<'_>, job: &Job, id: &str, hash: &str) -> Step<Report> 
             } else if info.status == TorrentStatus::WaitingFilesSelection
                 && let Some(file_id) = chosen
             {
+                checkpoint(env, job).await?;
                 env.rd
                     .client
                     .select_files(id, file_id)
@@ -418,6 +466,7 @@ async fn finish(env: &Env<'_>, job: &Job, id: &str, hash: &str) -> Step<Report> 
             _ => {}
         }
 
+        checkpoint(env, job).await?;
         let steps = &env.timing.rd_poll;
         tokio::time::sleep(steps[polls.min(steps.len() - 1)]).await;
         polls += 1;

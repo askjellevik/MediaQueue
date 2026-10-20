@@ -18,12 +18,15 @@ use super::{
     backoff::Backoff,
     candidate::RawCandidate,
     fetch::{self, Env, Outcome, Trace},
-    portal::{Abandon, Job, Mode, PortalClient, PortalError, Report, ReportResult},
+    portal::{
+        Abandon, AlertKind, Job, Mode, PortalClient, PortalError, Report, ReportResult, ReportState,
+    },
     rd::RdRuntime,
     rules::{DropReason, JobSpec},
     score::{Evaluation, evaluate},
     settings::RankSettings,
     source::{CandidateSource, MediaKind, SourceError},
+    state::Trip,
 };
 
 /// A run that takes longer is reported as a timeout. Well inside the
@@ -126,6 +129,20 @@ enum Idle {
     Hold(&'static str),
 }
 
+/// What has already been announced, so one cause raises one alert.
+#[derive(Default)]
+struct Alerted {
+    auth: bool,
+    unreadable: bool,
+    /// The end of the breaker period the last alert was for.
+    breaker_until: Option<u64>,
+    /// Real-Debrid runs in a row that ended without a result.
+    failed_runs: u32,
+}
+
+/// The run of failures that raises `repeated_failures`.
+const REPEATED_FAILURES: u32 = 3;
+
 #[derive(Default)]
 struct Stats {
     polls: u64,
@@ -147,6 +164,7 @@ pub struct Worker<S> {
     idle: Option<Idle>,
     first_call: bool,
     stats: Stats,
+    alerted: Alerted,
 }
 
 impl<S: CandidateSource> Worker<S> {
@@ -169,6 +187,7 @@ impl<S: CandidateSource> Worker<S> {
             idle: None,
             first_call: true,
             stats: Stats::default(),
+            alerted: Alerted::default(),
         }
     }
 
@@ -196,6 +215,13 @@ impl<S: CandidateSource> Worker<S> {
             Ok(settings) => settings,
             Err(e) => return self.portal_failed(&e, first),
         };
+        if let Some(rd) = &self.rd
+            && rd.state.has_pending_delete()
+        {
+            fetch::sweep_pending(rd).await;
+        }
+        self.raise_alerts().await;
+
         let rd_mode = settings.mode != Mode::DryRun;
         let idle = if !settings.enabled {
             Some(Idle::KillSwitch)
@@ -226,8 +252,60 @@ impl<S: CandidateSource> Worker<S> {
             Ok(Some(job)) => {
                 self.stats.claims += 1;
                 self.work(job, now, settings.mode).await;
+                self.raise_alerts().await;
                 Ok(Cycle::Worked)
             }
+        }
+    }
+
+    /// Tells the portal about a cause that needs a person, once per cause:
+    /// a new breaker period, a bad token, a counters file that cannot be
+    /// trusted. A failed call is logged and changes nothing else.
+    async fn raise_alerts(&mut self) {
+        let Some(rd) = &self.rd else {
+            return;
+        };
+        let now = rd.state.now();
+        let mut kinds = Vec::new();
+        match rd.state.breaker_trip(now) {
+            Some(Trip::Auth) if !self.alerted.auth => {
+                self.alerted.auth = true;
+                kinds.push(AlertKind::RdAuth);
+            }
+            Some(Trip::RateLimit | Trip::Forbidden) => {
+                let until = rd.state.breaker_open(now).map(|left| now + left.as_secs());
+                if until.is_some() && until != self.alerted.breaker_until {
+                    self.alerted.breaker_until = until;
+                    kinds.push(AlertKind::BreakerOpen);
+                }
+            }
+            _ => {}
+        }
+        if rd.state.unreadable() && !self.alerted.unreadable {
+            self.alerted.unreadable = true;
+            kinds.push(AlertKind::CountersUnreadable);
+        }
+        for kind in kinds {
+            self.send_alert(kind).await;
+        }
+    }
+
+    async fn send_alert(&self, kind: AlertKind) {
+        if let Err(error) = self.portal.alert(kind).await {
+            tracing::warn!(?kind, %error, "alert not delivered");
+        }
+    }
+
+    /// Counts a finished Real-Debrid run; the third failure in a row raises
+    /// an alert, a result starts the count over.
+    async fn note_rd_run(&mut self, report: &Report) {
+        if report.state == ReportState::Done {
+            self.alerted.failed_runs = 0;
+            return;
+        }
+        self.alerted.failed_runs += 1;
+        if self.alerted.failed_runs == REPEATED_FAILURES {
+            self.send_alert(AlertKind::RepeatedFailures).await;
         }
     }
 
@@ -402,19 +480,24 @@ impl<S: CandidateSource> Worker<S> {
 
         let mut trace = Trace::default();
         let deadline = self.timing.rd_picked_deadline;
-        match tokio::time::timeout(deadline, fetch::picked(&env, job, &mut trace)).await {
-            Ok(Outcome::Report(report)) => Some(report),
-            Ok(Outcome::Dropped) => None,
-            Err(_) => {
-                fetch::cleanup(&env, &mut trace, None).await;
-                self.stats.errors += 1;
-                tracing::warn!(job = job.id, "picked run exceeded its deadline");
-                Some(Report::needs_pick_with(
-                    "picked_failed",
-                    "the run took too long",
-                ))
-            }
+        let report =
+            match tokio::time::timeout(deadline, fetch::picked(&env, job, &mut trace)).await {
+                Ok(Outcome::Report(report)) => Some(report),
+                Ok(Outcome::Dropped) => None,
+                Err(_) => {
+                    fetch::cleanup(&env, &mut trace, None).await;
+                    self.stats.errors += 1;
+                    tracing::warn!(job = job.id, "picked run exceeded its deadline");
+                    Some(Report::needs_pick_with(
+                        "picked_failed",
+                        "the run took too long",
+                    ))
+                }
+            };
+        if let Some(report) = &report {
+            self.note_rd_run(report).await;
         }
+        report
     }
 
     /// Asks the source, trying an unreachable one again after short pauses.
