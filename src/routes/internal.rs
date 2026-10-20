@@ -53,6 +53,11 @@ const REASONS: &[&str] = &[
     "rate_limited",
     "no_candidates",
     "source_unreachable",
+    "rd_refused",
+    "rd_timeout",
+    "rd_slots_full",
+    "daily_cap",
+    "no_clear_choice",
 ];
 
 fn ok() -> Json<Value> {
@@ -432,6 +437,15 @@ mod tests {
             clean_reason(Some("source_unreachable")).unwrap(),
             Some("source_unreachable")
         );
+        for reason in [
+            "rd_refused",
+            "rd_timeout",
+            "rd_slots_full",
+            "daily_cap",
+            "no_clear_choice",
+        ] {
+            assert_eq!(clean_reason(Some(reason)).unwrap(), Some(reason));
+        }
         assert!(clean_reason(Some("cancelled")).is_err());
         assert!(clean_reason(Some("anything")).is_err());
     }

@@ -2292,6 +2292,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_worker_columns_default_on_existing_rows() {
+        let options = SqliteConnectOptions::new()
+            .filename(":memory:")
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("connect to in-memory sqlite");
+        let full = sqlx::migrate!();
+        let before = sqlx::migrate::Migrator {
+            migrations: full
+                .migrations
+                .iter()
+                .filter(|m| m.version <= 5)
+                .cloned()
+                .collect::<Vec<_>>()
+                .into(),
+            ..sqlx::migrate::Migrator::DEFAULT
+        };
+        before.run(&pool).await.expect("migrations up to 5");
+        sql(
+            &pool,
+            "INSERT INTO members (id, name, code_hash, created_at) VALUES (7, 'Ann', x'01', 0)",
+        )
+        .await;
+        sql(
+            &pool,
+            "INSERT INTO requests (id, tmdb_id, media_type, title, requested_by, created_at, status_changed_at)
+             VALUES (3, 10, 'movie', 'Dune', 7, 5, 5)",
+        )
+        .await;
+        sql(
+            &pool,
+            "INSERT INTO fetch_jobs (request_id, infuse_pro, rd_torrent_id, created_at, updated_at)
+             VALUES (3, 0, 'RD1', 5, 5)",
+        )
+        .await;
+
+        full.run(&pool).await.expect("upgrade");
+
+        let (removal, origin, rd): (Option<String>, String, Option<String>) = sqlx::query_as(
+            "SELECT remove_rd_torrent_id, origin, rd_torrent_id FROM fetch_jobs WHERE request_id = 3",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            (removal, origin.as_str(), rd.as_deref()),
+            (None, "admin", Some("RD1"))
+        );
+        let (auto_fetch,): (i64,) = sqlx::query_as("SELECT auto_fetch FROM members WHERE id = 7")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(auto_fetch, 0);
+
+        // The checks hold for new rows too.
+        let bad_origin = sqlx::query("UPDATE fetch_jobs SET origin = 'robot'")
+            .execute(&pool)
+            .await;
+        assert!(bad_origin.is_err());
+        let bad_flag = sqlx::query("UPDATE members SET auto_fetch = 2")
+            .execute(&pool)
+            .await;
+        assert!(bad_flag.is_err());
+        sql(&pool, "UPDATE fetch_jobs SET origin = 'auto'").await;
+        sql(&pool, "UPDATE members SET auto_fetch = 1").await;
+    }
+
+    #[tokio::test]
     async fn upgrading_from_the_first_schema_keeps_requests_and_events() {
         let options = SqliteConnectOptions::new()
             .filename(":memory:")
