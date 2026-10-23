@@ -1323,6 +1323,187 @@ async fn an_unpicked_job_may_change_its_hash() {
     );
 }
 
+/// The hashes blocked for a request, sorted.
+async fn blocked_for(pool: &SqlitePool, request_id: i64) -> Vec<String> {
+    sqlx::query_scalar("SELECT infohash FROM blocked_hashes WHERE request_id = ? ORDER BY infohash")
+        .bind(request_id)
+        .fetch_all(pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn blocked_hashes_on_progress_and_on_report_are_stored_and_listed_on_the_next_claim() {
+    let app = common::spawn_app().await;
+    let run = running(&app).await;
+    let progress = format!("/internal/jobs/{}/progress", run.job_id);
+    let report = format!("/internal/jobs/{}/report", run.job_id);
+
+    let response = worker(
+        &app,
+        "POST",
+        &progress,
+        Some(&json!({"claim_id": run.claim_id, "blocked": [HASH_A.to_uppercase()]})),
+    )
+    .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    assert_eq!(blocked_for(&app.pool, run.request_id).await, [HASH_A]);
+
+    // Twice is once, and the report may add more.
+    let response = worker(
+        &app,
+        "POST",
+        &report,
+        Some(&json!({"claim_id": run.claim_id, "state": "needs_pick",
+                      "blocked": [HASH_A, HASH_B]})),
+    )
+    .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    assert_eq!(
+        blocked_for(&app.pool, run.request_id).await,
+        [HASH_A, HASH_B]
+    );
+
+    let retry = admin_call(
+        &app,
+        &run.admin,
+        "POST",
+        &format!("/api/admin/jobs/{}/retry", run.job_id),
+        Some("{}"),
+    )
+    .await;
+    assert_eq!(retry.status, 200, "{}", retry.body);
+    let claim = worker(&app, "POST", "/internal/jobs/claim", None).await;
+    assert_eq!(claim.status, 200, "{}", claim.body);
+    assert_eq!(json_of(&claim)["blocked_hashes"], json!([HASH_A, HASH_B]));
+}
+
+#[tokio::test]
+async fn a_stale_claim_blocks_nothing() {
+    let app = common::spawn_app().await;
+    let run = running(&app).await;
+    let progress = format!("/internal/jobs/{}/progress", run.job_id);
+    let report = format!("/internal/jobs/{}/report", run.job_id);
+    let old = run.claim_id.as_str();
+
+    let response = worker(
+        &app,
+        "POST",
+        &progress,
+        Some(&json!({"claim_id": "not-the-claim", "blocked": [HASH_A]})),
+    )
+    .await;
+    assert_error(&response, 409, "stale_claim");
+    let response = worker(
+        &app,
+        "POST",
+        &report,
+        Some(&json!({"claim_id": "not-the-claim", "state": "failed", "blocked": [HASH_A]})),
+    )
+    .await;
+    assert_error(&response, 409, "stale_claim");
+
+    // A claim that was valid, replayed after its report.
+    let response = worker(
+        &app,
+        "POST",
+        &report,
+        Some(&json!({"claim_id": old, "state": "needs_pick"})),
+    )
+    .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    let response = worker(
+        &app,
+        "POST",
+        &report,
+        Some(&json!({"claim_id": old, "state": "needs_pick", "blocked": [HASH_B]})),
+    )
+    .await;
+    assert_error(&response, 409, "stale_claim");
+    assert!(blocked_for(&app.pool, run.request_id).await.is_empty());
+}
+
+#[tokio::test]
+async fn too_many_or_malformed_blocked_hashes_are_400_and_block_nothing() {
+    let app = common::spawn_app().await;
+    let run = running(&app).await;
+    let progress = format!("/internal/jobs/{}/progress", run.job_id);
+    let report = format!("/internal/jobs/{}/report", run.job_id);
+    let claim = run.claim_id.as_str();
+    let six: Vec<String> = ["1", "2", "3", "4", "5", "6"]
+        .iter()
+        .map(|digit| digit.repeat(40))
+        .collect();
+    let five = &six[..5];
+    for blocked in [json!(six), json!([HASH_A, "abc"]), json!(["g".repeat(40)])] {
+        let response = worker(
+            &app,
+            "POST",
+            &progress,
+            Some(&json!({"claim_id": claim, "blocked": blocked})),
+        )
+        .await;
+        assert_error(&response, 400, "bad_request");
+        let response = worker(
+            &app,
+            "POST",
+            &report,
+            Some(&json!({"claim_id": claim, "state": "failed", "blocked": blocked})),
+        )
+        .await;
+        assert_error(&response, 400, "bad_request");
+    }
+    assert!(blocked_for(&app.pool, run.request_id).await.is_empty());
+    assert_eq!(job_row(&app.pool, run.job_id).await.state, "fetching");
+
+    // Five is the limit.
+    let response = worker(
+        &app,
+        "POST",
+        &progress,
+        Some(&json!({"claim_id": claim, "blocked": five})),
+    )
+    .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    assert_eq!(blocked_for(&app.pool, run.request_id).await.len(), 5);
+}
+
+#[tokio::test]
+async fn a_picked_job_blocks_nothing_through_a_refused_hash_change() {
+    let app = common::spawn_app().await;
+    let run = running(&app).await;
+    sql(
+        &app.pool,
+        &format!(
+            "UPDATE fetch_jobs SET picked = 1, chosen_infohash = '{HASH_A}' WHERE id = {}",
+            run.job_id
+        ),
+    )
+    .await;
+    let claim = run.claim_id.as_str();
+    let response = worker(
+        &app,
+        "POST",
+        &format!("/internal/jobs/{}/progress", run.job_id),
+        Some(&json!({"claim_id": claim, "chosen_infohash": HASH_B, "blocked": [HASH_A]})),
+    )
+    .await;
+    assert_error(&response, 400, "picked_locked");
+    let response = worker(
+        &app,
+        "POST",
+        &format!("/internal/jobs/{}/report", run.job_id),
+        Some(&json!({"claim_id": claim, "state": "needs_pick",
+                      "chosen_infohash": HASH_B, "blocked": [HASH_A]})),
+    )
+    .await;
+    assert_error(&response, 400, "picked_locked");
+    assert!(blocked_for(&app.pool, run.request_id).await.is_empty());
+    let row = job_row(&app.pool, run.job_id).await;
+    assert_eq!(row.chosen_infohash.as_deref(), Some(HASH_A));
+    assert_eq!(row.state, "fetching");
+}
+
 // ---------------------------------------------------------------------
 // Admin decisions under a running job
 // ---------------------------------------------------------------------

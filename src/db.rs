@@ -1737,6 +1737,9 @@ pub struct Report<'a> {
     pub reason: Option<&'a str>,
     pub last_error: Option<&'a str>,
     pub uncached_adds: i64,
+    /// Hashes Real-Debrid refused; blocked for the job's request when the
+    /// claim is valid.
+    pub blocked: &'a [String],
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1784,6 +1787,37 @@ async fn classify_missed_update(
         });
     }
     Ok(ReportOutcome::PickedLocked)
+}
+
+/// Blocks hashes Real-Debrid refused for the request behind `job_id`. Called
+/// inside the transaction of a guarded update that matched, so a stale claim
+/// blocks nothing.
+async fn block_refused(
+    conn: &mut SqliteConnection,
+    job_id: i64,
+    hashes: &[String],
+    now: i64,
+) -> Result<(), sqlx::Error> {
+    if hashes.is_empty() {
+        return Ok(());
+    }
+    let request_id = sqlx::query_scalar!(
+        r#"SELECT request_id AS "request_id!" FROM fetch_jobs WHERE id = ?"#,
+        job_id
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    for hash in hashes {
+        sqlx::query!(
+            "INSERT OR IGNORE INTO blocked_hashes (request_id, infohash, created_at) VALUES (?, ?, ?)",
+            request_id,
+            hash,
+            now
+        )
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(())
 }
 
 /// Ends a run. One guarded `UPDATE` makes it atomic: the job must be
@@ -1847,6 +1881,7 @@ pub async fn report_fetch_job(
         tx.rollback().await?;
         return Ok(outcome);
     }
+    block_refused(&mut tx, job_id, report.blocked, now).await?;
 
     let already_had = report.reason == Some("already_had");
     if state == ReportState::Done && !already_had {
@@ -1912,6 +1947,9 @@ pub struct Progress<'a> {
     pub removed_rd_torrent_id: Option<&'a str>,
     /// Add-and-delete cycles since the last call, 0 to 5.
     pub uncached_adds: i64,
+    /// Hashes Real-Debrid refused; blocked for the job's request when the
+    /// claim is valid.
+    pub blocked: &'a [String],
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1958,6 +1996,9 @@ pub async fn progress_fetch_job(
     .execute(&mut *tx)
     .await?
     .rows_affected();
+    if updated > 0 {
+        block_refused(&mut tx, job_id, progress.blocked, now).await?;
+    }
     let outcome = if updated > 0 {
         ProgressOutcome::Applied
     } else {

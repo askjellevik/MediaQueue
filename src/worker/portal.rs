@@ -95,6 +95,10 @@ pub struct Report {
     pub reason: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Hashes Real-Debrid refused: the portal keeps them out of this
+    /// request's future searches.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub blocked: Vec<String>,
 }
 
 impl Report {
@@ -107,6 +111,7 @@ impl Report {
             rd_torrent_id: None,
             reason: None,
             error: None,
+            blocked: Vec::new(),
         }
     }
 
@@ -179,6 +184,9 @@ pub struct Progress {
     /// Add-and-delete cycles since the last call (0 to 5).
     #[serde(skip_serializing_if = "is_zero")]
     pub uncached_adds: u32,
+    /// Hashes Real-Debrid refused (at most 5).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub blocked: Vec<String>,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -919,6 +927,45 @@ mod tests {
 
         let bare = serde_json::to_value(Report::failed(None, "boom")).unwrap();
         assert!(bare.get("reason").is_none() && bare.get("candidates").is_none());
+        assert!(bare.get("blocked").is_none());
+    }
+
+    #[tokio::test]
+    async fn blocked_hashes_go_out_on_a_report_and_on_progress() {
+        let hash = "a".repeat(40);
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/internal/jobs/7/report"))
+            .and(body_json(json!({
+                "claim_id": "c-1", "state": "needs_pick", "reason": "rd_refused",
+                "error": "refused", "blocked": [hash],
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/internal/jobs/7/progress"))
+            .and(body_json(json!({
+                "claim_id": "c-1", "chosen_infohash": "b".repeat(40), "blocked": [hash],
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = client_for(&server).await;
+        let report = Report {
+            blocked: vec![hash.clone()],
+            ..Report::needs_pick_with("rd_refused", "refused")
+        };
+        client.report(7, "c-1", &report).await.unwrap();
+        let progress = Progress {
+            chosen_infohash: Some("b".repeat(40)),
+            blocked: vec![hash],
+            ..Progress::default()
+        };
+        client.progress(7, "c-1", &progress).await.unwrap();
+        server.verify().await;
     }
 
     #[test]

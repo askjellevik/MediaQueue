@@ -31,6 +31,8 @@ const MAX_CLAIM_ID_CHARS: usize = 128;
 const MAX_RD_TORRENT_ID_CHARS: usize = 64;
 const MAX_ERROR_CHARS: usize = 500;
 const MAX_UNCACHED_ADDS: i64 = 5;
+/// Hashes one call may block.
+const MAX_BLOCKED: usize = 5;
 const MAX_CANDIDATES: usize = 20;
 /// The serialized shortlist, after cleaning.
 const MAX_CANDIDATES_BYTES: usize = 64 * 1024;
@@ -76,6 +78,15 @@ pub(super) fn clean_infohash(hash: &str) -> Result<String, AppError> {
     } else {
         Err(AppError::BadRequest)
     }
+}
+
+/// At most [`MAX_BLOCKED`] hashes, each a valid infohash; none is fine.
+fn clean_blocked(hashes: Option<Vec<String>>) -> Result<Vec<String>, AppError> {
+    let hashes = hashes.unwrap_or_default();
+    if hashes.len() > MAX_BLOCKED {
+        return Err(AppError::BadRequest);
+    }
+    hashes.iter().map(|hash| clean_infohash(hash)).collect()
 }
 
 fn clean_optional_infohash(hash: Option<&str>) -> Result<Option<String>, AppError> {
@@ -265,6 +276,7 @@ pub struct ProgressBody {
     chosen_infohash: Option<String>,
     uncached_adds: Option<i64>,
     removed_rd_torrent_id: Option<String>,
+    blocked: Option<Vec<String>>,
 }
 
 /// `POST /internal/jobs/{id}/progress`: a sign of life that also saves a
@@ -283,11 +295,13 @@ pub async fn post_progress(
     if !(0..=MAX_UNCACHED_ADDS).contains(&uncached_adds) {
         return Err(AppError::BadRequest);
     }
+    let blocked = clean_blocked(body.blocked)?;
     let progress = db::Progress {
         rd_torrent_id: rd_torrent_id.as_deref(),
         chosen_infohash: chosen_infohash.as_deref(),
         removed_rd_torrent_id: removed_rd_torrent_id.as_deref(),
         uncached_adds,
+        blocked: &blocked,
     };
     match db::progress_fetch_job(&state.pool, id, claim_id, &progress, admin::now(&state)).await? {
         ProgressOutcome::Applied => {
@@ -329,6 +343,7 @@ pub struct ReportBody {
     rd_torrent_id: Option<String>,
     reason: Option<String>,
     error: Option<String>,
+    blocked: Option<Vec<String>>,
 }
 
 /// `POST /internal/jobs/{id}/report`: ends a run as `needs_pick`, `failed`
@@ -347,6 +362,7 @@ pub async fn post_report(
     let reason = clean_reason(body.reason.as_deref())?;
     let last_error = clean_text(body.error.as_deref(), MAX_ERROR_CHARS)?;
     let report_state = ReportState::from(body.state);
+    let blocked = clean_blocked(body.blocked)?;
 
     let report = db::Report {
         candidates: candidates.as_deref(),
@@ -356,6 +372,7 @@ pub async fn post_report(
         reason,
         last_error: last_error.as_deref(),
         uncached_adds: 0,
+        blocked: &blocked,
     };
     match db::report_fetch_job(
         &state.pool,

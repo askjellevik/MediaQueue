@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT request_id AS \"request_id!\" FROM fetch_jobs WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "request_id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "fetch_jobs",
+            "name": "request_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "b933bd0657e02dcc374c9835812da06f02eb773dfc604f71e4ac442a9db3acd8"
+}
