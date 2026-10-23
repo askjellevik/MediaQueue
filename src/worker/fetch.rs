@@ -372,7 +372,7 @@ async fn library_hit(
         Err(error) => return Err(rd_stop(error)),
     };
     if info.status == TorrentStatus::Downloaded
-        && files::has_selected_video(&info, &FileRules::default())
+        && files::has_selected_video(&info, &FileRules::default(), env.rd.max_bytes)
     {
         tracing::info!(job = job.id, "already in the real-debrid library");
         return Ok(Some(Report::already_had(hash.to_string())));

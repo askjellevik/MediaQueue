@@ -75,11 +75,7 @@ pub fn choose(files: &[RdFile], rules: &FileRules) -> Choice {
 
     let mut videos: Vec<&RdFile> = files
         .iter()
-        .filter(|f| {
-            VIDEO_EXTENSIONS.contains(&extension(&f.path).as_str())
-                && f.bytes >= rules.min_video_bytes
-                && !f.path.to_ascii_lowercase().contains("sample")
-        })
+        .filter(|f| is_main_video(&f.path, f.bytes, rules))
         .collect();
     // Largest first; equal sizes by id so the answer does not depend on order.
     videos.sort_by(|a, b| b.bytes.cmp(&a.bytes).then(a.id.cmp(&b.id)));
@@ -108,14 +104,32 @@ pub fn choose(files: &[RdFile], rules: &FileRules) -> Choice {
     Choice::One(main.id)
 }
 
-/// True when Real-Debrid has a video of movie size selected in this
-/// torrent: what makes a library hit count as "already there".
-pub fn has_selected_video(info: &TorrentInfo, rules: &FileRules) -> bool {
-    info.files.iter().any(|f| {
-        f.selected
-            && VIDEO_EXTENSIONS.contains(&extension(&f.path).as_str())
-            && f.bytes >= rules.min_video_bytes
-    })
+/// A video of movie size that is not a sample: what a fresh add may pick
+/// and what a library hit must show.
+fn is_main_video(path: &str, bytes: u64, rules: &FileRules) -> bool {
+    VIDEO_EXTENSIONS.contains(&extension(path).as_str())
+        && bytes >= rules.min_video_bytes
+        && !is_sample(path)
+}
+
+/// A folder called `sample` or `samples`, or a file name with "sample" in
+/// it. A release folder that merely has the word in the film's title
+/// (`Sample.Of.Love.1994`) hides nothing.
+fn is_sample(path: &str) -> bool {
+    let mut segments = path.split(['/', '\\']).rev();
+    let name = segments.next().unwrap_or(path);
+    name.to_ascii_lowercase().contains("sample")
+        || segments
+            .any(|dir| dir.eq_ignore_ascii_case("sample") || dir.eq_ignore_ascii_case("samples"))
+}
+
+/// True when Real-Debrid has the selected file of a movie-sized video, not
+/// a sample, within the size cap: what makes a library hit count as "already
+/// there". The same rules as for a fresh add.
+pub fn has_selected_video(info: &TorrentInfo, rules: &FileRules, max_bytes: u64) -> bool {
+    info.files
+        .iter()
+        .any(|f| f.selected && is_main_video(&f.path, f.bytes, rules) && f.bytes <= max_bytes)
 }
 
 /// Why a finished torrent is not accepted. The text goes to the portal's
@@ -533,20 +547,83 @@ mod tests {
     #[test]
     fn a_selected_movie_sized_video_is_what_makes_a_hit_count() {
         let rules = FileRules::default();
-        assert!(has_selected_video(&done_info(), &rules));
+        let hit = |info: &TorrentInfo| has_selected_video(info, &rules, 15 * GIB);
+        assert!(hit(&done_info()));
 
         let mut info = done_info();
         info.files[0].selected = false;
-        assert!(!has_selected_video(&info, &rules));
+        assert!(!hit(&info));
 
         let mut info = done_info();
         info.files[0].bytes = 99 * MIB;
-        assert!(!has_selected_video(&info, &rules));
+        assert!(!hit(&info));
 
         let mut info = done_info();
         info.files[1].selected = true;
         info.files[0].selected = false;
-        assert!(!has_selected_video(&info, &rules), "an nfo is not a video");
+        assert!(!hit(&info), "an nfo is not a video");
+    }
+
+    #[test]
+    fn a_library_hit_follows_the_sample_and_size_rules_of_a_fresh_add() {
+        let rules = FileRules::default();
+        let hit = |info: &TorrentInfo| has_selected_video(info, &rules, 15 * GIB);
+
+        let mut info = done_info();
+        info.files[0].path = "/Sample/example.movie.1994.mkv".into();
+        assert!(!hit(&info), "a sample folder");
+        info.files[0].path = "/Example.Movie.1994-sample.mkv".into();
+        assert!(!hit(&info), "a sample file");
+
+        let mut info = done_info();
+        info.files[0].bytes = 15 * GIB;
+        assert!(hit(&info), "the cap is inclusive");
+        info.files[0].bytes = 15 * GIB + 1;
+        assert!(!hit(&info), "over the cap");
+    }
+
+    #[test]
+    fn a_release_folder_with_sample_in_the_title_does_not_hide_the_file() {
+        let files = [file(
+            1,
+            "/Sample.Of.Love.1994.1080p.WEB-DL/Sample.Of.Love.1994.1080p.mkv",
+            4 * GIB,
+        )];
+        // The file name itself has the word: skipped, as for any sample.
+        assert_eq!(pick(&files), Choice::NoVideo);
+        let files = [
+            file(
+                1,
+                "/Sample.Of.Love.1994.1080p.WEB-DL/Love.1994.1080p.mkv",
+                4 * GIB,
+            ),
+            file(
+                2,
+                "/Sample.Of.Love.1994.1080p.WEB-DL/Sample/love-sample.mkv",
+                300 * MIB,
+            ),
+        ];
+        assert_eq!(pick(&files), Choice::One(1));
+        let mut info = done_info();
+        info.files[0].path = "/Sample.Of.Love.1994.1080p.WEB-DL/Love.1994.1080p.mkv".into();
+        assert!(has_selected_video(&info, &FileRules::default(), 15 * GIB));
+    }
+
+    #[test]
+    fn only_a_folder_named_sample_or_samples_counts_as_a_sample_folder() {
+        for (path, sample) in [
+            ("/Sample/movie.mkv", true),
+            ("/Samples/movie.mkv", true),
+            ("/release/SAMPLES/movie.mkv", true),
+            ("\\release\\Sample\\movie.mkv", true),
+            ("/release/movie.sample.mkv", true),
+            ("/release/SAMPLE-movie.mkv", true),
+            ("/Sampler/movie.mkv", false),
+            ("/The.Sample.Case.1994/movie.mkv", false),
+            ("/release/movie.mkv", false),
+        ] {
+            assert_eq!(is_sample(path), sample, "{path}");
+        }
     }
 
     #[test]

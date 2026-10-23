@@ -762,6 +762,57 @@ async fn a_hash_already_downloaded_in_the_library_is_already_had_with_no_add() {
 }
 
 #[tokio::test]
+async fn a_library_hit_whose_file_is_a_sample_or_over_the_cap_is_not_already_had() {
+    for (path_in_torrent, bytes) in [
+        ("/Sample/example.movie.1994.mkv", 4 * GIB),
+        ("/Example.Movie.1994-sample.mkv", 4 * GIB),
+        (MOVIE, 31 * GIB),
+    ] {
+        let mut rig = rig().await;
+        mount_json(
+            &rig.rd,
+            "GET",
+            "/torrents/activeCount",
+            200,
+            json!({"nb": 1, "limit": 25}),
+        )
+        .await;
+        mount_json(
+            &rig.rd,
+            "GET",
+            "/torrents",
+            200,
+            json!([{ "id": "EXISTING1", "hash": HASH, "status": "downloaded" }]),
+        )
+        .await;
+        mount_json(
+            &rig.rd,
+            "GET",
+            "/torrents/info/EXISTING1",
+            200,
+            json!({
+                "id": "EXISTING1", "hash": HASH, "status": "downloaded", "progress": 100,
+                "bytes": bytes, "files": [file(1, path_in_torrent, bytes, true)],
+                "links": ["https://example.invalid/d/1"],
+            }),
+        )
+        .await;
+        let job = picked_job(&rig).await;
+
+        run(&mut rig).await;
+
+        let row = job_row(&rig.app.pool, job).await;
+        assert_eq!(
+            (row.state.as_str(), row.reason.as_deref()),
+            ("needs_pick", Some("rd_error")),
+            "{path_in_torrent}"
+        );
+        assert_eq!(request_status(&rig.app.pool, job).await, "pending");
+        assert_eq!(rd_calls(&rig, "POST", "/torrents/addMagnet").await, 0);
+    }
+}
+
+#[tokio::test]
 async fn a_library_hit_that_is_not_downloaded_is_left_alone() {
     let mut rig = rig().await;
     mount_json(
