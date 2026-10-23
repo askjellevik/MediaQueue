@@ -780,11 +780,7 @@ function renderJobs(panel, { say, expired }) {
     'select',
     { id: 'worker-mode', class: 'field', disabled: true },
     WORKER_MODES.map((value) =>
-      el('option', {
-        value,
-        text: value === 'auto' ? ta.workerModes[value] + ta.workerModeLater : ta.workerModes[value],
-        disabled: value === 'auto',
-      }),
+      el('option', { value, text: ta.workerModes[value] }),
     ),
   );
   const modeHint = el('span', { class: 'muted', text: ta.workerModeHint });
@@ -988,6 +984,8 @@ function renderJobs(panel, { say, expired }) {
       if (hash !== null && hash === job.chosen_infohash && FAILED_REASONS.includes(job.reason)) tags.push(tag(ta.lastFailed));
       if (blocked) tags.push(tag(ta.blockedTag));
       if (c.foreign_language === true) tags.push(tag(ta.foreignLang));
+      const similar = finite(c.similar);
+      if (similar !== null && similar > 0) tags.push(tag(ta.similarOf(similar)));
       const canPick = job.state === 'needs_pick' && job.request_status === 'pending' && hash !== null && !blocked;
       const freeChip = free ? chip(FREE_CHIP[free], ta.freeBadge[free]) : null;
       if (freeChip) freeChip.setAttribute('title', ta.freeBadgeClaim);
@@ -1053,6 +1051,7 @@ function renderJobs(panel, { say, expired }) {
             badge(job.type),
             proBadge(job.infuse_pro ? ta.withPro : ta.withoutPro),
             chip(JOB_CHIP[job.state] ?? job.state, ta.jobStates[job.state] ?? job.state),
+            job.origin === 'auto' ? chip('requested', ta.autoOrigin) : null,
           ),
           el('p', { class: 'req-meta', text: ta.attemptsOf(job.attempts) }),
           reason ? el('p', { class: 'req-note', text: reason }) : null,
@@ -1297,6 +1296,16 @@ function renderMembers(panel, { say, expired }) {
     });
     const edit = el('button', { class: 'btn btn-small', type: 'button', text: ta.edit, 'aria-label': ta.editLabel(m.name) });
     edit.addEventListener('click', () => editMember(m, edit));
+    const autoBox = el('input', { type: 'checkbox', checked: m.auto_fetch === true });
+    autoBox.addEventListener('change', async () => {
+      const want = autoBox.checked;
+      autoBox.disabled = true;
+      const res = await send('PATCH', `/api/admin/members/${m.id}`, { auto_fetch: want });
+      if (expired(res)) return;
+      autoBox.disabled = false;
+      if (!res.ok) autoBox.checked = !want;
+      toast(res.ok ? ta.autoFetchSaved(m.name) : ta.autoFetchFailed, { kind: res.ok ? 'ok' : 'bad' });
+    });
     const limits = el(
       'td',
       {},
@@ -1305,7 +1314,13 @@ function renderMembers(panel, { say, expired }) {
     return el(
       'tr',
       {},
-      el('td', {}, el('strong', { text: m.name }), revoked ? el('p', {}, chip('refused', ta.deactivated)) : null),
+      el(
+        'td',
+        {},
+        el('strong', { text: m.name }),
+        revoked ? el('p', {}, chip('refused', ta.deactivated)) : null,
+        el('p', {}, el('label', {}, autoBox, ` ${ta.autoFetchLabel}`)),
+      ),
       el('td', { text: m.last_seen_at ? formatDateTime(m.last_seen_at) : ta.never }),
       el('td', {}, devicesCell(m, deviceList)),
       el('td', { text: String(m.request_count) }),
