@@ -207,6 +207,93 @@ async fn a_free_job_ends_needs_pick_with_candidates_the_portal_accepts() {
     assert_eq!(source_requests(&rig.stub).await, 1);
 }
 
+/// The shortlist of a job the worker just reported, as (infohash, badge).
+async fn shortlist(rig: &Rig, job: i64) -> Vec<(String, String)> {
+    let row = job_row(&rig.app.pool, job).await;
+    let candidates: Vec<Value> = serde_json::from_str(row.candidates.as_deref().unwrap()).unwrap();
+    candidates
+        .iter()
+        .map(|c| {
+            (
+                c["infohash"].as_str().unwrap().to_string(),
+                c["free_badge"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+async fn pick(rig: &Rig, job: i64, hash: &str) -> common::HttpResponse {
+    admin_call(
+        &rig.app,
+        &rig.admin,
+        "POST",
+        &format!("/api/admin/jobs/{job}/pick"),
+        &format!(r#"{{"infohash":"{hash}"}}"#),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn a_free_job_cannot_pick_a_no_badge_release_and_the_picked_hash_is_from_the_shortlist() {
+    // Fixture hash 3 is DTS-HD: badge `no` in the free version of Infuse.
+    const NO_BADGE: &str = "0000000000000000000000000000000000000003";
+    let mut rig = rig().await;
+    enable(&rig, r#"{"enabled":true,"mode":"dry_run"}"#).await;
+    serve_fixture(&rig.stub).await;
+    let free = queue_job(&rig, 1, false).await;
+    let pro = queue_job(&rig, 2, true).await;
+    for _ in 0..2 {
+        assert_eq!(
+            rig.worker.run_once(Instant::now()).await.unwrap(),
+            Cycle::Worked
+        );
+    }
+
+    // The same release is on the PRO shortlist, so the free one leaving it
+    // out is the profile at work.
+    let pro_list = shortlist(&rig, pro).await;
+    assert!(
+        pro_list
+            .iter()
+            .any(|(hash, badge)| hash == NO_BADGE && badge == "no"),
+        "{pro_list:?}"
+    );
+    let free_list = shortlist(&rig, free).await;
+    assert!(!free_list.is_empty());
+    assert!(
+        free_list.iter().all(|(_, badge)| badge != "no"),
+        "{free_list:?}"
+    );
+
+    // A live mode, so a pick queues the job instead of closing it.
+    enable(&rig, r#"{"mode":"assisted"}"#).await;
+    let response = pick(&rig, free, NO_BADGE).await;
+    assert_eq!(response.status, 409, "{}", response.body);
+    let row = job_row(&rig.app.pool, free).await;
+    assert_eq!(
+        (row.state.as_str(), row.chosen_infohash),
+        ("needs_pick", None)
+    );
+
+    let (wanted, _) = &free_list[0];
+    let response = pick(&rig, free, wanted).await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    let row = job_row(&rig.app.pool, free).await;
+    assert_eq!(row.state, "queued");
+    assert_eq!(row.chosen_infohash.as_deref(), Some(wanted.as_str()));
+    assert!(
+        free_list
+            .iter()
+            .any(|(hash, _)| Some(hash.as_str()) == row.chosen_infohash.as_deref())
+    );
+    let picked: bool = sqlx::query_scalar("SELECT picked FROM fetch_jobs WHERE id = ?")
+        .bind(free)
+        .fetch_one(&rig.app.pool)
+        .await
+        .unwrap();
+    assert!(picked);
+}
+
 #[tokio::test]
 async fn an_unreachable_source_fails_the_job_and_the_next_cycle_stays_away() {
     let mut rig = rig().await;
