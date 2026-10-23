@@ -18,7 +18,7 @@ use std::{collections::HashSet, time::Instant};
 use super::{
     files::{self, Choice, FileRules},
     portal::{Abandon, Job, Mode, PortalClient, Progress, ProgressResult, Report},
-    rd::{ListedTorrent, RdError, RdRuntime, TorrentInfo, TorrentStatus, valid_id},
+    rd::{ListedTorrent, RdError, RdRuntime, TorrentInfo, TorrentStatus, current_job, valid_id},
     run::Timing,
     state::{AddKind, StateError},
 };
@@ -84,6 +84,12 @@ fn rd_stop(error: RdError) -> Stop {
     }
 }
 
+/// One line when a run ends in a timeout, a refusal or the deletion of an
+/// owned torrent: the job and a fixed reason code, nothing else.
+pub fn run_ended(job: i64, reason: &'static str) {
+    tracing::info!(job, reason, "run ended");
+}
+
 /// Deletes a torrent this worker owns. A torrent that is already gone is
 /// fine; one that cannot be deleted now is queued for later. Returns false
 /// only when even that could not be saved.
@@ -94,6 +100,7 @@ async fn delete_owned(rd: &RdRuntime, id: &str) -> bool {
     }
     match rd.client.delete(id).await {
         Ok(()) | Err(RdError::NotFound) => {
+            run_ended(current_job(), "owned_torrent_deleted");
             if let Err(error) = rd.state.forget(id) {
                 tracing::warn!(%error, "could not update the owned list");
             }
@@ -142,7 +149,6 @@ pub async fn handle_removal(env: &Env<'_>, job: &Job) {
             // Not recorded anywhere here, so leave it at the portal.
             return;
         }
-        tracing::info!(job = job.id, "removed a torrent on request");
     } else {
         tracing::info!(
             job = job.id,
@@ -276,10 +282,11 @@ async fn drive(env: &Env<'_>, job: &Job, trace: &mut Trace) -> Step<Report> {
             // Only a refusal classified by Real-Debrid's own error code gives
             // the add back; a network error, a 5xx or an answer nobody can
             // read leaves it counted, since the torrent may have been taken.
-            if matches!(error, RdError::Refused(_))
-                && let Err(error) = env.rd.state.refund_refused_add(kind)
-            {
-                tracing::warn!(job = job.id, %error, "could not refund the refused add");
+            if matches!(error, RdError::Refused(_)) {
+                run_ended(job.id, "rd_refused");
+                if let Err(error) = env.rd.state.refund_refused_add(kind) {
+                    tracing::warn!(job = job.id, %error, "could not refund the refused add");
+                }
             }
             return Err(rd_stop(error));
         }
@@ -519,11 +526,13 @@ async fn finish(env: &Env<'_>, job: &Job, id: &str, hash: &str) -> Step<Report> 
 
         match selected_at {
             None if started.elapsed() >= env.timing.rd_conversion => {
+                run_ended(job.id, "timeout");
                 return Err(picked_failed(
                     "the magnet did not become a file list in time",
                 ));
             }
             Some(at) if at.elapsed() >= env.timing.rd_picked_wait => {
+                run_ended(job.id, "timeout");
                 if matches!(
                     info.status,
                     TorrentStatus::Queued | TorrentStatus::Downloading

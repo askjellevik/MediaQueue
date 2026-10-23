@@ -21,7 +21,7 @@ use super::{
     portal::{
         Abandon, AlertKind, Job, Mode, PortalClient, PortalError, Report, ReportResult, ReportState,
     },
-    rd::RdRuntime,
+    rd::{self, RdRuntime},
     rules::{DropReason, JobSpec},
     score::{Evaluation, evaluate},
     settings::RankSettings,
@@ -348,7 +348,7 @@ impl<S: CandidateSource> Worker<S> {
     /// seconds, after which it is dropped and the portal reclaims the job.
     async fn work(&mut self, job: Job, now: Instant, mode: Mode) {
         let mut stop = self.shutdown.clone();
-        let run = async {
+        let run = rd::within_job(job.id, async {
             let report = if mode != Mode::DryRun && self.rd.is_some() {
                 self.report_rd(&job, now).await
             } else {
@@ -357,7 +357,7 @@ impl<S: CandidateSource> Worker<S> {
             if let Some(report) = report {
                 self.deliver(&job, &report).await;
             }
-        };
+        });
         tokio::select! {
             () = run => {}
             () = async {
@@ -373,6 +373,7 @@ impl<S: CandidateSource> Worker<S> {
             Err(_) => {
                 self.stats.errors += 1;
                 tracing::warn!(job = job.id, "run exceeded 5 minutes");
+                fetch::run_ended(job.id, "timeout");
                 Report::failed(Some("timeout"), "run exceeded 5 minutes")
             }
         }
@@ -492,6 +493,7 @@ impl<S: CandidateSource> Worker<S> {
                     fetch::cleanup(&env, &mut trace, None).await;
                     self.stats.errors += 1;
                     tracing::warn!(job = job.id, "picked run exceeded its deadline");
+                    fetch::run_ended(job.id, "timeout");
                     Some(Report::needs_pick_with(
                         "picked_failed",
                         "the run took too long",

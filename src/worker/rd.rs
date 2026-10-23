@@ -9,7 +9,7 @@
 //! [`Secret`] that prints as nothing and is sent only as a sensitive header.
 //! There are no retries here.
 
-use std::{fmt, sync::Arc, time::Duration};
+use std::{fmt, future::Future, sync::Arc, time::Duration};
 
 use reqwest::{
     Method, RequestBuilder, StatusCode, Url,
@@ -33,6 +33,22 @@ const PAGE_SIZE: usize = 1000;
 const MAX_PAGES: usize = 20;
 /// Calls that may go out back to back before the budget starts spacing them.
 const BURST: u32 = 4;
+
+tokio::task_local! {
+    /// The job the current run works on, so a log line from the shared client
+    /// can name it.
+    static CURRENT_JOB: i64;
+}
+
+/// Runs `work` with `job` as the job the client's log lines belong to.
+pub async fn within_job<F: Future>(job: i64, work: F) -> F::Output {
+    CURRENT_JOB.scope(job, work).await
+}
+
+/// The job being run, or 0 outside a run (a sweep at startup).
+pub fn current_job() -> i64 {
+    CURRENT_JOB.try_with(|job| *job).unwrap_or(0)
+}
 
 /// Everything the worker needs to act at Real-Debrid: the client, the
 /// counters file it shares with it, and the limits the run checks.
@@ -461,6 +477,7 @@ impl RdClient {
         }
         let code = error_code(&body);
         tracing::info!(
+            job = current_job(),
             "real-debrid refused a call ({})",
             describe(status.as_u16(), code)
         );
