@@ -39,8 +39,8 @@ pub fn files_of(info: &TorrentInfo) -> Vec<RdFile> {
 pub struct FileRules {
     /// A video smaller than this is not the movie (samples, trailers).
     pub min_video_bytes: u64,
-    /// The runner-up video this close to the largest (as a share of it) makes
-    /// the choice ambiguous.
+    /// A second main video at least this large (as a share of the largest)
+    /// makes the choice ambiguous: a second part, or a second cut.
     pub ambiguous_ratio: f64,
 }
 
@@ -48,7 +48,7 @@ impl Default for FileRules {
     fn default() -> Self {
         Self {
             min_video_bytes: 100 * MIB,
-            ambiguous_ratio: 0.8,
+            ambiguous_ratio: 0.3,
         }
     }
 }
@@ -57,7 +57,8 @@ impl Default for FileRules {
 pub enum Choice {
     /// Select this file id.
     One(u64),
-    /// Two videos of about the same size: a human decides.
+    /// A part marker in a name, or a second video of real size: a human
+    /// decides.
     Ambiguous,
     /// Reject the torrent; the reason is a fixed phrase.
     Unsafe(&'static str),
@@ -82,6 +83,10 @@ pub fn choose(files: &[RdFile], rules: &FileRules) -> Choice {
         .collect();
     // Largest first; equal sizes by id so the answer does not depend on order.
     videos.sort_by(|a, b| b.bytes.cmp(&a.bytes).then(a.id.cmp(&b.id)));
+
+    if videos.iter().any(|f| has_part_marker(&f.path)) {
+        return Choice::Ambiguous;
+    }
 
     let Some(main) = videos.first() else {
         let archived: u64 = files
@@ -169,6 +174,31 @@ pub fn verify(
     Ok(())
 }
 
+/// True when the file name carries a multi-part marker: `cd1`, `disc 2`,
+/// `part.1`, `pt3`, in any case. The marker must start a word (`Departed`
+/// has none) and be followed by a digit, with at most one separator between.
+fn has_part_marker(path: &str) -> bool {
+    let name = path
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(path)
+        .to_ascii_lowercase();
+    let bytes = name.as_bytes();
+    ["cd", "disc", "disk", "part", "pt"].iter().any(|word| {
+        name.match_indices(word).any(|(at, _)| {
+            let starts_word = at == 0 || !bytes[at - 1].is_ascii_alphabetic();
+            let mut next = at + word.len();
+            if bytes
+                .get(next)
+                .is_some_and(|b| matches!(b, b' ' | b'.' | b'_' | b'-'))
+            {
+                next += 1;
+            }
+            starts_word && bytes.get(next).is_some_and(u8::is_ascii_digit)
+        })
+    })
+}
+
 /// The text after the last dot of the last path segment, lowercase; empty
 /// when the name has no dot.
 fn extension(path: &str) -> String {
@@ -241,9 +271,65 @@ mod tests {
 
     #[test]
     fn the_ratio_edge_is_inclusive() {
-        let files = [file(1, "/a.mkv", 1000 * MIB), file(2, "/b.mkv", 800 * MIB)];
+        let files = [file(1, "/a.mkv", 1000 * MIB), file(2, "/b.mkv", 300 * MIB)];
         assert_eq!(pick(&files), Choice::Ambiguous);
-        let files = [file(1, "/a.mkv", 1000 * MIB), file(2, "/b.mkv", 799 * MIB)];
+        let files = [file(1, "/a.mkv", 1000 * MIB), file(2, "/b.mkv", 299 * MIB)];
+        assert_eq!(pick(&files), Choice::One(1));
+    }
+
+    #[test]
+    fn a_second_video_well_under_the_largest_still_counts_as_a_second_main_video() {
+        let files = [
+            file(1, "/Example.Movie.1994.avi", 700 * MIB),
+            file(2, "/Example.Movie.1994.extended.avi", 520 * MIB),
+        ];
+        assert_eq!(pick(&files), Choice::Ambiguous);
+    }
+
+    #[test]
+    fn a_part_marker_makes_it_ambiguous_whatever_the_sizes() {
+        // The second part is far below 30% of the first, so only the marker
+        // can tell.
+        let files = [
+            file(1, "/Example.Movie.1994.CD1.avi", 700 * MIB),
+            file(2, "/Example.Movie.1994.CD2.avi", 150 * MIB),
+        ];
+        assert_eq!(pick(&files), Choice::Ambiguous);
+        for name in [
+            "/Example.Movie.1994.cd1.avi",
+            "/Example.Movie.1994.part1.mkv",
+            "/Example.Movie.1994.Part.2.mkv",
+            "/Example.Movie.1994.pt1.mkv",
+            "/Example.Movie.1994.disc1.mkv",
+            "/Example Movie 1994 Disc 2.mkv",
+            "/Example.Movie.1994-CD_1.avi",
+        ] {
+            assert_eq!(pick(&[file(1, name, 2 * GIB)]), Choice::Ambiguous, "{name}");
+        }
+    }
+
+    #[test]
+    fn words_that_merely_contain_a_marker_are_not_parts() {
+        for name in [
+            "/The.Departed.2006.mkv",
+            "/Example.Movie.1994.1080p.mkv",
+            "/Apart.1994.mkv",
+            "/Example.Movie.Part.Two.mkv",
+        ] {
+            assert_eq!(pick(&[file(1, name, 2 * GIB)]), Choice::One(1), "{name}");
+        }
+        // A marker on a folder is not on the file.
+        let files = [file(1, "/CD1/Example.Movie.1994.mkv", 2 * GIB)];
+        assert_eq!(pick(&files), Choice::One(1));
+    }
+
+    #[test]
+    fn a_small_featurette_next_to_the_movie_is_not_a_second_main_video() {
+        let files = [
+            file(1, "/Example.Movie.1994.mkv", 4 * GIB),
+            file(2, "/Extras/Featurette.mkv", 400 * MIB),
+            file(3, "/Extras/Trailer.mkv", 80 * MIB),
+        ];
         assert_eq!(pick(&files), Choice::One(1));
     }
 
