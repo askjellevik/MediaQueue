@@ -260,6 +260,19 @@ async fn picked_job(rig: &Rig) -> i64 {
     job
 }
 
+/// The admin marked `hash` as unusable for the job's request.
+async fn block_hash(rig: &Rig, job: i64, hash: &str) {
+    sqlx::query(
+        "INSERT INTO blocked_hashes (request_id, infohash, created_at)
+         SELECT request_id, ?, 1 FROM fetch_jobs WHERE id = ?",
+    )
+    .bind(hash)
+    .bind(job)
+    .execute(&rig.app.pool)
+    .await
+    .unwrap();
+}
+
 #[derive(Debug, sqlx::FromRow)]
 struct JobRow {
     state: String,
@@ -938,6 +951,7 @@ async fn an_owned_removal_is_deleted_and_cleared() {
     mount_delete(&rig.rd, "OWNED1").await;
     rig.state.own("OWNED1", HASH).unwrap();
     let job = queue_job(&rig, 1).await;
+    block_hash(&rig, job, HASH).await;
     sqlx::query("UPDATE fetch_jobs SET remove_rd_torrent_id = 'OWNED1' WHERE id = ?")
         .bind(job)
         .execute(&rig.app.pool)
@@ -980,6 +994,7 @@ async fn a_removal_that_cannot_be_deleted_now_is_queued_and_still_cleared() {
         .await;
     rig.state.own("OWNED1", HASH).unwrap();
     let job = queue_job(&rig, 1).await;
+    block_hash(&rig, job, HASH).await;
     sqlx::query("UPDATE fetch_jobs SET remove_rd_torrent_id = 'OWNED1' WHERE id = ?")
         .bind(job)
         .execute(&rig.app.pool)
@@ -991,6 +1006,75 @@ async fn a_removal_that_cannot_be_deleted_now_is_queued_and_still_cleared() {
     assert!(rig.state.owns("OWNED1"), "still ours until it is gone");
     assert_eq!(counters(&rig)["pending_delete"], json!(["OWNED1"]));
     assert_eq!(job_row(&rig.app.pool, job).await.remove_rd_torrent_id, None);
+}
+
+#[tokio::test]
+async fn a_removal_naming_a_torrent_owned_for_another_title_deletes_nothing() {
+    let mut rig = rig().await;
+    serve_fixture(&rig.stub).await;
+    mount_delete(&rig.rd, "OWNED1").await;
+    // Ours, but for a hash this job knows nothing about.
+    rig.state.own("OWNED1", &"c".repeat(40)).unwrap();
+    let job = queue_job(&rig, 1).await;
+    block_hash(&rig, job, HASH).await;
+    sqlx::query("UPDATE fetch_jobs SET remove_rd_torrent_id = 'OWNED1' WHERE id = ?")
+        .bind(job)
+        .execute(&rig.app.pool)
+        .await
+        .unwrap();
+
+    run(&mut rig).await;
+
+    assert_eq!(rd_calls(&rig, "DELETE", "/torrents/delete/").await, 0);
+    assert!(
+        rig.state.owns("OWNED1"),
+        "still ours, and still the other title's"
+    );
+    assert_eq!(job_row(&rig.app.pool, job).await.remove_rd_torrent_id, None);
+}
+
+#[tokio::test]
+async fn a_removal_of_the_torrent_owned_for_the_chosen_hash_is_deleted() {
+    let mut rig = rig().await;
+    serve_fixture(&rig.stub).await;
+    mount_delete(&rig.rd, "OWNED1").await;
+    rig.state.own("OWNED1", HASH).unwrap();
+    let job = queue_job(&rig, 1).await;
+    sqlx::query(
+        "UPDATE fetch_jobs SET chosen_infohash = ?, remove_rd_torrent_id = 'OWNED1' WHERE id = ?",
+    )
+    .bind(HASH)
+    .bind(job)
+    .execute(&rig.app.pool)
+    .await
+    .unwrap();
+
+    run(&mut rig).await;
+
+    assert_eq!(rd_calls(&rig, "DELETE", "/torrents/delete/OWNED1").await, 1);
+    assert!(!rig.state.owns("OWNED1"));
+}
+
+#[tokio::test]
+async fn an_owned_torrent_for_another_hash_is_not_resumed() {
+    let mut rig = rig().await;
+    mount_roomy(&rig.rd).await;
+    mount_cached_torrent(&rig.rd).await;
+    // The portal names RD_ID for the job, and the worker owns RD_ID, but it
+    // added it for some other release.
+    rig.state.own(RD_ID, &"c".repeat(40)).unwrap();
+    let job = picked_job(&rig).await;
+    sqlx::query("UPDATE fetch_jobs SET rd_torrent_id = ? WHERE id = ?")
+        .bind(RD_ID)
+        .bind(job)
+        .execute(&rig.app.pool)
+        .await
+        .unwrap();
+
+    run(&mut rig).await;
+
+    assert_eq!(rd_calls(&rig, "POST", "/torrents/addMagnet").await, 1);
+    assert_eq!(counters(&rig)["owned"][0]["hash"], HASH);
 }
 
 // ---------------------------------------------------------------------

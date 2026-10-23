@@ -124,9 +124,11 @@ pub async fn cleanup(env: &Env<'_>, trace: &mut Trace, keep: Option<&str>) {
     delete_owned(env.rd, &id).await;
 }
 
-/// A removal the admin asked for (a release that did not play): deleted
-/// only if this worker created the torrent, then cleared at the portal.
-/// Never trusts the portal about ownership.
+/// A removal the admin asked for (a cancelled job, a release that did not
+/// play): deleted only if this worker created the torrent *for a hash the
+/// claim itself ties to the request*, the one chosen or one blocked. Then
+/// cleared at the portal. Never trusts the portal about ownership; a torrent
+/// the worker owns for another title is left alone.
 pub async fn handle_removal(env: &Env<'_>, job: &Job) {
     let Some(id) = job.remove_rd_torrent_id.as_deref() else {
         return;
@@ -135,7 +137,7 @@ pub async fn handle_removal(env: &Env<'_>, job: &Job) {
         tracing::warn!(job = job.id, "ignoring a malformed removal id");
         return;
     }
-    if env.rd.state.owns(id) {
+    if removable(env, job, id) {
         if !delete_owned(env.rd, id).await {
             // Not recorded anywhere here, so leave it at the portal.
             return;
@@ -154,6 +156,18 @@ pub async fn handle_removal(env: &Env<'_>, job: &Job) {
     if let Err(error) = env.portal.progress(job.id, &job.claim_id, &progress).await {
         tracing::warn!(job = job.id, %error, "could not clear the removal at the portal");
     }
+}
+
+/// True when `id` is owned here and its hash is the job's chosen one or one
+/// of its blocked ones.
+fn removable(env: &Env<'_>, job: &Job, id: &str) -> bool {
+    let Some(owned) = env.rd.state.owned_hash(id) else {
+        return false;
+    };
+    job.chosen_infohash
+        .iter()
+        .chain(&job.blocked_hashes)
+        .any(|hash| hash.eq_ignore_ascii_case(&owned))
 }
 
 /// Retries deletions that could not be made earlier (the breaker was open,
@@ -214,9 +228,14 @@ async fn drive(env: &Env<'_>, job: &Job, trace: &mut Trace) -> Step<Report> {
 
     gate_switch_and_breaker(env).await?;
 
-    // Resume a torrent an earlier run of this worker added.
+    // Resume a torrent an earlier run of this worker added for this very
+    // hash; one it owns for another hash is not this job's.
     if let Some(id) = job.rd_torrent_id.as_deref()
-        && env.rd.state.owns(id)
+        && env
+            .rd
+            .state
+            .owned_hash(id)
+            .is_some_and(|owned| owned.eq_ignore_ascii_case(&hash))
     {
         match env.rd.client.info(id).await {
             Ok(_) => {

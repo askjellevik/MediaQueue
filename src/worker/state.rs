@@ -323,6 +323,16 @@ impl StateStore {
         self.lock_rolled().0.state.owned.iter().any(|o| o.id == id)
     }
 
+    /// The infohash this worker added `id` for, if it owns `id`.
+    pub fn owned_hash(&self, id: &str) -> Option<String> {
+        let (cell, _) = self.lock_rolled();
+        cell.state
+            .owned
+            .iter()
+            .find(|o| o.id == id)
+            .map(|o| o.hash.clone())
+    }
+
     pub fn forget(&self, id: &str) -> Result<(), StateError> {
         self.update(|state, _| {
             state.owned.retain(|o| o.id != id);
