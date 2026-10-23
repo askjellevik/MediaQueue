@@ -917,15 +917,15 @@ mod tests {
 
     #[test]
     fn a_hash_outside_the_ranking_list_or_over_the_cap_or_malformed_is_not_eligible() {
-        let mut eval = evaluation(true, &[raw('a', PLAYS, 8), raw('b', PLAYS, 12)]);
-        assert_eq!(eligible_hashes(&eval, true, 15 * GIB).len(), 2);
-        assert_eq!(eligible_hashes(&eval, true, 10 * GIB), ["a".repeat(40)]);
+        let mut eval = evaluation(false, &[raw('a', PLAYS, 8), raw('b', PLAYS, 12)]);
+        assert_eq!(eligible_hashes(&eval, false, 15 * GIB).len(), 2);
+        assert_eq!(eligible_hashes(&eval, false, 10 * GIB), ["a".repeat(40)]);
         eval.auto.retain(|hash| *hash != "a".repeat(40));
-        assert_eq!(eligible_hashes(&eval, true, 15 * GIB), ["b".repeat(40)]);
+        assert_eq!(eligible_hashes(&eval, false, 15 * GIB), ["b".repeat(40)]);
         eval.shortlist[1].raw.infohash = "zz".repeat(20);
         eval.auto = vec!["zz".repeat(20)];
-        assert!(eligible_hashes(&eval, true, 15 * GIB).is_empty());
+        assert!(eligible_hashes(&eval, false, 15 * GIB).is_empty());
         eval.shortlist[1].raw.size_bytes = None;
-        assert!(eligible_hashes(&eval, true, u64::MAX).is_empty());
+        assert!(eligible_hashes(&eval, false, u64::MAX).is_empty());
     }
 }

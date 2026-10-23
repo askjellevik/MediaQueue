@@ -7,7 +7,7 @@ use serde_json::{Map, Value, json};
 
 use super::{
     candidate::RawCandidate,
-    release::{ParsedRelease, Resolution, Source, Video},
+    release::{Audio, Hdr, ParsedRelease, Resolution, Source, Video, tokenize},
     rules::{Accepted, DropReason, FreeBadge, JobSpec, LanguageFit, passes_hard_filters},
     settings::{RankSettings, SweetSpot},
 };
@@ -21,6 +21,7 @@ const MOST_LANGUAGES: usize = 8;
 
 /// The points a candidate earned, by part. `language` is zero or negative;
 /// `free_badge` is zero unless a free job's candidate has a `yes` badge.
+/// `codec` is a free job's part; `audio`, `hdr` and `group` are a PRO job's.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ScoreParts {
     pub resolution: f64,
@@ -30,6 +31,9 @@ pub struct ScoreParts {
     pub seeders: f64,
     pub language: f64,
     pub free_badge: f64,
+    pub audio: f64,
+    pub hdr: f64,
+    pub group: f64,
 }
 
 impl ScoreParts {
@@ -41,6 +45,9 @@ impl ScoreParts {
             + self.seeders
             + self.language
             + self.free_badge
+            + self.audio
+            + self.hdr
+            + self.group
     }
 }
 
@@ -198,6 +205,119 @@ fn score(
         } else {
             0.0
         },
+        audio: 0.0,
+        hdr: 0.0,
+        group: 0.0,
+    }
+}
+
+fn pro_resolution_points(resolution: Resolution, settings: &RankSettings) -> f64 {
+    let pro = &settings.pro;
+    match resolution {
+        Resolution::R2160 => pro.r2160,
+        Resolution::R1440 => pro.r1440,
+        Resolution::R1080 => pro.r1080,
+        Resolution::R720 => pro.r720,
+        Resolution::Sd => pro.sd,
+        Resolution::Unknown => pro.resolution_unknown,
+    }
+}
+
+fn pro_source_points(source: Source, settings: &RankSettings) -> f64 {
+    let pro = &settings.pro;
+    match source {
+        Source::Remux => pro.remux,
+        Source::BluRay => pro.bluray,
+        Source::WebDl => pro.web_dl,
+        Source::WebRip => pro.web_rip,
+        Source::Hdtv => pro.hdtv,
+        Source::Hdrip => pro.hdrip,
+        Source::Dvd => pro.dvd,
+        Source::Unknown | Source::Cam | Source::Telesync | Source::Screener => pro.source_unknown,
+    }
+}
+
+/// The points of the best audio codec named in the release.
+fn pro_audio_points(audio: &[Audio], settings: &RankSettings) -> f64 {
+    let pro = &settings.pro;
+    audio
+        .iter()
+        .map(|a| match a {
+            Audio::TrueHd | Audio::Atmos | Audio::DtsHd => pro.audio_top,
+            Audio::Flac | Audio::Lpcm => pro.audio_lossless,
+            Audio::Eac3 => pro.audio_eac3,
+            Audio::Dts => pro.audio_dts,
+            Audio::Ac3 => pro.audio_ac3,
+            Audio::Aac => pro.audio_aac,
+            Audio::Opus | Audio::Mp3 | Audio::Vorbis => pro.audio_unknown,
+        })
+        .fold(None, |best: Option<f64>, p| {
+            Some(best.map_or(p, |b| b.max(p)))
+        })
+        .unwrap_or(pro.audio_unknown)
+}
+
+/// HDR10 or HDR10+ and Dolby Vision are not added up: the better of the two.
+fn pro_hdr_points(release: &ParsedRelease, settings: &RankSettings) -> f64 {
+    let pro = &settings.pro;
+    let hdr = match release.hdr {
+        Hdr::Hdr | Hdr::Hdr10Plus => pro.hdr10,
+        Hdr::None | Hdr::Hlg => 0.0,
+    };
+    if release.dolby_vision {
+        hdr.max(pro.dolby_vision)
+    } else {
+        hdr
+    }
+}
+
+fn pro_size_points(size_bytes: Option<u64>, settings: &RankSettings) -> f64 {
+    let gib = size_bytes.map_or(0.0, |n| n as f64 / GIB);
+    (settings.pro.size_per_gib * gib).min(settings.pro.size_max_points)
+}
+
+fn pro_seeder_points(seeders: Option<u32>, settings: &RankSettings) -> f64 {
+    let seeders = f64::from(seeders.unwrap_or(0));
+    (settings.pro.seeder_factor * (1.0 + seeders).log10()).min(settings.pro.seeder_max_points)
+}
+
+/// Whether a token of the name or the file name is a preferred group.
+fn pro_group_points(raw: &RawCandidate, settings: &RankSettings) -> f64 {
+    let named = tokenize(&raw.name);
+    let filed = raw.filename.as_deref().map(tokenize).unwrap_or_default();
+    let preferred = settings.pro_groups.iter().any(|group| {
+        let group = group.to_ascii_lowercase();
+        named.iter().chain(&filed).any(|token| *token == group)
+    });
+    if preferred {
+        settings.pro.group_bonus
+    } else {
+        0.0
+    }
+}
+
+/// The PRO ranking: the best release possible, not the smallest. The
+/// resolution, the source, the best audio, HDR, a size bonus that never
+/// punishes a big file, the seeders and a preferred release group; the
+/// foreign-language penalty is the free job's. `codec` and `free_badge` stay
+/// zero: a PRO job has no use for them.
+fn score_pro(raw: &RawCandidate, accepted: &Accepted, settings: &RankSettings) -> ScoreParts {
+    let release = &accepted.release;
+    ScoreParts {
+        resolution: pro_resolution_points(release.resolution, settings),
+        source: pro_source_points(release.source, settings),
+        codec: 0.0,
+        size: pro_size_points(raw.size_bytes, settings),
+        seeders: pro_seeder_points(raw.seeders, settings),
+        language: if accepted.language == LanguageFit::Foreign {
+            -settings.foreign_language_penalty
+        } else {
+            0.0
+        },
+        free_badge: 0.0,
+        audio: pro_audio_points(&release.audio, settings),
+        hdr: pro_hdr_points(release, settings),
+        group: pro_group_points(raw, settings),
     }
 }
 
@@ -311,7 +431,11 @@ pub fn evaluate(job: &JobSpec, raw: &[RawCandidate], settings: &RankSettings) ->
         match passes_hard_filters(candidate, job, settings) {
             Err(reason) => *dropped.entry(reason).or_insert(0) += 1,
             Ok(accepted) => {
-                let parts = score(candidate, &accepted, job.infuse_pro, settings);
+                let parts = if job.infuse_pro {
+                    score_pro(candidate, &accepted, settings)
+                } else {
+                    score(candidate, &accepted, false, settings)
+                };
                 survivors.push(Candidate {
                     languages: language_codes(candidate, &accepted.release),
                     raw: candidate.clone(),
@@ -411,6 +535,9 @@ impl Candidate {
                 round1(p.seeders),
                 round1(p.language),
                 round1(p.free_badge),
+                round1(p.audio),
+                round1(p.hdr),
+                round1(p.group),
             ]),
         );
         map.insert("resolution".into(), json!(self.release.resolution.lines()));
@@ -524,10 +651,77 @@ mod tests {
         assert_eq!(seeder_points(Some(1_000_000), &settings), 20.0);
     }
 
+    const REMUX: &str = "Example.Movie.1994.2160p.UHD.BluRay.REMUX.HDR.HEVC.TrueHD.7.1-GRPONE";
+    const SMALL: &str = "Example.Movie.1994.1080p.BluRay.x264.AAC-GRPONE";
+
+    #[test]
+    fn a_pro_job_ranks_a_big_lossless_remux_above_a_small_encode() {
+        let candidates = [raw('a', SMALL, 2.8, 400), raw('b', REMUX, 30.0, 40)];
+        let pro = evaluate(&job(true), &candidates, &RankSettings::default());
+        assert_eq!(order(&pro), "ba");
+        let free = evaluate(&job(false), &candidates, &RankSettings::default());
+        assert_eq!(free.shortlist[0].raw.infohash, "a".repeat(40));
+    }
+
+    #[test]
+    fn the_pro_parts_add_up_to_the_weights() {
+        let eval = evaluate(
+            &job(true),
+            &[raw('b', REMUX, 30.0, 40)],
+            &RankSettings::default(),
+        );
+        let p = eval.shortlist[0].parts;
+        assert_eq!(p.resolution, 45.0);
+        assert_eq!(p.source, 40.0);
+        assert_eq!(p.audio, 20.0);
+        assert_eq!(p.hdr, 6.0);
+        assert_eq!(p.size, 12.0, "0.4 points per GiB");
+        assert_eq!(round1(p.seeders), 4.8);
+        assert_eq!([p.codec, p.free_badge, p.group, p.language], [0.0; 4]);
+    }
+
+    #[test]
+    fn the_best_audio_counts_and_dolby_vision_does_not_stack_on_hdr() {
+        let settings = RankSettings::default();
+        assert_eq!(
+            pro_audio_points(&[Audio::Aac, Audio::Atmos], &settings),
+            20.0
+        );
+        assert_eq!(pro_audio_points(&[Audio::Dts, Audio::Ac3], &settings), 9.0);
+        assert_eq!(pro_audio_points(&[], &settings), 6.0);
+        let release = crate::worker::release::parse_release(
+            "Example.Movie.1994.2160p.WEB-DL.DV.HDR10Plus.x265.DDP5.1-GRPONE",
+        );
+        assert!(release.dolby_vision && release.hdr == Hdr::Hdr10Plus);
+        assert_eq!(pro_hdr_points(&release, &settings), 8.0);
+    }
+
+    #[test]
+    fn a_preferred_group_in_the_name_or_the_file_name_earns_the_bonus() {
+        let settings = RankSettings::default();
+        let mut named = raw(
+            'a',
+            "Example.Movie.1994.1080p.BluRay.x264.AAC-FRAMESTOR",
+            8.0,
+            5,
+        );
+        assert_eq!(pro_group_points(&named, &settings), 10.0);
+        named.name = SMALL.to_string();
+        assert_eq!(pro_group_points(&named, &settings), 0.0);
+        named.filename = Some("Example Movie 1994 1080p framestor.mkv".to_string());
+        assert_eq!(pro_group_points(&named, &settings), 10.0);
+        let other = RankSettings {
+            pro_groups: vec!["grpone".to_string()],
+            ..settings
+        };
+        named.filename = None;
+        assert_eq!(pro_group_points(&named, &other), 10.0, "a configured list");
+    }
+
     #[test]
     fn candidates_are_ranked_by_score() {
         let eval = evaluate(
-            &job(true),
+            &job(false),
             &[
                 raw('c', UHD, 3.0, 50),
                 raw('a', BEST, 3.0, 50),
@@ -540,9 +734,9 @@ mod tests {
             .iter()
             .map(|c| (c.raw.infohash.chars().next().unwrap(), c.score))
             .collect();
-        // 1080p BluRay 40+30+10+15+12.0, 720p WEB 22+28+10+15+12.0, 2160p
-        // BluRay 32+30+10+0+12.0 (3 GiB is too small for 2160p).
-        assert_eq!(order, [('a', 107.0), ('b', 87.0), ('c', 84.0)]);
+        // 1080p BluRay 40+30+10+15+12.0+6 (badge), 720p WEB 22+28+10+15+12.0+6,
+        // 2160p BluRay 32+30+10+0+12.0+6 (3 GiB is too small for 2160p).
+        assert_eq!(order, [('a', 113.0), ('b', 93.0), ('c', 90.0)]);
         assert_eq!(
             eval.shortlist.iter().map(|c| c.rank).collect::<Vec<_>>(),
             [1, 2, 3]
@@ -556,7 +750,7 @@ mod tests {
     #[test]
     fn equal_candidates_come_out_in_hash_order_and_a_repeat_is_one_torrent() {
         let eval = evaluate(
-            &job(true),
+            &job(false),
             &[
                 raw('f', BEST, 3.0, 50),
                 raw('2', BEST, 4.0, 50),
@@ -615,7 +809,7 @@ mod tests {
     #[test]
     fn twins_fold_into_the_better_one_and_the_lead_is_the_gap_to_a_real_alternative() {
         let eval = evaluate(
-            &job(true),
+            &job(false),
             &[
                 raw('b', BEST, 3.02, 40),
                 raw('a', BEST, 3.0, 50),
@@ -637,11 +831,11 @@ mod tests {
     fn a_twin_no_longer_blocks_a_clear_winner() {
         let twins = [raw('a', BEST, 3.0, 50), raw('b', BEST, 3.02, 40)];
         let settings = RankSettings::default();
-        let eval = evaluate(&job(true), &twins, &settings);
+        let eval = evaluate(&job(false), &twins, &settings);
         assert!(eval.margin.is_none(), "one release is left");
         assert!(eval.clear_winner);
         let apart = [raw('a', BEST, 3.0, 50), raw('b', BEST, 3.2, 40)];
-        let eval = evaluate(&job(true), &apart, &settings);
+        let eval = evaluate(&job(false), &apart, &settings);
         assert!(eval.margin.is_some_and(|m| m < settings.clear_margin));
         assert!(!eval.clear_winner);
     }
@@ -759,10 +953,6 @@ mod tests {
         assert_eq!(auto_hashes(&eval), "b");
         assert_eq!(eval.shortlist[0].auto_rank, 0);
         assert_eq!(eval.shortlist[1].auto_rank, 1);
-
-        let pro = evaluate(&job(true), &[untagged, tagged], &RankSettings::default());
-        assert_eq!(auto_hashes(&pro), "ab", "the badge does not matter to PRO");
-        assert_eq!(pro.shortlist[0].auto_rank, 1);
     }
 
     #[test]
@@ -800,7 +990,7 @@ mod tests {
         let fine = raw('a', BEST, 3.0, 10);
         let all = [foreign, cut, few, weak.clone(), fine];
 
-        let eval = evaluate(&job(true), &all, &RankSettings::default());
+        let eval = evaluate(&job(false), &all, &RankSettings::default());
         assert!(
             eval.shortlist
                 .iter()
@@ -809,7 +999,7 @@ mod tests {
         assert_eq!(auto_hashes(&eval), "a", "10 seeders is enough, 9 is not");
 
         // Each rule alone, with the others off.
-        let only = |settings: RankSettings| auto_hashes(&evaluate(&job(true), &all, &settings));
+        let only = |settings: RankSettings| auto_hashes(&evaluate(&job(false), &all, &settings));
         let none = RankSettings {
             auto_min_score: 0.0,
             auto_min_seeders: 0,
@@ -871,7 +1061,7 @@ mod tests {
     fn the_auto_walk_follows_the_collapsed_list() {
         // The twin folds away and so is never a second auto try.
         let eval = evaluate(
-            &job(true),
+            &job(false),
             &[
                 raw('a', BEST, 3.0, 50),
                 raw('b', BEST, 3.02, 40),
@@ -940,10 +1130,10 @@ mod tests {
 
     #[test]
     fn a_lone_survivor_needs_only_the_minimum_score() {
-        let input = [raw('a', BEST, 3.0, 50)]; // scores 107.0
+        let input = [raw('a', BEST, 3.0, 50)]; // scores 113.0
         let at = |min: f64| {
             evaluate(
-                &job(true),
+                &job(false),
                 &input,
                 &RankSettings {
                     clear_min_score: min,
@@ -951,21 +1141,21 @@ mod tests {
                 },
             )
         };
-        assert!(at(107.0).clear_winner, "exactly the minimum is enough");
-        assert!(!at(107.1).clear_winner);
-        assert!(at(107.0).shortlist[0].clear_winner);
+        assert!(at(113.0).clear_winner, "exactly the minimum is enough");
+        assert!(!at(113.1).clear_winner);
+        assert!(at(113.0).shortlist[0].clear_winner);
     }
 
     #[test]
     fn the_lead_over_the_runner_up_must_reach_the_margin() {
         let input = [raw('a', BEST, 3.0, 50), raw('b', WEB_720, 3.0, 50)];
-        let margin = evaluate(&job(true), &input, &open_settings())
+        let margin = evaluate(&job(false), &input, &open_settings())
             .margin
             .unwrap();
         assert_eq!(margin, 20.0);
         let with_margin = |m: f64| {
             evaluate(
-                &job(true),
+                &job(false),
                 &input,
                 &RankSettings {
                     clear_margin: m,
@@ -1049,7 +1239,7 @@ mod tests {
         assert!(eval.shortlist.iter().all(|c| c.parts.free_badge == 0.0));
         assert_eq!(eval.shortlist[0].raw.infohash.chars().next(), Some('b'));
         let map = eval.shortlist[0].to_report_map();
-        assert_eq!(map["score_parts"].as_array().unwrap().len(), 7);
+        assert_eq!(map["score_parts"].as_array().unwrap().len(), 10);
         assert_eq!(map["score_parts"][6], json!(0.0));
     }
 
@@ -1172,7 +1362,7 @@ mod tests {
 
     #[test]
     fn the_report_map_names_every_key_step_three_reads() {
-        let eval = evaluate(&job(true), &[raw('a', BEST, 3.0, 50)], &open_settings());
+        let eval = evaluate(&job(false), &[raw('a', BEST, 3.0, 50)], &open_settings());
         let map = eval.shortlist[0].to_report_map();
         let mut keys: Vec<&str> = map.keys().map(String::as_str).collect();
         keys.sort_unstable();
@@ -1204,10 +1394,10 @@ mod tests {
         assert!(!map.contains_key("rank"), "the position is the rank");
         assert_eq!(map["similar"], json!(0));
         assert_eq!(map["auto_rank"], json!(1));
-        assert_eq!(map["score"], json!(107.0));
+        assert_eq!(map["score"], json!(113.0));
         assert_eq!(
             map["score_parts"],
-            json!([40.0, 30.0, 10.0, 15.0, 12.0, 0.0, 0.0])
+            json!([40.0, 30.0, 10.0, 15.0, 12.0, 0.0, 6.0, 0.0, 0.0, 0.0])
         );
         assert_eq!(map["resolution"], json!(1080));
         assert_eq!(map["source"], json!("bluray"));

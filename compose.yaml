@@ -41,6 +41,9 @@ services:
       WORKER_MAX_ADDS_PER_DAY: "${WORKER_MAX_ADDS_PER_DAY:-5}"
       WORKER_MAX_UNCACHED_PER_DAY: "${WORKER_MAX_UNCACHED_PER_DAY:-2}"
       WORKER_MAX_REFUSALS_PER_DAY: "${WORKER_MAX_REFUSALS_PER_DAY:-20}"
+      # Release groups (comma separated, case-insensitive) that earn a bonus in the ranking of
+      # Infuse PRO jobs only; free jobs ignore it. Empty switches the bonus off.
+      WORKER_PRO_GROUPS: "${WORKER_PRO_GROUPS:-framestor}"
     # One-time setup on the host, before the first assisted run (the container user is 65532):
     #   install -d -m 0700 secrets worker-state
     #   chown 65532:65532 secrets/rd_token worker-state && chmod 0400 secrets/rd_token

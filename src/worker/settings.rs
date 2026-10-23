@@ -50,6 +50,51 @@ pub struct SweetSpot {
     pub high_gib: f64,
 }
 
+/// The weights of the PRO ranking (see `score::score_pro`): the best release
+/// possible, not the smallest. Bigger files are better, since a PRO release
+/// is streamed through Zurg, not downloaded. Code-only: no environment
+/// variable changes them, except the preferred groups in `RankSettings`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProPoints {
+    pub r2160: f64,
+    pub r1440: f64,
+    pub r1080: f64,
+    pub r720: f64,
+    pub sd: f64,
+    pub resolution_unknown: f64,
+    pub remux: f64,
+    pub bluray: f64,
+    pub web_dl: f64,
+    pub web_rip: f64,
+    pub hdtv: f64,
+    pub hdrip: f64,
+    pub dvd: f64,
+    pub source_unknown: f64,
+    /// TrueHD, Atmos and DTS-HD MA.
+    pub audio_top: f64,
+    /// FLAC and LPCM.
+    pub audio_lossless: f64,
+    pub audio_eac3: f64,
+    pub audio_dts: f64,
+    pub audio_ac3: f64,
+    pub audio_aac: f64,
+    /// No audio tag, or one that is not ranked (Opus, MP3, Vorbis).
+    pub audio_unknown: f64,
+    /// HDR10 and HDR10+. Dolby Vision gets less than a Blu-ray remux's
+    /// lead would suggest: Infuse's handling of profile 7 is unverified.
+    pub hdr10: f64,
+    pub dolby_vision: f64,
+    /// Size earns `size_per_gib` per GiB up to `size_max_points`, and is
+    /// never penalised for being large.
+    pub size_per_gib: f64,
+    pub size_max_points: f64,
+    /// Seeders earn `seeder_factor * log10(1 + seeders)`, at most this many.
+    pub seeder_factor: f64,
+    pub seeder_max_points: f64,
+    /// Added when a token of the name or file name is a preferred group.
+    pub group_bonus: f64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RankSettings {
     // Hard filters.
@@ -80,6 +125,12 @@ pub struct RankSettings {
     /// Added for a free job's candidate whose badge is `yes`, so a verified
     /// release beats an unverified one a few points ahead. PRO jobs get none.
     pub free_badge_bonus: f64,
+
+    // The PRO ranking.
+    pub pro: ProPoints,
+    /// Release groups (lowercase) that earn `pro.group_bonus` on a PRO job.
+    /// Env `WORKER_PRO_GROUPS`, comma separated.
+    pub pro_groups: Vec<String>,
 
     // The shortlist and the clear-winner rule.
     pub shortlist_len: usize,
@@ -158,6 +209,37 @@ impl Default for RankSettings {
             seeder_factor: 7.0,
             foreign_language_penalty: 25.0,
             free_badge_bonus: 6.0,
+            pro: ProPoints {
+                r2160: 45.0,
+                r1440: 20.0,
+                r1080: 30.0,
+                r720: 10.0,
+                sd: 0.0,
+                resolution_unknown: 0.0,
+                remux: 40.0,
+                bluray: 28.0,
+                web_dl: 22.0,
+                web_rip: 14.0,
+                hdtv: 8.0,
+                hdrip: 6.0,
+                dvd: 4.0,
+                source_unknown: 4.0,
+                audio_top: 20.0,
+                audio_lossless: 18.0,
+                audio_eac3: 10.0,
+                audio_dts: 9.0,
+                audio_ac3: 7.0,
+                audio_aac: 4.0,
+                audio_unknown: 6.0,
+                hdr10: 6.0,
+                dolby_vision: 8.0,
+                size_per_gib: 0.4,
+                size_max_points: 20.0,
+                seeder_factor: 3.0,
+                seeder_max_points: 8.0,
+                group_bonus: 10.0,
+            },
+            pro_groups: vec!["framestor".to_string()],
             shortlist_len: 10,
             clear_min_score: 70.0,
             clear_margin: 8.0,

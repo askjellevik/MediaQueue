@@ -174,6 +174,14 @@ impl WorkerConfig {
             }
             rank.allowed_languages = languages;
         }
+        if let Some(v) = value("WORKER_PRO_GROUPS") {
+            // Empty switches the bonus off.
+            rank.pro_groups = v
+                .split(',')
+                .map(|group| group.trim().to_ascii_lowercase())
+                .filter(|group| !group.is_empty())
+                .collect();
+        }
         if let Some(v) = value("WORKER_MIN_SIZE_MB") {
             rank.min_size_bytes = whole_number("WORKER_MIN_SIZE_MB", &v)?.saturating_mul(MIB);
         }
@@ -718,10 +726,23 @@ mod tests {
         assert_eq!(config.rank.max_size_bytes, 20 * GIB);
         assert_eq!(config.rank.clear_min_score, 65.5);
         assert_eq!(config.rank.clear_margin, 10.0);
+        assert_eq!(config.rank.pro_groups, ["framestor"], "the default");
         // Everything else keeps its default.
         let default = RankSettings::default();
         assert_eq!(config.rank.resolution, default.resolution);
         assert_eq!(config.rank.shortlist_len, default.shortlist_len);
+    }
+
+    #[test]
+    fn the_preferred_pro_groups_are_read_lowercase_and_may_be_empty() {
+        let groups = |text: &str| {
+            load(&[("INTERNAL_TOKEN", TOKEN), ("WORKER_PRO_GROUPS", text)])
+                .unwrap()
+                .rank
+                .pro_groups
+        };
+        assert_eq!(groups("FraMeStor, Example,,"), ["framestor", "example"]);
+        assert!(groups(" , ").is_empty());
     }
 
     #[test]
