@@ -47,9 +47,9 @@ failed). Every `/api` response has `Cache-Control: no-store`.
 | `POST /admin/jobs/{id}/retry`, `POST /admin/jobs/{id}/cancel` | admin | Requeue a job (from `failed`, `needs_pick`, `fetching` or `done`, only while its request is pending and has an IMDb ID); end a `queued`, `fetching` or `needs_pick` job as `failed` with reason `cancelled`. Either one makes a running worker's next call stale. 409 in any other state. |
 | `POST /admin/jobs/{id}/pick` | admin | Choose a release from a `needs_pick` job's stored shortlist (body: `infohash`, which must be listed and not blocked for the request). Live modes requeue the job with `picked` set; dry-run closes it as `done` / `dry_run`. The request is untouched. 409 if the job is not in `needs_pick`, the hash is not listed or it is blocked. |
 | `POST /admin/jobs/{id}/not-playing` | admin | The job's chosen release did not play (no body). In one transaction: blocks the hash for the request, reopens the request if it was `added`, and requeues the job with no choice and `picked` cleared (the shortlist stays). Allowed for `pending` or `added` requests with an IMDb ID. A stored Real-Debrid torrent id moves to the job's `remove_rd_torrent_id` (an older pending removal stays when there is no new id), for the worker to delete. 409 without a chosen hash or for other requests. A running worker's next call is stale. |
-| `GET /admin/jobs?state=&limit=&cursor=` | admin | Jobs, newest first, with the request's title, year, type and `request_status`, and its `blocked_hashes` (a list); `candidates` is the stored JSON parsed (`null` if it does not parse). `state` is one of the job states or `all`. Worker-supplied text (`candidates`, `last_error`) must be rendered with `textContent` only. |
+| `GET /admin/jobs?state=&limit=&cursor=` | admin | Jobs, newest first, with the request's title, year, type and `request_status`, its `blocked_hashes` (a list) and its `origin` (`admin` or `auto`); `candidates` is the stored JSON parsed (`null` if it does not parse). `state` is one of the job states or `all`. Worker-supplied text (`candidates`, `last_error`) must be rendered with `textContent` only. |
 | `GET /admin/worker`, `PUT /admin/worker` | admin | The kill switch and mode (`dry_run`, `assisted`, `auto`), with `enabled_from_env` and `mode_from_env` saying whether the environment pins them. `PUT` takes either or both fields and returns the effective values. |
-| `GET/POST /admin/members`, `PATCH` and `DELETE /admin/members/{id}` (delete only for a revoked member; their requests stay under their name and their events are relabelled `<name> (deleted)`), `POST /admin/members/{id}/rotate`, `POST /admin/members/{id}/revoke`, `POST /admin/members/{id}/restore` (undo a revoke), `DELETE /admin/sessions/{id}` | admin | Manage members and devices. |
+| `GET/POST /admin/members`, `PATCH` and `DELETE /admin/members/{id}` (delete only for a revoked member; their requests stay under their name and their events are relabelled `<name> (deleted)`), `POST /admin/members/{id}/rotate`, `POST /admin/members/{id}/revoke`, `POST /admin/members/{id}/restore` (undo a revoke), `DELETE /admin/sessions/{id}` | admin | Manage members and devices. `PATCH` takes `name`, `daily_limit` and `auto_fetch` (bool, the opt-in to automatic fetching); `GET /admin/members` returns `auto_fetch` for each member. |
 | `GET /healthz` | anyone | Database check, for the container healthcheck. |
 
 
@@ -61,7 +61,7 @@ the host or routed through Caddy; it exists only when `INTERNAL_LISTEN` and
 <INTERNAL_TOKEN>` and answers JSON in the same error shape as `/api`. There
 is no cookie, CSRF check or per-IP rate limit here. The limits are 10 s per
 request, a 256 KiB body and 8 calls in flight. None of these paths exist on
-the public port (404). Nothing in the user interface uses this API yet.
+the public port (404).
 
 | Route | Purpose |
 | --- | --- |
@@ -150,6 +150,11 @@ ignored.
 | `WORKER_ENABLED`, `WORKER_MODE` | unset | Pin the kill switch (`true` or `false`) and the mode (`dry_run`, `assisted`, `auto`) so the admin toggle cannot change them. |
 | `AUTO_FETCH_PER_MEMBER_DAY` | `3` | Automatic jobs the portal's sweep may create per opted-in member and UTC day (counted from the jobs' creation time); `0` switches the sweep off. |
 | `RD_TOKEN`, `RD_TOKEN_FILE` | must be unset | The portal refuses to start if either is set: the Real-Debrid token belongs to the worker service only. |
+| `RD_TOKEN_FILE` (worker) | unset | The worker's Real-Debrid token file (compose sets `/run/secrets/rd_token`). Without it the assisted and auto modes stay idle. `RD_TOKEN` is refused there too. |
+| `WORKER_STATE_DIR` (worker) | `/state` | Where the worker keeps `counters.json` (daily counters, breaker, owned torrent ids). |
+| `WORKER_MAX_ADDS_PER_DAY`, `WORKER_MAX_UNCACHED_PER_DAY`, `WORKER_MAX_REFUSALS_PER_DAY` (worker) | `5`, `2`, `20` | Daily caps for torrents the worker chose itself (auto jobs); a human pick is not counted against them. |
+| `WORKER_RD_MAX_GB`, `WORKER_RD_PER_MIN`, `WORKER_KEEP_FREE_SLOTS` (worker) | `30`, `20`, `2` | Largest torrent accepted, Real-Debrid requests per minute (at most 30), and active slots left free. |
+| `WORKER_AUTO_MIN_SCORE`, `WORKER_AUTO_MIN_SEEDERS`, `WORKER_AUTO_MAX_TRIES`, `WORKER_AUTO_MAX_GB` (worker) | `85`, `10`, `3`, `15` | What an auto job may take: minimum score and seeders, how many candidates it tries, and the size ceiling. |
 | `TRUSTED_PROXY_CIDRS` | loopback and `172.16.0.0/12` | Proxies trusted to send `X-Real-IP`. |
 | `RUST_LOG` | `info` | Log filter. |
 | `BIND_ADDR` | `0.0.0.0:8000` | Listen address (the image sets it). |
