@@ -36,8 +36,11 @@ services:
       # read it from here, and without the file they stay idle.
       RD_TOKEN_FILE: /run/secrets/rd_token
       WORKER_STATE_DIR: /state
+      # The three daily caps apply only to torrents the worker chose itself (auto jobs).
+      # A torrent a human picked is not counted against them and not stopped by them.
       WORKER_MAX_ADDS_PER_DAY: "${WORKER_MAX_ADDS_PER_DAY:-5}"
       WORKER_MAX_UNCACHED_PER_DAY: "${WORKER_MAX_UNCACHED_PER_DAY:-2}"
+      WORKER_MAX_REFUSALS_PER_DAY: "${WORKER_MAX_REFUSALS_PER_DAY:-20}"
     # One-time setup on the host, before the first assisted run (the container user is 65532):
     #   install -d -m 0700 secrets worker-state
     #   chown 65532:65532 secrets/rd_token worker-state && chmod 0400 secrets/rd_token
