@@ -593,6 +593,39 @@ async fn a_refused_add_ends_picked_failed_and_nothing_is_owned() {
 }
 
 #[tokio::test]
+async fn a_malformed_hash_fails_before_any_add_is_counted() {
+    for bad in [
+        "z".repeat(40),
+        format!("{}g", "a".repeat(39)),
+        "a".repeat(39),
+    ] {
+        let mut rig = rig().await;
+        mount_roomy(&rig.rd).await;
+        let job = picked_job(&rig).await;
+        sqlx::query("UPDATE fetch_jobs SET chosen_infohash = ? WHERE id = ?")
+            .bind(&bad)
+            .bind(job)
+            .execute(&rig.app.pool)
+            .await
+            .unwrap();
+
+        run(&mut rig).await;
+
+        let row = job_row(&rig.app.pool, job).await;
+        assert_eq!(
+            (row.state.as_str(), row.reason.as_deref()),
+            ("needs_pick", Some("picked_failed")),
+            "{bad}"
+        );
+        assert_eq!(rd_calls(&rig, "POST", "/torrents/addMagnet").await, 0);
+        assert!(
+            !rig.state_dir.join("counters.json").exists(),
+            "no add was counted for {bad}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn a_torrent_with_an_executable_is_deleted_and_the_pick_fails() {
     let mut rig = rig().await;
     mount_roomy(&rig.rd).await;

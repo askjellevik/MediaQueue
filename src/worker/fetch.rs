@@ -222,7 +222,9 @@ pub async fn picked(env: &Env<'_>, job: &Job, trace: &mut Trace) -> Outcome {
 
 async fn drive(env: &Env<'_>, job: &Job, trace: &mut Trace) -> Step<Report> {
     let hash = match job.chosen_infohash.as_deref() {
-        Some(hash) if hash.len() == 40 => hash.to_ascii_lowercase(),
+        Some(hash) if hash.len() == 40 && hash.bytes().all(|b| b.is_ascii_hexdigit()) => {
+            hash.to_ascii_lowercase()
+        }
         _ => return Err(picked_failed("the picked release has no valid hash")),
     };
 
