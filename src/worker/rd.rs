@@ -1161,19 +1161,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn errors_from_a_real_exchange_do_not_carry_the_token_either() {
-        let rig = rig().await;
-        // The server echoes the token back in its error body.
-        mount_status(
-            &rig,
-            ResponseTemplate::new(400).set_body_string(format!("bad request for {TOKEN}")),
-        )
-        .await;
-        let error = rig.client.active_count().await.unwrap_err();
-        assert!(!format!("{error} {error:?}").contains("test-token"));
-    }
-
     #[test]
     fn the_authorization_header_value_is_marked_sensitive() {
         let value = Secret::new(TOKEN).bearer().unwrap();

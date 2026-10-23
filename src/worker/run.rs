@@ -700,3 +700,23 @@ fn log_run(job: &Job, evaluation: &Evaluation) {
         "dry run"
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::RECLAIM_AFTER_SECS;
+
+    #[test]
+    fn a_healthy_picked_run_ends_long_before_the_portal_reclaims_the_job() {
+        let timing = Timing::default();
+        let reclaim = Duration::from_secs(u64::try_from(RECLAIM_AFTER_SECS).unwrap());
+        let one_candidate = timing.rd_conversion + timing.rd_picked_wait;
+        assert!(one_candidate < reclaim, "{one_candidate:?}");
+        assert!(timing.rd_picked_deadline < reclaim);
+        // The deadline leaves room for conversion and the wait, or it would
+        // cut off a run that is behaving.
+        assert!(timing.rd_picked_deadline > one_candidate);
+        // The dry run has its own, shorter limit.
+        assert!(RUN_DEADLINE < reclaim);
+    }
+}

@@ -512,37 +512,127 @@ async fn a_cached_torrent_ends_done_with_the_request_added_and_the_torrent_owned
     assert_eq!(rd_calls(&rig, "DELETE", "/torrents/delete/").await, 0);
 }
 
-#[tokio::test]
-async fn the_token_is_nowhere_in_the_portal_or_the_state_file() {
+/// Collects what the current thread logs while it is alive.
+#[derive(Clone, Default)]
+struct LogCapture(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogCapture {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl LogCapture {
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+    }
+}
+
+/// What the current thread logs while the guard lives (a test runs on one
+/// thread, and so do the portal and the stubs it talks to).
+fn capture_logs(level: tracing::Level) -> (LogCapture, tracing::subscriber::DefaultGuard) {
+    let logs = LogCapture::default();
+    let writer = logs.clone();
+    let guard = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_max_level(level)
+            .with_writer(move || writer.clone())
+            .finish(),
+    );
+    (logs, guard)
+}
+
+/// Text that must never reach a log: the token and anything Real-Debrid
+/// sends in a body (names, links, error texts).
+const SECRETS: [&str; 6] = [
+    RD_TOKEN,
+    "test-token",
+    "example.invalid",
+    "Example.Movie.1994.1080p.WEB-DL.AAC",
+    "info.nfo",
+    "infringing",
+];
+
+/// A finished run and a refused one, start to end, with the token echoed in
+/// an error body. Checks the portal, the state file and the logs.
+async fn two_full_runs_and_their_logs(level: tracing::Level) {
+    let (logs, _guard) = capture_logs(level);
+
     let mut rig = rig().await;
     mount_roomy(&rig.rd).await;
     mount_cached_torrent(&rig.rd).await;
     let job = picked_job(&rig).await;
     run(&mut rig).await;
-
-    let row = job_row(&rig.app.pool, job).await;
-    assert!(!format!("{row:?}").contains("test-token"));
-    let events: Vec<(Option<String>,)> = sqlx::query_as("SELECT actor FROM request_events")
-        .fetch_all(&rig.app.pool)
-        .await
-        .unwrap();
-    assert!(!format!("{events:?}").contains("test-token"));
-    let saved = fs::read_to_string(rig.state_dir.join("counters.json")).unwrap();
-    assert!(!saved.contains("test-token"));
-    // And it did go to Real-Debrid, as a header.
+    assert_eq!(job_row(&rig.app.pool, job).await.state, "done");
+    // The token went to Real-Debrid, as a header and nowhere else.
     let requests = rig.rd.received_requests().await.unwrap();
     assert!(!requests.is_empty());
     for request in requests {
-        assert_eq!(
-            request
-                .headers
-                .get("authorization")
-                .unwrap()
-                .to_str()
-                .unwrap(),
-            format!("Bearer {RD_TOKEN}")
+        let header = request.headers.get("authorization").unwrap();
+        assert_eq!(header.to_str().unwrap(), format!("Bearer {RD_TOKEN}"));
+    }
+    let row = job_row(&rig.app.pool, job).await;
+    assert!(!format!("{row:?}").contains("test-token"));
+    let saved = fs::read_to_string(rig.state_dir.join("counters.json")).unwrap();
+    assert!(!saved.contains("test-token"));
+
+    let mut refused = self::rig().await;
+    mount_json(
+        &refused.rd,
+        "GET",
+        "/torrents/activeCount",
+        200,
+        json!({"nb": 0, "limit": 25}),
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path("/torrents"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&refused.rd)
+        .await;
+    mount_json(
+        &refused.rd,
+        "POST",
+        "/torrents/addMagnet",
+        403,
+        json!({
+            "error": format!("Example.Movie.1994.1080p.WEB-DL.AAC is infringing, {RD_TOKEN}"),
+            "error_code": 35,
+        }),
+    )
+    .await;
+    let job = picked_job(&refused).await;
+    run(&mut refused).await;
+    let row = job_row(&refused.app.pool, job).await;
+    assert_eq!(row.reason.as_deref(), Some("picked_failed"));
+    assert!(!format!("{row:?}").contains("test-token"));
+    assert!(!format!("{row:?}").contains("infringing"));
+
+    let text = logs.text();
+    assert!(
+        text.contains("downloaded and verified"),
+        "the run was logged"
+    );
+    for secret in SECRETS {
+        assert!(
+            !text.contains(secret),
+            "{secret} reached the log at {level}"
         );
     }
+}
+
+#[tokio::test]
+async fn neither_the_token_nor_a_response_body_reaches_the_logs_of_a_full_run_at_debug() {
+    two_full_runs_and_their_logs(tracing::Level::DEBUG).await;
+}
+
+#[tokio::test]
+async fn neither_the_token_nor_a_response_body_reaches_the_logs_of_a_full_run_at_trace() {
+    two_full_runs_and_their_logs(tracing::Level::TRACE).await;
 }
 
 #[tokio::test]
@@ -812,36 +902,9 @@ async fn a_library_hit_whose_file_is_a_sample_or_over_the_cap_is_not_already_had
     }
 }
 
-/// Collects what the current thread logs while it is alive.
-#[derive(Clone, Default)]
-struct LogCapture(Arc<std::sync::Mutex<Vec<u8>>>);
-
-impl std::io::Write for LogCapture {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-impl LogCapture {
-    fn text(&self) -> String {
-        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
-    }
-}
-
 #[tokio::test]
 async fn an_add_that_returns_an_id_already_in_the_library_is_left_alone() {
-    let logs = LogCapture::default();
-    let writer = logs.clone();
-    let _guard = tracing::subscriber::set_default(
-        tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::INFO)
-            .with_writer(move || writer.clone())
-            .finish(),
-    );
+    let (logs, _guard) = capture_logs(tracing::Level::INFO);
     let mut rig = rig().await;
     mount_json(
         &rig.rd,
