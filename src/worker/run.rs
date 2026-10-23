@@ -410,7 +410,7 @@ impl<S: CandidateSource> Worker<S> {
         let evaluation = match self.search(job, now).await {
             Ok(Searched::Nothing(reason)) => return bare_needs_pick(reason),
             Ok(Searched::Ranked(evaluation)) => evaluation,
-            Err(report) => return report,
+            Err(report) => return *report,
         };
         Report::needs_pick(
             shortlist_maps(&evaluation),
@@ -420,7 +420,7 @@ impl<S: CandidateSource> Worker<S> {
     }
 
     /// Asks the source for the title and ranks what came back.
-    async fn search(&mut self, job: &Job, now: Instant) -> Result<Searched, Report> {
+    async fn search(&mut self, job: &Job, now: Instant) -> Result<Searched, Box<Report>> {
         let began = Instant::now();
         let raw = match self.fetch(&job.imdb_id).await {
             Ok(raw) => {
@@ -444,7 +444,7 @@ impl<S: CandidateSource> Worker<S> {
                         format!("candidate source sent an unusable response: {text}")
                     }
                 };
-                return Err(Report::failed(Some("source_unreachable"), &text));
+                return Err(Box::new(Report::failed(Some("source_unreachable"), &text)));
             }
         };
 
@@ -524,7 +524,7 @@ impl<S: CandidateSource> Worker<S> {
     async fn report_auto(&mut self, job: &Job, now: Instant) -> Option<Report> {
         let searched = match tokio::time::timeout(RUN_DEADLINE, self.search(job, now)).await {
             Ok(Ok(searched)) => searched,
-            Ok(Err(report)) => return Some(report),
+            Ok(Err(report)) => return Some(*report),
             Err(_) => {
                 self.stats.errors += 1;
                 tracing::warn!(job = job.id, "search exceeded 5 minutes");
