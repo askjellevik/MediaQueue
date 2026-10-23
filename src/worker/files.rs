@@ -57,8 +57,8 @@ impl Default for FileRules {
 pub enum Choice {
     /// Select this file id.
     One(u64),
-    /// A part marker in a name, or a second video of real size: a human
-    /// decides.
+    /// Two main videos with a part marker on one, or a second video of real
+    /// size: a human decides.
     Ambiguous,
     /// Reject the torrent; the reason is a fixed phrase.
     Unsafe(&'static str),
@@ -80,7 +80,9 @@ pub fn choose(files: &[RdFile], rules: &FileRules) -> Choice {
     // Largest first; equal sizes by id so the answer does not depend on order.
     videos.sort_by(|a, b| b.bytes.cmp(&a.bytes).then(a.id.cmp(&b.id)));
 
-    if videos.iter().any(|f| has_part_marker(&f.path)) {
+    // A marker means something only next to a second main video: a film
+    // called "Part 2" on its own is just a film.
+    if videos.len() >= 2 && videos.iter().any(|f| has_part_marker(&f.path)) {
         return Choice::Ambiguous;
     }
 
@@ -301,7 +303,7 @@ mod tests {
     }
 
     #[test]
-    fn a_part_marker_makes_it_ambiguous_whatever_the_sizes() {
+    fn a_part_marker_with_a_second_main_video_is_ambiguous_whatever_the_sizes() {
         // The second part is far below 30% of the first, so only the marker
         // can tell.
         let files = [
@@ -309,17 +311,47 @@ mod tests {
             file(2, "/Example.Movie.1994.CD2.avi", 150 * MIB),
         ];
         assert_eq!(pick(&files), Choice::Ambiguous);
-        for name in [
-            "/Example.Movie.1994.cd1.avi",
-            "/Example.Movie.1994.part1.mkv",
-            "/Example.Movie.1994.Part.2.mkv",
-            "/Example.Movie.1994.pt1.mkv",
-            "/Example.Movie.1994.disc1.mkv",
-            "/Example Movie 1994 Disc 2.mkv",
-            "/Example.Movie.1994-CD_1.avi",
+        for (first, second) in [
+            (
+                "/Example.Movie.1994.part1.mkv",
+                "/Example.Movie.1994.part2.mkv",
+            ),
+            (
+                "/Example.Movie.1994.Part.1.mkv",
+                "/Example.Movie.1994.Part.2.mkv",
+            ),
+            ("/Example.Movie.1994.pt1.mkv", "/Example.Movie.1994.pt2.mkv"),
+            (
+                "/Example Movie 1994 Disc 1.mkv",
+                "/Example Movie 1994 Disc 2.mkv",
+            ),
+            (
+                "/Example.Movie.1994-CD_1.avi",
+                "/Example.Movie.1994-CD_2.avi",
+            ),
         ] {
-            assert_eq!(pick(&[file(1, name, 2 * GIB)]), Choice::Ambiguous, "{name}");
+            let files = [file(1, first, 2 * GIB), file(2, second, 200 * MIB)];
+            assert_eq!(pick(&files), Choice::Ambiguous, "{first}");
         }
+    }
+
+    #[test]
+    fn a_single_video_named_like_a_part_is_just_the_film() {
+        for name in [
+            "/The.Example.Saga.Part.2.2015.1080p.mkv",
+            "/The Example Saga - Part Two (2015).mkv",
+            "/The.Example.Saga.Part2.2015.mkv",
+            "/Example.Movie.1994.CD1.avi",
+            "/Example.Movie.1994.disc1.mkv",
+        ] {
+            assert_eq!(pick(&[file(1, name, 2 * GIB)]), Choice::One(1), "{name}");
+        }
+        // Small extras under the size minimum do not make it a pair.
+        let files = [
+            file(1, "/The.Example.Saga.Part.2.2015.mkv", 4 * GIB),
+            file(2, "/Extras/Part 1 recap.mkv", 80 * MIB),
+        ];
+        assert_eq!(pick(&files), Choice::One(1));
     }
 
     #[test]
