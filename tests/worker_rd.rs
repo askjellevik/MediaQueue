@@ -1427,6 +1427,60 @@ async fn a_job_the_portal_reclaimed_resumes_the_owned_torrent() {
     assert_eq!(rd_calls(&rig, "POST", "/torrents/addMagnet").await, 0);
 }
 
+#[tokio::test]
+async fn queued_deletions_wait_in_dry_run_and_while_switched_off() {
+    let mut rig = rig().await;
+    mount_delete(&rig.rd, "OWNED1").await;
+    rig.state.own("OWNED1", HASH).unwrap();
+    rig.state.pending_delete_add("OWNED1").unwrap();
+
+    for body in [
+        r#"{"mode":"dry_run"}"#,
+        r#"{"mode":"assisted","enabled":false}"#,
+    ] {
+        let response = admin_call(&rig.app, &rig.admin, "PUT", "/api/admin/worker", body).await;
+        assert_eq!(response.status, 200, "{}", response.body);
+        run(&mut rig).await;
+        assert!(
+            rig.rd.received_requests().await.unwrap().is_empty(),
+            "{body}: no Real-Debrid call at all"
+        );
+        assert_eq!(counters(&rig)["pending_delete"], json!(["OWNED1"]));
+    }
+
+    let response = admin_call(
+        &rig.app,
+        &rig.admin,
+        "PUT",
+        "/api/admin/worker",
+        r#"{"enabled":true}"#,
+    )
+    .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    run(&mut rig).await;
+    assert_eq!(rd_calls(&rig, "DELETE", "/torrents/delete/OWNED1").await, 1);
+    assert_eq!(counters(&rig)["pending_delete"], json!([]));
+    assert!(!rig.state.owns("OWNED1"));
+}
+
+#[tokio::test]
+async fn a_queued_deletion_that_fails_again_stays_on_the_list() {
+    let mut rig = rig().await;
+    Mock::given(method("DELETE"))
+        .and(path("/torrents/delete/OWNED1"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&rig.rd)
+        .await;
+    rig.state.own("OWNED1", HASH).unwrap();
+    rig.state.pending_delete_add("OWNED1").unwrap();
+
+    run(&mut rig).await;
+
+    assert_eq!(rd_calls(&rig, "DELETE", "/torrents/delete/OWNED1").await, 1);
+    assert_eq!(counters(&rig)["pending_delete"], json!(["OWNED1"]));
+    assert!(rig.state.owns("OWNED1"));
+}
+
 // ---------------------------------------------------------------------
 // Alerts, against a stub portal so each call can be counted
 // ---------------------------------------------------------------------

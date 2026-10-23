@@ -215,7 +215,11 @@ impl<S: CandidateSource> Worker<S> {
             Ok(settings) => settings,
             Err(e) => return self.portal_failed(&e, first),
         };
+        // Only where the Real-Debrid worker is switched on: a dry-run worker,
+        // or one that is switched off, makes no Real-Debrid call at all.
         if let Some(rd) = &self.rd
+            && settings.enabled
+            && settings.mode != Mode::DryRun
             && rd.state.has_pending_delete()
         {
             fetch::sweep_pending(rd).await;

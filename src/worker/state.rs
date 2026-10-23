@@ -357,10 +357,17 @@ impl StateStore {
         !self.lock_rolled().0.state.pending_delete.is_empty()
     }
 
-    /// Hands out the ids to retry and clears the list. An id that fails
-    /// again is added back by the caller.
-    pub fn pending_delete_take(&self) -> Result<Vec<String>, StateError> {
-        self.update(|state, _| Ok(std::mem::take(&mut state.pending_delete)))
+    /// The ids to retry, still on the list: an id leaves it only through
+    /// [`Self::pending_delete_done`], after its deletion went through.
+    pub fn pending_delete_ids(&self) -> Vec<String> {
+        self.lock_rolled().0.state.pending_delete.clone()
+    }
+
+    pub fn pending_delete_done(&self, id: &str) -> Result<(), StateError> {
+        self.update(|state, _| {
+            state.pending_delete.retain(|p| p != id);
+            Ok(())
+        })
     }
 
     /// Applies `change` to a copy, writes it, and only then keeps it, so
@@ -862,7 +869,7 @@ mod tests {
         assert!(!store.has_pending_delete());
         store.pending_delete_add("AAA").unwrap();
         assert!(store.has_pending_delete());
-        store.pending_delete_take().unwrap();
+        store.pending_delete_done("AAA").unwrap();
         assert!(!store.has_pending_delete());
     }
 
@@ -883,7 +890,10 @@ mod tests {
         drop(store);
 
         let again = open(&dir, &clock);
-        assert_eq!(again.pending_delete_take().unwrap(), ["AAA", "BBB"]);
-        assert!(again.pending_delete_take().unwrap().is_empty());
+        // Reading the list does not empty it.
+        assert_eq!(again.pending_delete_ids(), ["AAA", "BBB"]);
+        assert_eq!(again.pending_delete_ids(), ["AAA", "BBB"]);
+        again.pending_delete_done("AAA").unwrap();
+        assert_eq!(again.pending_delete_ids(), ["BBB"]);
     }
 }

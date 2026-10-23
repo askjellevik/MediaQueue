@@ -171,31 +171,28 @@ fn removable(env: &Env<'_>, job: &Job, id: &str) -> bool {
 }
 
 /// Retries deletions that could not be made earlier (the breaker was open,
-/// Real-Debrid was down). Does nothing while the breaker is open.
+/// Real-Debrid was down). Does nothing while the breaker is open. An id
+/// leaves the persisted list only after Real-Debrid has answered the delete
+/// (or says the torrent is gone), so a crash in between loses nothing.
 pub async fn sweep_pending(rd: &RdRuntime) {
     if rd.state.breaker_trip(rd.state.now()).is_some() {
         return;
     }
-    let ids = match rd.state.pending_delete_take() {
-        Ok(ids) => ids,
-        Err(error) => {
-            tracing::warn!(%error, "could not read the queued deletions");
-            return;
-        }
-    };
-    for id in ids {
+    for id in rd.state.pending_delete_ids() {
         if !rd.state.owns(&id) {
+            // Not ours to delete; nothing to retry.
+            let _ = rd.state.pending_delete_done(&id);
             continue;
         }
         match rd.client.delete(&id).await {
             Ok(()) | Err(RdError::NotFound) => {
                 tracing::info!("a queued deletion went through");
+                if let Err(error) = rd.state.pending_delete_done(&id) {
+                    tracing::warn!(%error, "could not update the queued deletions");
+                }
                 let _ = rd.state.forget(&id);
             }
-            Err(error) => {
-                tracing::warn!(%error, "a queued deletion failed again");
-                let _ = rd.state.pending_delete_add(&id);
-            }
+            Err(error) => tracing::warn!(%error, "a queued deletion failed again"),
         }
     }
 }
