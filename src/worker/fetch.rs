@@ -269,7 +269,12 @@ async fn drive(env: &Env<'_>, job: &Job, trace: &mut Trace) -> Step<Report> {
     let known: HashSet<&str> = snapshot.iter().map(|t| t.id.as_str()).collect();
     if known.contains(id.as_str()) {
         // Real-Debrid answered with a torrent that was already there; it is
-        // not ours to delete.
+        // not ours to take over or to delete. One line, so a supervised run
+        // can tell whether addMagnet hands back an existing id.
+        tracing::warn!(
+            job = job.id,
+            "addMagnet returned an id that was already in the library; left alone"
+        );
         return Err(picked_failed(
             "real-debrid returned a torrent that already existed",
         ));

@@ -812,6 +812,88 @@ async fn a_library_hit_whose_file_is_a_sample_or_over_the_cap_is_not_already_had
     }
 }
 
+/// Collects what the current thread logs while it is alive.
+#[derive(Clone, Default)]
+struct LogCapture(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogCapture {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl LogCapture {
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+    }
+}
+
+#[tokio::test]
+async fn an_add_that_returns_an_id_already_in_the_library_is_left_alone() {
+    let logs = LogCapture::default();
+    let writer = logs.clone();
+    let _guard = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(move || writer.clone())
+            .finish(),
+    );
+    let mut rig = rig().await;
+    mount_json(
+        &rig.rd,
+        "GET",
+        "/torrents/activeCount",
+        200,
+        json!({"nb": 1, "limit": 25}),
+    )
+    .await;
+    // Someone else's torrent for another hash is in the library, and
+    // addMagnet answers with its id.
+    mount_json(
+        &rig.rd,
+        "GET",
+        "/torrents",
+        200,
+        json!([{ "id": RD_ID, "hash": "b".repeat(40), "status": "downloaded" }]),
+    )
+    .await;
+    mount_json(
+        &rig.rd,
+        "POST",
+        "/torrents/addMagnet",
+        201,
+        json!({"id": RD_ID, "uri": "https://example.invalid/t/1"}),
+    )
+    .await;
+    mount_delete(&rig.rd, RD_ID).await;
+    let job = picked_job(&rig).await;
+
+    run(&mut rig).await;
+
+    let row = job_row(&rig.app.pool, job).await;
+    assert_eq!(
+        (row.state.as_str(), row.reason.as_deref(), row.rd_torrent_id),
+        ("needs_pick", Some("picked_failed"), None)
+    );
+    assert_eq!(rd_calls(&rig, "DELETE", "/torrents/delete/").await, 0);
+    assert_eq!(rd_calls(&rig, "GET", "/torrents/info/").await, 0);
+    assert_eq!(rd_calls(&rig, "POST", "/torrents/selectFiles/").await, 0);
+    assert!(!rig.state.owns(RD_ID));
+    assert_eq!(counters(&rig)["owned"], json!([]));
+
+    let text = logs.text();
+    let lines: Vec<_> = text
+        .lines()
+        .filter(|l| l.contains("already in the library"))
+        .collect();
+    assert_eq!(lines.len(), 1, "{text}");
+    assert!(!lines[0].contains(RD_TOKEN) && !lines[0].contains("example.invalid"));
+}
+
 #[tokio::test]
 async fn a_library_hit_that_is_not_downloaded_is_left_alone() {
     let mut rig = rig().await;
