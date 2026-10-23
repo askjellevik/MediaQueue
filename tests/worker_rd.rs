@@ -1631,8 +1631,8 @@ async fn a_pro_job_ignores_the_badge() {
 }
 
 #[tokio::test]
-async fn a_candidate_over_15_gb_is_skipped_or_fails_the_check_for_free_and_pro() {
-    for pro in [false, true] {
+async fn a_free_candidate_over_15_gb_is_skipped_or_fails_the_check() {
+    for pro in [false] {
         let mut rig = rig().await;
         set_mode(&rig, "auto").await;
         serve_streams(
@@ -1666,6 +1666,36 @@ async fn a_candidate_over_15_gb_is_skipped_or_fails_the_check_for_free_and_pro()
         assert_eq!(rd_calls(&rig, "DELETE", "/torrents/delete/BIG").await, 1);
         assert!(blocked_of(&rig, job).await.is_empty(), "pro={pro}");
     }
+}
+
+#[tokio::test]
+async fn a_pro_job_takes_the_biggest_release_under_its_own_ceiling_first() {
+    let mut rig = rig().await;
+    set_mode(&rig, "auto").await;
+    serve_streams(
+        &rig.stub,
+        vec![
+            stream(&hash_of('1'), PLAYS, 300, "2.8 GB"),
+            stream(&hash_of('2'), PLAYS, 40, "60.0 GB"),
+            // Over the 100 GiB ceiling: dropped by the filter.
+            stream(&hash_of('3'), PLAYS, 40, "120.0 GB"),
+        ],
+    )
+    .await;
+    mount_free_slots(&rig.rd).await;
+    mount_adds(&rig.rd, vec![added("BIG")]).await;
+    mount_cached_for(&rig.rd, "BIG", &hash_of('2'), 60 * GIB).await;
+    let job = queue_job_for(&rig, 1, true).await;
+
+    run(&mut rig).await;
+
+    let row = job_row(&rig.app.pool, job).await;
+    assert_eq!(
+        (row.state.as_str(), row.rd_torrent_id.as_deref()),
+        ("done", Some("BIG")),
+        "{row:?}"
+    );
+    assert_eq!(added_hashes(&rig).await, [hash_of('2')]);
 }
 
 #[tokio::test]

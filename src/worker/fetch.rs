@@ -928,6 +928,23 @@ mod tests {
     }
 
     #[test]
+    fn a_pro_job_gets_its_hashes_in_pro_order_up_to_its_own_cap() {
+        let eval = evaluation(
+            true,
+            &[
+                raw('a', UNTAGGED, 8),
+                raw('b', "Example.Movie.1994.2160p.BluRay.REMUX.TrueHD", 40),
+            ],
+        );
+        assert_eq!(
+            eligible_hashes(&eval, true, 100 * GIB),
+            ["b".repeat(40), "a".repeat(40)],
+            "no badge needed; the bigger remux first"
+        );
+        assert_eq!(eligible_hashes(&eval, true, 10 * GIB), ["a".repeat(40)]);
+    }
+
+    #[test]
     fn a_hash_outside_the_ranking_list_or_over_the_cap_or_malformed_is_not_eligible() {
         let mut eval = evaluation(false, &[raw('a', PLAYS, 8), raw('b', PLAYS, 12)]);
         assert_eq!(eligible_hashes(&eval, false, 15 * GIB).len(), 2);

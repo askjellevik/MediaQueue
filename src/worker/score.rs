@@ -369,22 +369,24 @@ fn collapse_twins(sorted: Vec<Candidate>, tolerance: f64) -> Vec<Candidate> {
     kept
 }
 
-/// Whether an auto job may try the candidate: a score of at least
-/// `auto_min_score`, at least `auto_min_seeders` seeders, no foreign-language
-/// penalty, a name that is not cut short, a known size of at most
-/// `auto_max_bytes` (`pro_max_bytes` for a PRO job), and for a free job a
-/// `yes` badge.
+/// Whether an auto job may try the candidate. A free job needs a score of at
+/// least `auto_min_score`, at least `auto_min_seeders` seeders, no foreign-
+/// language penalty, a name that is not cut short, a known size of at most
+/// `auto_max_bytes` and a `yes` badge. A PRO job needs no score and no badge:
+/// at least `pro_auto_min_seeders` seeders, not foreign, not cut short and a
+/// known size of at most `pro_max_bytes`; the PRO ranking orders them.
 fn auto_eligible(candidate: &Candidate, job: &JobSpec, settings: &RankSettings) -> bool {
-    let largest = if job.infuse_pro {
-        settings.pro_max_bytes
+    let (min_score, min_seeders, largest) = if job.infuse_pro {
+        (0.0, settings.pro_auto_min_seeders, settings.pro_max_bytes)
     } else {
-        settings.auto_max_bytes
+        (
+            settings.auto_min_score,
+            settings.auto_min_seeders,
+            settings.auto_max_bytes,
+        )
     };
-    candidate.score >= settings.auto_min_score
-        && candidate
-            .raw
-            .seeders
-            .is_some_and(|n| n >= settings.auto_min_seeders)
+    candidate.score >= min_score
+        && candidate.raw.seeders.is_some_and(|n| n >= min_seeders)
         && !candidate.foreign_language
         && !candidate.release.truncated
         && candidate.raw.size_bytes.is_some_and(|n| n <= largest)
@@ -986,6 +988,61 @@ mod tests {
     }
 
     #[test]
+    fn a_pro_job_tries_the_best_releases_in_pro_order_without_a_badge_or_a_minimum_score() {
+        let untagged = "Example.Movie.1994.1080p.BrRip.x264-GRPTWO";
+        let remux = raw('a', REMUX, 45.0, 4);
+        let encode = raw('b', SMALL, 2.8, 400);
+        let unbadged = raw('c', untagged, 3.0, 3);
+        let weak = raw('d', "Example.Movie.1994.480p.DVDRip.x264-GRPONE", 1.0, 20);
+        let eval = evaluate(
+            &job(true),
+            &[
+                encode.clone(),
+                unbadged.clone(),
+                weak.clone(),
+                remux.clone(),
+            ],
+            &RankSettings::default(),
+        );
+        assert_eq!(order(&eval), "abcd");
+        assert_eq!(auto_hashes(&eval), "abc", "three tries; no badge, no score");
+        assert!(eval.shortlist[3].score < RankSettings::default().auto_min_score);
+        assert_eq!(eval.shortlist[3].auto_rank, 0);
+
+        // The free job takes neither the badge-less release nor the DVDRip.
+        let free = evaluate(
+            &job(false),
+            &[encode, unbadged, weak],
+            &RankSettings::default(),
+        );
+        assert_eq!(auto_hashes(&free), "b");
+    }
+
+    #[test]
+    fn a_pro_job_skips_few_seeders_foreign_truncated_unsized_and_oversized() {
+        let settings = RankSettings::default();
+        let ok = raw('a', SMALL, 2.8, 3);
+        let few = raw('b', SMALL, 3.2, 2);
+        let mut foreign = raw('c', SMALL, 3.6, 50);
+        foreign.flag_languages = vec!["ru".to_string()];
+        let cut = raw(
+            'd',
+            "Example.Movie.1994.1080p.BluRay.x264.AAC-GRPO…",
+            4.0,
+            50,
+        );
+        let mut unsized_ = raw('e', SMALL, 2.8, 50);
+        unsized_.size_bytes = None;
+        let mut over = raw('f', SMALL, 2.8, 50);
+        over.size_bytes = Some(settings.pro_max_bytes + 1);
+        let all = [ok, few, foreign, cut, unsized_, over];
+        let eval = evaluate(&job(true), &all, &settings);
+        assert_eq!(eval.dropped.get(&DropReason::Size), Some(&1));
+        assert_eq!(eval.shortlist.len(), 5);
+        assert_eq!(auto_hashes(&eval), "a");
+    }
+
+    #[test]
     fn low_seeders_foreign_truncated_and_low_scores_are_skipped() {
         let mut foreign = raw('b', BEST, 3.0, 50);
         foreign.flag_languages = vec!["ru".to_string()];
@@ -1054,14 +1111,14 @@ mod tests {
     #[test]
     fn with_nothing_eligible_the_auto_list_is_empty() {
         let eval = evaluate(
-            &job(true),
+            &job(false),
             &[raw('a', BEST, 3.0, 2), raw('b', WEB_720, 3.0, 3)],
             &RankSettings::default(),
         );
         assert!(eval.auto.is_empty());
         assert!(eval.shortlist.iter().all(|c| c.auto_rank == 0));
         assert!(
-            evaluate(&job(true), &[], &RankSettings::default())
+            evaluate(&job(false), &[], &RankSettings::default())
                 .auto
                 .is_empty()
         );

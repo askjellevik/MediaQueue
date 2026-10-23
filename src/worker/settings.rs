@@ -152,6 +152,9 @@ pub struct RankSettings {
     /// A candidate must have at least this many seeders, a weak proxy for
     /// being cached at Real-Debrid.
     pub auto_min_seeders: u32,
+    /// A PRO job's candidate needs at least this many seeders instead of
+    /// `auto_min_seeders`, and has no minimum score. Code-only.
+    pub pro_auto_min_seeders: u32,
     /// How many candidates an auto job tries at most.
     pub auto_max_tries: usize,
     /// A free job's candidate must have a known size of at most this. A PRO
@@ -252,6 +255,7 @@ impl Default for RankSettings {
             dup_size_tolerance: 0.01,
             auto_min_score: 85.0,
             auto_min_seeders: 10,
+            pro_auto_min_seeders: 3,
             auto_max_tries: 3,
             auto_max_bytes: 15 * GIB,
         }
