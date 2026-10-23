@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT state AS \"state!\", rd_torrent_id FROM fetch_jobs WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "state!",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "fetch_jobs",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "name": "rd_torrent_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "fetch_jobs",
+            "name": "rd_torrent_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "35120371256fa39b4e968622e24386ada43d0dcbffe156e09ba6c369b76ae81c"
+}

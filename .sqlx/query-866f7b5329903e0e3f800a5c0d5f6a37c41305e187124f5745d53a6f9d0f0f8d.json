@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE fetch_jobs\n         SET state = 'failed', reason = 'cancelled', claim_id = NULL,\n             remove_rd_torrent_id = COALESCE(rd_torrent_id, remove_rd_torrent_id),\n             rd_torrent_id = NULL, updated_at = ?\n         WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "866f7b5329903e0e3f800a5c0d5f6a37c41305e187124f5745d53a6f9d0f0f8d"
+}

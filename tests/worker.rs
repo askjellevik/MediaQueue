@@ -1463,9 +1463,50 @@ async fn retry_and_cancel_make_the_running_workers_calls_stale() {
         (&progress, json!({"claim_id": second})),
     ] {
         let response = worker(&app, "POST", path, Some(&body)).await;
-        assert_error(&response, 409, "stale_claim");
+        // The torrent moved to the removal column, so the stale answer names
+        // none for the worker to keep.
+        let error = assert_error(&response, 409, "stale_claim");
+        assert_eq!(stored_torrent(&error), None);
     }
     assert_eq!(request_status(&app.pool, run.request_id).await, "pending");
+    assert_eq!(
+        removal_column(&app.pool, run.job_id).await.as_deref(),
+        Some("RD1")
+    );
+    assert_eq!(job_row(&app.pool, run.job_id).await.rd_torrent_id, None);
+}
+
+#[tokio::test]
+async fn cancel_refuses_a_job_that_is_not_fetching_but_holds_a_torrent() {
+    let app = common::spawn_app().await;
+    let run = running(&app).await;
+    worker(
+        &app,
+        "POST",
+        &format!("/internal/jobs/{}/progress", run.job_id),
+        Some(&json!({"claim_id": run.claim_id, "rd_torrent_id": "RD1"})),
+    )
+    .await;
+    // Retried: queued again with the torrent still named.
+    let retry = format!("/api/admin/jobs/{}/retry", run.job_id);
+    let response = admin_call(&app, &run.admin, "POST", &retry, Some("{}")).await;
+    assert_eq!(response.status, 200, "{}", response.body);
+
+    let cancel = format!("/api/admin/jobs/{}/cancel", run.job_id);
+    let response = admin_call(&app, &run.admin, "POST", &cancel, Some("{}")).await;
+    let error = assert_error(&response, 409, "conflict");
+    assert!(
+        error["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("Real-Debrid")),
+        "{error}"
+    );
+    let row = job_row(&app.pool, run.job_id).await;
+    assert_eq!(
+        (row.state.as_str(), row.rd_torrent_id.as_deref()),
+        ("queued", Some("RD1"))
+    );
+    assert_eq!(removal_column(&app.pool, run.job_id).await, None);
 }
 
 #[tokio::test]

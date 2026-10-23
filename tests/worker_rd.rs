@@ -1024,7 +1024,7 @@ where
 }
 
 #[tokio::test]
-async fn cancelling_during_the_wait_drops_the_run_and_keeps_the_torrent_the_portal_names() {
+async fn cancelling_during_the_wait_drops_the_run_and_deletes_the_torrent_it_owns() {
     let mut rig = rig_with(None, slow_timing()).await;
     mount_roomy(&rig.rd).await;
     mount_stalled_torrent(&rig.rd).await;
@@ -1049,16 +1049,61 @@ async fn cancelling_during_the_wait_drops_the_run_and_keeps_the_torrent_the_port
     );
 
     assert_eq!(cycle.unwrap(), Cycle::Worked);
-    // The portal still names the torrent (a retry resumes it), so it stays;
-    // and the run reported nothing over the cancellation.
+    // The portal moved the torrent to the removal column, so the stale
+    // answer names nothing to keep; the run deleted what it owns and
+    // reported nothing over the cancellation.
     let row = job_row(&rig.app.pool, job).await;
     assert_eq!(
         (
             row.state.as_str(),
             row.reason.as_deref(),
-            row.rd_torrent_id.as_deref()
+            row.rd_torrent_id.as_deref(),
+            row.remove_rd_torrent_id.as_deref()
         ),
-        ("failed", Some("cancelled"), Some(RD_ID))
+        ("failed", Some("cancelled"), None, Some(RD_ID))
+    );
+    assert_eq!(
+        rd_calls(&rig, "DELETE", &format!("/torrents/delete/{RD_ID}")).await,
+        1
+    );
+    assert!(!rig.state.owns(RD_ID));
+}
+
+#[tokio::test]
+async fn retrying_during_the_wait_drops_the_run_and_keeps_the_torrent() {
+    let mut rig = rig_with(None, slow_timing()).await;
+    mount_roomy(&rig.rd).await;
+    mount_stalled_torrent(&rig.rd).await;
+    mount_delete(&rig.rd, RD_ID).await;
+    let job = picked_job(&rig).await;
+
+    let (cycle, ()) = tokio::join!(
+        rig.worker.as_mut().unwrap().run_once(Instant::now()),
+        async {
+            wait_until(|| async { job_row(&rig.app.pool, job).await.rd_torrent_id.is_some() })
+                .await;
+            let response = admin_call(
+                &rig.app,
+                &rig.admin,
+                "POST",
+                &format!("/api/admin/jobs/{job}/retry"),
+                "{}",
+            )
+            .await;
+            assert_eq!(response.status, 200, "{}", response.body);
+        }
+    );
+
+    assert_eq!(cycle.unwrap(), Cycle::Worked);
+    // The portal still names the torrent, so the next run resumes it.
+    let row = job_row(&rig.app.pool, job).await;
+    assert_eq!(
+        (
+            row.state.as_str(),
+            row.rd_torrent_id.as_deref(),
+            row.remove_rd_torrent_id
+        ),
+        ("queued", Some(RD_ID), None)
     );
     assert_eq!(rd_calls(&rig, "DELETE", "/torrents/delete/").await, 0);
     assert!(rig.state.owns(RD_ID));

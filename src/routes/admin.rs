@@ -824,6 +824,9 @@ pub async fn post_job_cancel(
         db::CancelJobOutcome::WrongState => Err(AppError::Conflict(
             "jobben kan ikke avbrytes i denne tilstanden",
         )),
+        db::CancelJobOutcome::HasTorrent => Err(AppError::Conflict(
+            "jobben har en torrent hos Real-Debrid og kan ikke avbrytes nå",
+        )),
         db::CancelJobOutcome::Cancelled => {
             tracing::info!(job_id = id, state = "failed", "fetch job cancelled");
             state.events.publish(Tick::Admin);

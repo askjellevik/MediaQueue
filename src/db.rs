@@ -2204,37 +2204,57 @@ pub enum CancelJobOutcome {
     Cancelled,
     NotFound,
     WrongState,
+    /// The job is not `fetching` but still names a Real-Debrid torrent: no
+    /// worker is running that could remove it.
+    HasTorrent,
 }
 
 /// Ends a `queued`, `fetching` or `needs_pick` job as `failed` with reason
 /// `cancelled`. Cancel is terminal; `retry` is the way back. Like retry it
 /// clears `claim_id`, so a running worker's next call is stale.
+///
+/// A `fetching` job's stored Real-Debrid torrent id moves to
+/// `remove_rd_torrent_id`, as for "didn't play": the stale answer then names
+/// no torrent, so the running worker deletes the one it created (and only
+/// that). A job that is not `fetching` but holds a torrent id is refused,
+/// because nobody would remove it.
 pub async fn cancel_fetch_job(
     pool: &SqlitePool,
     job_id: i64,
     now: i64,
 ) -> Result<CancelJobOutcome, sqlx::Error> {
-    let cancelled = sqlx::query!(
+    let mut tx = begin_immediate(pool).await?;
+    let Some(job) = sqlx::query!(
+        r#"SELECT state AS "state!", rd_torrent_id FROM fetch_jobs WHERE id = ?"#,
+        job_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    else {
+        tx.rollback().await?;
+        return Ok(CancelJobOutcome::NotFound);
+    };
+    if !matches!(job.state.as_str(), "queued" | "fetching" | "needs_pick") {
+        tx.rollback().await?;
+        return Ok(CancelJobOutcome::WrongState);
+    }
+    if job.state != "fetching" && job.rd_torrent_id.is_some() {
+        tx.rollback().await?;
+        return Ok(CancelJobOutcome::HasTorrent);
+    }
+    sqlx::query!(
         "UPDATE fetch_jobs
-         SET state = 'failed', reason = 'cancelled', claim_id = NULL, updated_at = ?
-         WHERE id = ? AND state IN ('queued', 'fetching', 'needs_pick')",
+         SET state = 'failed', reason = 'cancelled', claim_id = NULL,
+             remove_rd_torrent_id = COALESCE(rd_torrent_id, remove_rd_torrent_id),
+             rd_torrent_id = NULL, updated_at = ?
+         WHERE id = ?",
         now,
         job_id
     )
-    .execute(pool)
-    .await?
-    .rows_affected();
-    if cancelled > 0 {
-        return Ok(CancelJobOutcome::Cancelled);
-    }
-    let exists = sqlx::query_scalar!(r#"SELECT id AS "id!" FROM fetch_jobs WHERE id = ?"#, job_id)
-        .fetch_optional(pool)
-        .await?;
-    Ok(if exists.is_some() {
-        CancelJobOutcome::WrongState
-    } else {
-        CancelJobOutcome::NotFound
-    })
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(CancelJobOutcome::Cancelled)
 }
 
 pub async fn get_setting(pool: &SqlitePool, key: &str) -> Result<Option<String>, sqlx::Error> {
@@ -4307,6 +4327,66 @@ mod tests {
             retry_fetch_job(&pool, claim.id, 1400).await.unwrap(),
             RetryOutcome::Retried
         );
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_fetching_job_moves_its_torrent_to_the_removal_column() {
+        let pool = test_pool().await;
+        let claim = claimed(&pool, 1, 1000).await;
+        progress_fetch_job(
+            &pool,
+            claim.id,
+            &claim.claim_id,
+            &Progress {
+                rd_torrent_id: Some("RD1"),
+                ..Progress::default()
+            },
+            1010,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            cancel_fetch_job(&pool, claim.id, 1100).await.unwrap(),
+            CancelJobOutcome::Cancelled
+        );
+        assert_eq!(
+            removal_of(&pool, claim.id).await,
+            (None, Some("RD1".to_string()))
+        );
+        // The running worker's next call is stale and names no torrent to keep.
+        assert_eq!(
+            progress_fetch_job(&pool, claim.id, &claim.claim_id, &Progress::default(), 1200)
+                .await
+                .unwrap(),
+            ProgressOutcome::Stale {
+                rd_torrent_id: None
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_job_that_is_not_fetching_but_holds_a_torrent_is_refused() {
+        for state in ["queued", "needs_pick"] {
+            let pool = test_pool().await;
+            let claim = claimed(&pool, 1, 1000).await;
+            sql(
+                &pool,
+                &format!(
+                    "UPDATE fetch_jobs SET state = '{state}', claim_id = NULL, rd_torrent_id = 'RD1'"
+                ),
+            )
+            .await;
+            assert_eq!(
+                cancel_fetch_job(&pool, claim.id, 1100).await.unwrap(),
+                CancelJobOutcome::HasTorrent,
+                "{state}"
+            );
+            let row = job(&pool, claim.id).await;
+            assert_eq!(
+                (row.state.as_str(), row.rd_torrent_id.as_deref()),
+                (state, Some("RD1"))
+            );
+        }
     }
 
     #[tokio::test]
