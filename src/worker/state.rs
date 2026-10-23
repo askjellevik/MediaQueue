@@ -1,6 +1,10 @@
 //! The worker's local counters: how many torrents it added today, which
 //! torrents it owns, and whether Real-Debrid has told it to stay away.
 //!
+//! The daily caps guard the worker's own choices. A torrent a human picked is
+//! not counted against them and not stopped by them; it is only counted in a
+//! statistic that is logged.
+//!
 //! One small JSON file, written to a temp file in the same directory and
 //! renamed, so a crash leaves either the old or the new content. The file
 //! fails closed: if it exists but cannot be trusted (unreadable, corrupt,
@@ -20,7 +24,10 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 const FILE_NAME: &str = "counters.json";
-const VERSION: u32 = 1;
+/// The version written. Version 1 files, from before the picked adds had a
+/// counter of their own, still load; the missing field reads as zero.
+const VERSION: u32 = 2;
+const OLDEST_VERSION: u32 = 1;
 
 const OWNED_MAX: usize = 200;
 const OWNED_MAX_AGE_SECS: u64 = 7 * 24 * 3600;
@@ -59,7 +66,15 @@ pub enum Trip {
     Auth,
 }
 
-/// The daily caps the store checks against.
+/// Who chose a torrent: a human (the claim is `picked`) or the worker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddKind {
+    Picked,
+    Auto,
+}
+
+/// The daily caps the store checks against. They apply to [`AddKind::Auto`]
+/// only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
     pub max_adds: u32,
@@ -90,8 +105,13 @@ pub struct State {
     pub version: u32,
     /// UTC date, `YYYY-MM-DD`, the counters below belong to.
     pub date: String,
+    /// Adds the worker chose itself; the daily adds cap counts these.
     pub adds: u32,
     pub uncached: u32,
+    /// Adds a human picked; a statistic for the log, never a cap. Absent in
+    /// version 1 files.
+    #[serde(default)]
+    pub human_adds: u32,
     pub breaker_until: u64,
     pub breaker_trips: u32,
     pub owned: Vec<Owned>,
@@ -105,6 +125,7 @@ impl State {
             date,
             adds: 0,
             uncached: 0,
+            human_adds: 0,
             breaker_until: 0,
             breaker_trips: 0,
             owned: Vec::new(),
@@ -207,22 +228,35 @@ impl StateStore {
             .saturating_sub(cell.state.uncached)
     }
 
-    /// No further add is allowed today: either cap is used up, or the file
-    /// cannot be trusted. Every add may turn out uncached, so the uncached
-    /// cap stops adds too.
-    pub fn caps_reached(&self) -> bool {
+    /// No further add of the worker's own choosing is allowed today: either
+    /// cap is used up, or the file cannot be trusted. Every add may turn out
+    /// uncached, so the uncached cap stops adds too. A human's pick is not
+    /// stopped by this.
+    pub fn auto_caps_reached(&self) -> bool {
         self.adds_left() == 0 || self.uncached_left() == 0
     }
 
+    /// Adds a human picked today; for the log only.
+    pub fn picked_adds_today(&self) -> u32 {
+        self.lock_rolled().0.state.human_adds
+    }
+
     /// Counts one add and writes the file; call it before `addMagnet`. An
-    /// error means the add must not happen.
-    pub fn record_add(&self) -> Result<(), StateError> {
+    /// error means the add must not happen. Only an auto add is checked
+    /// against the cap; a picked one is counted apart and always goes on
+    /// (an unreadable file still stops it).
+    pub fn record_add(&self, kind: AddKind) -> Result<(), StateError> {
         let max = self.inner.limits.max_adds;
         self.update(|state, _| {
-            if state.adds >= max {
-                return Err(StateError::CapReached);
+            match kind {
+                AddKind::Auto => {
+                    if state.adds >= max {
+                        return Err(StateError::CapReached);
+                    }
+                    state.adds += 1;
+                }
+                AddKind::Picked => state.human_adds = state.human_adds.saturating_add(1),
             }
-            state.adds += 1;
             Ok(())
         })
     }
@@ -409,6 +443,7 @@ impl StateStore {
             cell.state.date = today;
             cell.state.adds = 0;
             cell.state.uncached = 0;
+            cell.state.human_adds = 0;
         } else if cell.state.date > today && !cell.unreadable {
             tracing::error!("counters file is dated in the future; caps count as reached");
             cell.unreadable = true;
@@ -430,8 +465,9 @@ fn load(dir: &Path, path: &Path, today: &str) -> Result<State, &'static str> {
         }
         Err(_) => return Err("counters file cannot be read"),
     };
-    let state: State = serde_json::from_slice(&bytes).map_err(|_| "counters file is corrupt")?;
-    if state.version != VERSION {
+    let mut state: State =
+        serde_json::from_slice(&bytes).map_err(|_| "counters file is corrupt")?;
+    if !(OLDEST_VERSION..=VERSION).contains(&state.version) {
         return Err("counters file has an unknown version");
     }
     if !is_date(&state.date) {
@@ -440,6 +476,8 @@ fn load(dir: &Path, path: &Path, today: &str) -> Result<State, &'static str> {
     if state.date.as_str() > today {
         return Err("counters file is dated in the future");
     }
+    // What is written next carries the current layout.
+    state.version = VERSION;
     Ok(state)
 }
 
@@ -570,7 +608,7 @@ mod tests {
         assert!(!store.unreadable());
         assert_eq!(store.adds_left(), 5);
         assert_eq!(store.uncached_left(), 2);
-        assert!(!store.caps_reached());
+        assert!(!store.auto_caps_reached());
         assert!(!dir.file().exists());
     }
 
@@ -580,13 +618,74 @@ mod tests {
         let clock = FakeClock::at(NOON);
         let store = open(&dir, &clock);
         for _ in 0..5 {
-            store.record_add().unwrap();
+            store.record_add(AddKind::Auto).unwrap();
         }
         assert_eq!(store.adds_left(), 0);
-        assert!(store.caps_reached());
-        assert!(matches!(store.record_add(), Err(StateError::CapReached)));
+        assert!(store.auto_caps_reached());
+        assert!(matches!(
+            store.record_add(AddKind::Auto),
+            Err(StateError::CapReached)
+        ));
         let on_disk: State = serde_json::from_slice(&fs::read(dir.file()).unwrap()).unwrap();
         assert_eq!(on_disk.adds, 5);
+    }
+
+    #[test]
+    fn a_picked_add_is_not_counted_and_not_blocked_at_the_cap() {
+        let dir = Dir::new();
+        let store = open(&dir, &FakeClock::at(NOON));
+        for _ in 0..5 {
+            store.record_add(AddKind::Auto).unwrap();
+        }
+        assert!(store.auto_caps_reached());
+
+        for _ in 0..3 {
+            store.record_add(AddKind::Picked).unwrap();
+        }
+        assert_eq!(store.adds_left(), 0);
+        assert_eq!(store.picked_adds_today(), 3);
+        let on_disk: State = serde_json::from_slice(&fs::read(dir.file()).unwrap()).unwrap();
+        assert_eq!((on_disk.adds, on_disk.human_adds), (5, 3));
+    }
+
+    #[test]
+    fn picked_adds_leave_the_auto_allowance_alone() {
+        let dir = Dir::new();
+        let store = open(&dir, &FakeClock::at(NOON));
+        for _ in 0..4 {
+            store.record_add(AddKind::Picked).unwrap();
+        }
+        assert_eq!(store.adds_left(), 5);
+        assert!(!store.auto_caps_reached());
+        store.record_add(AddKind::Auto).unwrap();
+        assert_eq!(store.adds_left(), 4);
+    }
+
+    #[test]
+    fn a_file_from_the_previous_version_still_loads() {
+        let dir = Dir::new();
+        let old = serde_json::json!({
+            "version": 1,
+            "date": "2026-10-20",
+            "adds": 3,
+            "uncached": 1,
+            "breaker_until": 0,
+            "breaker_trips": 0,
+            "owned": [{"id": "ABCDEFGHIJKLM", "hash": HASH, "at": NOON}],
+            "pending_delete": []
+        });
+        fs::write(dir.file(), serde_json::to_vec(&old).unwrap()).unwrap();
+
+        let store = open(&dir, &FakeClock::at(NOON));
+        assert!(!store.unreadable());
+        assert_eq!(store.adds_left(), 2);
+        assert_eq!(store.uncached_left(), 1);
+        assert_eq!(store.picked_adds_today(), 0);
+        assert!(store.owns("ABCDEFGHIJKLM"));
+
+        store.record_add(AddKind::Picked).unwrap();
+        let on_disk: State = serde_json::from_slice(&fs::read(dir.file()).unwrap()).unwrap();
+        assert_eq!((on_disk.version, on_disk.human_adds), (VERSION, 1));
     }
 
     #[test]
@@ -594,10 +693,10 @@ mod tests {
         let dir = Dir::new();
         let store = open(&dir, &FakeClock::at(NOON));
         store.record_uncached().unwrap();
-        assert!(!store.caps_reached());
+        assert!(!store.auto_caps_reached());
         store.record_uncached().unwrap();
         assert_eq!(store.uncached_left(), 0);
-        assert!(store.caps_reached());
+        assert!(store.auto_caps_reached());
     }
 
     #[test]
@@ -605,7 +704,7 @@ mod tests {
         let dir = Dir::new();
         let clock = FakeClock::at(NOON);
         let store = open(&dir, &clock);
-        store.record_add().unwrap();
+        store.record_add(AddKind::Auto).unwrap();
         store.record_uncached().unwrap();
         store.trip(Trip::RateLimit, NOON).unwrap();
         drop(store);
@@ -621,7 +720,7 @@ mod tests {
         let dir = Dir::new();
         let clock = FakeClock::at(NOON);
         let store = open(&dir, &clock);
-        store.record_add().unwrap();
+        store.record_add(AddKind::Auto).unwrap();
         store.record_uncached().unwrap();
         store.own("ABCDEFGHIJKLM", HASH).unwrap();
         // 23:00, so the breaker is still open after midnight.
@@ -634,7 +733,7 @@ mod tests {
         assert!(store.owns("ABCDEFGHIJKLM"));
         assert!(store.breaker_open(after_midnight).is_some());
 
-        store.record_add().unwrap();
+        store.record_add(AddKind::Auto).unwrap();
         let on_disk: State = serde_json::from_slice(&fs::read(dir.file()).unwrap()).unwrap();
         assert_eq!(on_disk.date, "2026-10-21");
         assert_eq!(on_disk.adds, 1);
@@ -643,9 +742,12 @@ mod tests {
     fn assert_fails_closed(dir: &Dir, clock: &Arc<FakeClock>) {
         let store = open(dir, clock);
         assert!(store.unreadable());
-        assert!(store.caps_reached());
+        assert!(store.auto_caps_reached());
         assert_eq!(store.adds_left(), 0);
-        assert!(matches!(store.record_add(), Err(StateError::Unreadable)));
+        assert!(matches!(
+            store.record_add(AddKind::Auto),
+            Err(StateError::Unreadable)
+        ));
         assert!(matches!(
             store.own("ABC", HASH),
             Err(StateError::Unreadable)
@@ -664,7 +766,7 @@ mod tests {
     fn unknown_version_and_unknown_fields_fail_closed() {
         let dir = Dir::new();
         let mut state = State::fresh("2026-10-20".into());
-        state.version = 2;
+        state.version = VERSION + 1;
         fs::write(dir.file(), serde_json::to_vec(&state).unwrap()).unwrap();
         assert_fails_closed(&dir, &FakeClock::at(NOON));
 
@@ -684,10 +786,10 @@ mod tests {
         let dir = Dir::new();
         let clock = FakeClock::at(NOON + DAY);
         let store = open(&dir, &clock);
-        store.record_add().unwrap();
+        store.record_add(AddKind::Auto).unwrap();
         clock.set(NOON);
         assert!(store.unreadable());
-        assert!(store.caps_reached());
+        assert!(store.auto_caps_reached());
     }
 
     #[test]
@@ -703,7 +805,7 @@ mod tests {
         let clock = FakeClock::at(NOON);
         let missing = std::env::temp_dir().join("mediaqueue-state-test-no-such-dir");
         let store = StateStore::open(&missing, clock.clone());
-        assert!(store.unreadable() && store.caps_reached());
+        assert!(store.unreadable() && store.auto_caps_reached());
 
         // A directory where the file should be cannot be read as a file.
         let dir = Dir::new();
@@ -715,9 +817,12 @@ mod tests {
     fn failed_write_leaves_the_count_unchanged() {
         let dir = Dir::new();
         let store = open(&dir, &FakeClock::at(NOON));
-        store.record_add().unwrap();
+        store.record_add(AddKind::Auto).unwrap();
         fs::remove_dir_all(&dir.0).unwrap();
-        assert!(matches!(store.record_add(), Err(StateError::Write(_))));
+        assert!(matches!(
+            store.record_add(AddKind::Auto),
+            Err(StateError::Write(_))
+        ));
         assert_eq!(store.adds_left(), 4);
     }
 
@@ -726,7 +831,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = Dir::new();
         let store = open(&dir, &FakeClock::at(NOON));
-        store.record_add().unwrap();
+        store.record_add(AddKind::Auto).unwrap();
         store.own("ABCDEFGHIJKLM", HASH).unwrap();
         store.pending_delete_add("NOPQRSTUVWXYZ").unwrap();
 
@@ -745,6 +850,7 @@ mod tests {
                 "breaker_trips",
                 "breaker_until",
                 "date",
+                "human_adds",
                 "owned",
                 "pending_delete",
                 "uncached",

@@ -20,7 +20,7 @@ use super::{
     portal::{Abandon, Job, Mode, PortalClient, Progress, ProgressResult, Report},
     rd::{ListedTorrent, RdError, RdRuntime, TorrentInfo, TorrentStatus, valid_id},
     run::Timing,
-    state::StateError,
+    state::{AddKind, StateError},
 };
 
 /// Failed reads of the worker settings in a row that a wait puts up with.
@@ -257,11 +257,16 @@ async fn drive(env: &Env<'_>, job: &Job, trace: &mut Trace) -> Step<Report> {
         return Ok(report);
     }
 
-    gate_caps_and_slots(env).await?;
+    let kind = if job.picked {
+        AddKind::Picked
+    } else {
+        AddKind::Auto
+    };
+    gate_caps_and_slots(env, kind).await?;
     // The last look before anything is added: the slot check above is a
     // network call, and an admin may have switched the worker off meanwhile.
     require_switch_on(env).await?;
-    env.rd.state.record_add().map_err(|error| match error {
+    env.rd.state.record_add(kind).map_err(|error| match error {
         StateError::CapReached => gate("daily_cap", "the daily cap of adds is reached"),
         _ => gate("rd_error", "the counters file could not be written"),
     })?;
@@ -285,7 +290,11 @@ async fn drive(env: &Env<'_>, job: &Job, trace: &mut Trace) -> Step<Report> {
         return Err(gate("rd_error", "the counters file could not be written"));
     }
     trace.torrent = Some(id.clone());
-    tracing::info!(job = job.id, "added to real-debrid");
+    tracing::info!(
+        job = job.id,
+        picked_adds_today = env.rd.state.picked_adds_today(),
+        "added to real-debrid"
+    );
     tell_portal(
         env,
         job,
@@ -331,12 +340,14 @@ fn switched_off() -> Stop {
     )
 }
 
-/// Before an add: today's caps, and a free active slot.
-async fn gate_caps_and_slots(env: &Env<'_>) -> Step<()> {
+/// Before an add: the counters must be readable, a job the worker chose
+/// itself must be within today's caps (a human's pick is not stopped by
+/// them), and a free active slot must be left.
+async fn gate_caps_and_slots(env: &Env<'_>, kind: AddKind) -> Step<()> {
     if env.rd.state.unreadable() {
         return Err(gate("rd_error", "the counters file cannot be trusted"));
     }
-    if env.rd.state.caps_reached() {
+    if kind == AddKind::Auto && env.rd.state.auto_caps_reached() {
         return Err(gate("daily_cap", "the daily cap of adds is reached"));
     }
     let active = env.rd.client.active_count().await.map_err(rd_stop)?;
@@ -505,8 +516,11 @@ async fn finish(env: &Env<'_>, job: &Job, id: &str, hash: &str) -> Step<Report> 
                     TorrentStatus::Queued | TorrentStatus::Downloading
                 ) {
                     // Not cached: it would have to be fetched. Counts against
-                    // today's allowance.
-                    if let Err(error) = env.rd.state.record_uncached() {
+                    // today's uncached allowance, which is for the worker's
+                    // own choices; a human's pick is not counted.
+                    if !job.picked
+                        && let Err(error) = env.rd.state.record_uncached()
+                    {
                         tracing::warn!(%error, "could not count the uncached add");
                     }
                     let progress = Progress {

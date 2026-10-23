@@ -503,9 +503,13 @@ async fn a_cached_torrent_ends_done_with_the_request_added_and_the_torrent_owned
     assert_eq!(selects.len(), 1);
     assert_eq!(String::from_utf8_lossy(&selects[0].body), "files=1");
 
-    // One add counted, the torrent recorded as ours, nothing deleted.
+    // The pick is counted apart from the daily cap, the torrent recorded as
+    // ours, nothing deleted.
     let saved = counters(&rig);
-    assert_eq!(saved["adds"], 1);
+    assert_eq!(
+        (saved["adds"].as_u64(), saved["human_adds"].as_u64()),
+        (Some(0), Some(1))
+    );
     assert_eq!(saved["owned"][0]["id"], RD_ID);
     assert_eq!(saved["owned"][0]["hash"], HASH);
     assert!(rig.state.owns(RD_ID));
@@ -678,7 +682,7 @@ async fn a_refused_add_ends_picked_failed_and_nothing_is_owned() {
     let saved = counters(&rig);
     assert_eq!(saved["owned"], json!([]));
     // The add was counted before it was tried; a refusal is not a breaker trip.
-    assert_eq!(saved["adds"], 1);
+    assert_eq!(saved["human_adds"], 1);
     assert_eq!(saved["breaker_until"], 0);
 }
 
@@ -756,7 +760,7 @@ async fn a_torrent_with_an_executable_is_deleted_and_the_pick_fails() {
 }
 
 #[tokio::test]
-async fn a_torrent_that_stalls_downloading_is_deleted_and_counted_as_uncached() {
+async fn a_torrent_that_stalls_downloading_is_deleted_and_reported_as_uncached() {
     let mut rig = rig().await;
     mount_roomy(&rig.rd).await;
     let waiting = info(
@@ -794,7 +798,8 @@ async fn a_torrent_that_stalls_downloading_is_deleted_and_counted_as_uncached() 
         ("needs_pick", Some("picked_failed"))
     );
     assert_eq!(row.uncached_adds, 1);
-    assert_eq!(counters(&rig)["uncached"], 1);
+    // A human's pick is not counted against the uncached cap.
+    assert_eq!(counters(&rig)["uncached"], 0);
     assert_eq!(
         rd_calls(&rig, "DELETE", &format!("/torrents/delete/{RD_ID}")).await,
         1
@@ -1028,20 +1033,27 @@ async fn no_free_slot_ends_needs_pick_without_adding() {
 }
 
 #[tokio::test]
-async fn reaching_the_daily_cap_claims_nothing() {
+async fn a_human_pick_is_neither_counted_nor_blocked_at_the_daily_cap() {
     let mut rig = rig().await;
     mount_roomy(&rig.rd).await;
+    mount_cached_torrent(&rig.rd).await;
     while rig.state.adds_left() > 0 {
-        rig.state.record_add().unwrap();
+        rig.state
+            .record_add(mediaqueue::worker::state::AddKind::Auto)
+            .unwrap();
     }
+    assert!(rig.state.auto_caps_reached());
     let job = picked_job(&rig).await;
 
-    let cycle = run(&mut rig).await;
+    assert_eq!(run(&mut rig).await, Cycle::Worked);
 
-    assert_eq!(cycle, Cycle::Wait(POLL));
     let row = job_row(&rig.app.pool, job).await;
-    assert_eq!((row.state.as_str(), row.attempts), ("queued", 0));
-    assert!(rig.rd.received_requests().await.unwrap().is_empty());
+    assert_eq!((row.state.as_str(), row.reason), ("done", None));
+    let saved = counters(&rig);
+    assert_eq!(
+        (saved["adds"].as_u64(), saved["human_adds"].as_u64()),
+        (Some(50), Some(1))
+    );
 }
 
 #[tokio::test]

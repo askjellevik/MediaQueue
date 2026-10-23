@@ -125,7 +125,7 @@ pub enum Cycle {
 enum Idle {
     KillSwitch,
     Mode(Mode),
-    /// Real-Debrid is being left alone, or today's allowance is used up.
+    /// Real-Debrid is being left alone, or the counters cannot be read.
     Hold(&'static str),
 }
 
@@ -314,15 +314,15 @@ impl<S: CandidateSource> Worker<S> {
     }
 
     /// In the Real-Debrid modes: no job is claimed while the breaker is
-    /// open or today's allowance is used up (or cannot be read).
+    /// open or the counters cannot be read. The daily caps are not checked
+    /// here: they stop only the adds the worker chooses itself, and a human's
+    /// pick must still be claimed.
     fn rd_hold(&self, rd_mode: bool) -> Option<Idle> {
         let rd = self.rd.as_ref().filter(|_| rd_mode)?;
         if rd.state.breaker_trip(rd.state.now()).is_some() {
             Some(Idle::Hold("real-debrid is being left alone (breaker open)"))
         } else if rd.state.unreadable() {
             Some(Idle::Hold("the counters file cannot be trusted"))
-        } else if rd.state.caps_reached() {
-            Some(Idle::Hold("today's allowance of adds is used up"))
         } else {
             None
         }
