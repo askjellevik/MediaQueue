@@ -100,8 +100,12 @@ pub struct RankSettings {
     // Hard filters.
     /// A torrent smaller than this is dropped.
     pub min_size_bytes: u64,
-    /// A torrent larger than this is dropped.
+    /// A torrent larger than this is dropped from a free job's list.
     pub max_size_bytes: u64,
+    /// The same for a PRO job, and the largest file a PRO job may be given:
+    /// by the auto rule, and by the worker's own ceiling for a human's pick.
+    /// Free jobs keep `max_size_bytes`, `auto_max_bytes` and `WORKER_RD_MAX_GB`.
+    pub pro_max_bytes: u64,
     /// Languages that count as the wanted audio (ISO 639-1). A release whose
     /// language signals are all outside this list is penalised, not dropped.
     pub allowed_languages: Vec<String>,
@@ -150,7 +154,8 @@ pub struct RankSettings {
     pub auto_min_seeders: u32,
     /// How many candidates an auto job tries at most.
     pub auto_max_tries: usize,
-    /// A candidate must have a known size of at most this, free and PRO alike.
+    /// A free job's candidate must have a known size of at most this. A PRO
+    /// job's ceiling is `pro_max_bytes`.
     pub auto_max_bytes: u64,
 }
 
@@ -159,6 +164,7 @@ impl Default for RankSettings {
         Self {
             min_size_bytes: 400 * MIB,
             max_size_bytes: 40 * GIB,
+            pro_max_bytes: 100 * GIB,
             allowed_languages: vec!["en".to_string()],
             resolution: ResolutionPoints {
                 r2160: 32.0,

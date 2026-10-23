@@ -28,6 +28,7 @@ const GIB: u64 = 1024 * MIB;
 
 const MAX_AUTO_TRIES: u64 = 5;
 const MAX_AUTO_GB: u64 = 100;
+const MAX_PRO_GB: u64 = 500;
 
 const DEFAULT_STATE_DIR: &str = "/state";
 const DEFAULT_MAX_ADDS_PER_DAY: u32 = 5;
@@ -187,6 +188,16 @@ impl WorkerConfig {
         }
         if let Some(v) = value("WORKER_MAX_SIZE_GB") {
             rank.max_size_bytes = whole_number("WORKER_MAX_SIZE_GB", &v)?.saturating_mul(GIB);
+        }
+        if let Some(v) = value("WORKER_PRO_MAX_GB") {
+            let gb = whole_number("WORKER_PRO_MAX_GB", &v)?;
+            if !(1..=MAX_PRO_GB).contains(&gb) {
+                return Err(invalid(
+                    "WORKER_PRO_MAX_GB",
+                    format!("must be between 1 and {MAX_PRO_GB}"),
+                ));
+            }
+            rank.pro_max_bytes = gb * GIB;
         }
         if rank.min_size_bytes > rank.max_size_bytes {
             return Err(invalid(
@@ -792,6 +803,25 @@ mod tests {
         ])
         .unwrap();
         assert_eq!((low.rank.auto_max_tries, low.rank.auto_max_bytes), (1, GIB));
+    }
+
+    #[test]
+    fn the_pro_size_ceiling_defaults_to_100_gb_and_stays_in_range() {
+        assert_eq!(
+            load(&[("INTERNAL_TOKEN", TOKEN)])
+                .unwrap()
+                .rank
+                .pro_max_bytes,
+            100 * GIB
+        );
+        let config = load(&[("INTERNAL_TOKEN", TOKEN), ("WORKER_PRO_MAX_GB", "250")]).unwrap();
+        assert_eq!(config.rank.pro_max_bytes, 250 * GIB);
+        for bad in ["0", "501", "1.5", "lots"] {
+            assert!(
+                load(&[("INTERNAL_TOKEN", TOKEN), ("WORKER_PRO_MAX_GB", bad)]).is_err(),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

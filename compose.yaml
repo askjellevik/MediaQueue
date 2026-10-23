@@ -44,6 +44,10 @@ services:
       # Release groups (comma separated, case-insensitive) that earn a bonus in the ranking of
       # Infuse PRO jobs only; free jobs ignore it. Empty switches the bonus off.
       WORKER_PRO_GROUPS: "${WORKER_PRO_GROUPS:-framestor}"
+      # The largest torrent, in GB, for Infuse PRO jobs only: the shortlist filter, the auto rule
+      # and the worker's own ceiling for a human's pick. Free jobs keep their own limits
+      # (40 GB filter, 15 GB auto, WORKER_RD_MAX_GB 30).
+      WORKER_PRO_MAX_GB: "${WORKER_PRO_MAX_GB:-100}"
     # One-time setup on the host, before the first assisted run (the container user is 65532):
     #   install -d -m 0700 secrets worker-state
     #   chown 65532:65532 secrets/rd_token worker-state && chmod 0400 secrets/rd_token

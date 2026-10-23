@@ -187,8 +187,13 @@ pub fn passes_hard_filters(
         }
     }
 
+    let largest = if job.infuse_pro {
+        settings.pro_max_bytes
+    } else {
+        settings.max_size_bytes
+    };
     if let Some(size) = raw.size_bytes
-        && (size < settings.min_size_bytes || size > settings.max_size_bytes)
+        && (size < settings.min_size_bytes || size > largest)
     {
         return Err(DropReason::Size);
     }
@@ -527,7 +532,7 @@ mod tests {
 
     #[test]
     fn the_size_must_be_in_range_when_known() {
-        let spec = job("Example Movie", Some(1994), true);
+        let spec = job("Example Movie", Some(1994), false);
         let settings = RankSettings::default();
         let sized = |size: Option<u64>| {
             let mut candidate = raw(GOOD);
@@ -545,6 +550,25 @@ mod tests {
             Err(DropReason::Size)
         );
         assert!(sized(None).is_ok());
+    }
+
+    #[test]
+    fn a_pro_job_may_have_a_far_bigger_file_than_a_free_one() {
+        let settings = RankSettings::default();
+        let sized = |pro: bool, size: u64| {
+            let mut candidate = raw(GOOD);
+            candidate.size_bytes = Some(size);
+            let spec = job("Example Movie", Some(1994), pro);
+            passes_hard_filters(&candidate, &spec, &settings)
+        };
+        let big = settings.max_size_bytes + 1;
+        assert_eq!(sized(false, big), Err(DropReason::Size));
+        assert!(sized(true, big).is_ok());
+        assert!(sized(true, settings.pro_max_bytes).is_ok());
+        assert_eq!(
+            sized(true, settings.pro_max_bytes + 1),
+            Err(DropReason::Size)
+        );
     }
 
     #[test]

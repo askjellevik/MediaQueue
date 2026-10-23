@@ -484,6 +484,7 @@ impl<S: CandidateSource> Worker<S> {
             portal: &self.portal,
             timing: &self.timing,
             auto_max_bytes: self.rank.auto_max_bytes,
+            pro_max_bytes: self.rank.pro_max_bytes,
         };
         fetch::handle_removal(&env, job).await;
 
@@ -544,6 +545,7 @@ impl<S: CandidateSource> Worker<S> {
             portal: &self.portal,
             timing: &self.timing,
             auto_max_bytes: self.rank.auto_max_bytes,
+            pro_max_bytes: self.rank.pro_max_bytes,
         };
         let mut trace = Trace {
             candidates: shortlist_maps(&evaluation),

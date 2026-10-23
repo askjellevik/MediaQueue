@@ -41,24 +41,36 @@ pub struct Env<'a> {
     pub rd: &'a RdRuntime,
     pub portal: &'a PortalClient,
     pub timing: &'a Timing,
-    /// The largest file an auto job may take, on top of the Real-Debrid cap.
+    /// The largest file an auto job for a free request may take, on top of
+    /// the Real-Debrid cap.
     pub auto_max_bytes: u64,
+    /// The largest file any job for a PRO request may take; it replaces the
+    /// Real-Debrid cap and the auto ceiling, which are the free jobs'.
+    pub pro_max_bytes: u64,
 }
 
 impl Env<'_> {
-    fn picked_terms(&self) -> Terms {
+    fn picked_terms(&self, job: &Job) -> Terms {
         Terms {
             kind: AddKind::Picked,
             wait: self.timing.rd_picked_wait,
-            cap: self.rd.max_bytes,
+            cap: if job.infuse_pro {
+                self.pro_max_bytes
+            } else {
+                self.rd.max_bytes
+            },
         }
     }
 
-    fn auto_terms(&self) -> Terms {
+    fn auto_terms(&self, job: &Job) -> Terms {
         Terms {
             kind: AddKind::Auto,
             wait: self.timing.rd_auto_wait,
-            cap: self.rd.max_bytes.min(self.auto_max_bytes),
+            cap: if job.infuse_pro {
+                self.pro_max_bytes
+            } else {
+                self.rd.max_bytes.min(self.auto_max_bytes)
+            },
         }
     }
 }
@@ -341,7 +353,7 @@ pub fn eligible_hashes(evaluation: &Evaluation, pro: bool, cap: u64) -> Vec<Stri
 /// candidate failed the job goes back to the admin with the last reason.
 /// Nothing eligible means no call to Real-Debrid at all.
 pub async fn auto(env: &Env<'_>, job: &Job, evaluation: &Evaluation, trace: &mut Trace) -> Outcome {
-    let terms = env.auto_terms();
+    let terms = env.auto_terms(job);
     let picks = eligible_hashes(evaluation, job.infuse_pro, terms.cap);
     if picks.is_empty() {
         return Outcome::Report(Report::needs_pick_with(
@@ -458,7 +470,7 @@ async fn drive(env: &Env<'_>, job: &Job, trace: &mut Trace) -> Step<Report> {
         }
         _ => return Err(failed(Fail::Unfit, "the picked release has no valid hash")),
     };
-    let terms = env.picked_terms();
+    let terms = env.picked_terms(job);
 
     gate_switch_and_breaker(env).await?;
 

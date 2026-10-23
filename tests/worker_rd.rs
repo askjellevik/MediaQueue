@@ -959,6 +959,60 @@ async fn a_library_hit_whose_file_is_a_sample_or_over_the_cap_is_not_already_had
 }
 
 #[tokio::test]
+async fn a_pro_pick_of_forty_gib_is_taken_where_a_free_pick_is_refused() {
+    for (pro, expected) in [
+        (false, ("needs_pick", Some("rd_error"))),
+        (true, ("done", Some("already_had"))),
+    ] {
+        let mut rig = rig().await;
+        mount_json(
+            &rig.rd,
+            "GET",
+            "/torrents/activeCount",
+            200,
+            json!({"nb": 1, "limit": 25}),
+        )
+        .await;
+        mount_json(
+            &rig.rd,
+            "GET",
+            "/torrents",
+            200,
+            json!([{ "id": "EXISTING1", "hash": HASH, "status": "downloaded" }]),
+        )
+        .await;
+        mount_json(
+            &rig.rd,
+            "GET",
+            "/torrents/info/EXISTING1",
+            200,
+            json!({
+                "id": "EXISTING1", "hash": HASH, "status": "downloaded", "progress": 100,
+                "bytes": 40 * GIB, "files": [file(1, MOVIE, 40 * GIB, true)],
+                "links": ["https://example.invalid/d/1"],
+            }),
+        )
+        .await;
+        let job = queue_job_for(&rig, 1, pro).await;
+        sqlx::query("UPDATE fetch_jobs SET picked = 1, chosen_infohash = ? WHERE id = ?")
+            .bind(HASH)
+            .bind(job)
+            .execute(&rig.app.pool)
+            .await
+            .unwrap();
+
+        run(&mut rig).await;
+
+        let row = job_row(&rig.app.pool, job).await;
+        assert_eq!(
+            (row.state.as_str(), row.reason.as_deref()),
+            expected,
+            "pro={pro}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn an_add_that_returns_an_id_already_in_the_library_is_left_alone() {
     let (logs, _guard) = capture_logs(tracing::Level::INFO);
     let mut rig = rig().await;

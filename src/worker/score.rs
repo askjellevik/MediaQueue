@@ -372,8 +372,14 @@ fn collapse_twins(sorted: Vec<Candidate>, tolerance: f64) -> Vec<Candidate> {
 /// Whether an auto job may try the candidate: a score of at least
 /// `auto_min_score`, at least `auto_min_seeders` seeders, no foreign-language
 /// penalty, a name that is not cut short, a known size of at most
-/// `auto_max_bytes` (free and PRO alike), and for a free job a `yes` badge.
+/// `auto_max_bytes` (`pro_max_bytes` for a PRO job), and for a free job a
+/// `yes` badge.
 fn auto_eligible(candidate: &Candidate, job: &JobSpec, settings: &RankSettings) -> bool {
+    let largest = if job.infuse_pro {
+        settings.pro_max_bytes
+    } else {
+        settings.auto_max_bytes
+    };
     candidate.score >= settings.auto_min_score
         && candidate
             .raw
@@ -381,10 +387,7 @@ fn auto_eligible(candidate: &Candidate, job: &JobSpec, settings: &RankSettings) 
             .is_some_and(|n| n >= settings.auto_min_seeders)
         && !candidate.foreign_language
         && !candidate.release.truncated
-        && candidate
-            .raw
-            .size_bytes
-            .is_some_and(|n| n <= settings.auto_max_bytes)
+        && candidate.raw.size_bytes.is_some_and(|n| n <= largest)
         && (job.infuse_pro || candidate.badge == FreeBadge::Yes)
 }
 
@@ -956,7 +959,7 @@ mod tests {
     }
 
     #[test]
-    fn a_big_or_unsized_candidate_is_skipped_for_free_and_pro_alike() {
+    fn a_big_or_unsized_free_candidate_is_skipped() {
         let at_limit = RankSettings::default().auto_max_bytes;
         let mut exact = raw('a', BEST, 3.0, 50);
         exact.size_bytes = Some(at_limit);
@@ -964,15 +967,22 @@ mod tests {
         over.size_bytes = Some(at_limit + 5 * GIB_BYTES);
         let mut unknown = raw('c', BEST, 3.0, 50);
         unknown.size_bytes = None;
-        for pro in [false, true] {
-            let eval = evaluate(
-                &job(pro),
-                &[exact.clone(), over.clone(), unknown.clone()],
-                &lax_auto(),
-            );
-            assert_eq!(eval.shortlist.len(), 3, "pro={pro}: all are ranked");
-            assert_eq!(auto_hashes(&eval), "a", "pro={pro}: exactly 15 GiB is in");
-        }
+        let eval = evaluate(&job(false), &[exact, over, unknown], &lax_auto());
+        assert_eq!(eval.shortlist.len(), 3, "all are ranked");
+        assert_eq!(auto_hashes(&eval), "a", "exactly 15 GiB is in");
+    }
+
+    #[test]
+    fn a_pro_candidate_may_be_far_bigger_than_the_free_ceiling_but_not_unsized() {
+        let settings = RankSettings::default();
+        let mut big = raw('a', BEST, 3.0, 50);
+        big.size_bytes = Some(settings.auto_max_bytes + 25 * GIB_BYTES);
+        let mut exact = raw('b', BEST, 3.0, 50);
+        exact.size_bytes = Some(settings.pro_max_bytes);
+        let mut unknown = raw('c', BEST, 3.0, 50);
+        unknown.size_bytes = None;
+        let eval = evaluate(&job(true), &[big, exact, unknown], &lax_auto());
+        assert_eq!(auto_hashes(&eval), "ba");
     }
 
     #[test]
@@ -1303,6 +1313,7 @@ mod tests {
         many.push(big);
         let settings = RankSettings {
             max_size_bytes: u64::MAX,
+            pro_max_bytes: u64::MAX,
             ..RankSettings::default()
         };
         let eval = evaluate(&job(true), &many, &settings);
