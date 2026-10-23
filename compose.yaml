@@ -32,6 +32,17 @@ services:
       PORTAL_URL: http://portal:8001
       INTERNAL_TOKEN: "${INTERNAL_TOKEN:?set INTERNAL_TOKEN in .env}"
       RUST_LOG: info
+      # The Real-Debrid token is a file, never a value: the assisted and auto modes
+      # read it from here, and without the file they stay idle.
+      RD_TOKEN_FILE: /run/secrets/rd_token
+      WORKER_STATE_DIR: /state
+      WORKER_MAX_ADDS_PER_DAY: "${WORKER_MAX_ADDS_PER_DAY:-5}"
+      WORKER_MAX_UNCACHED_PER_DAY: "${WORKER_MAX_UNCACHED_PER_DAY:-2}"
+    # One-time setup on the host, before the first assisted run (the container user is 65532):
+    #   install -d -m 0700 secrets worker-state
+    #   chown 65532:65532 secrets/rd_token worker-state && chmod 0400 secrets/rd_token
+    # ./secrets/rd_token holds the token alone; ./worker-state keeps counters.json (caps, breaker).
+    volumes: ["./secrets/rd_token:/run/secrets/rd_token:ro", "./worker-state:/state"]
     networks: [workernet]
     read_only: true
     tmpfs: ["/tmp:size=4m"]

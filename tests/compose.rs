@@ -67,3 +67,47 @@ fn worker_has_no_env_file_and_no_ports() {
     assert!(!code.contains("env_file"), "worker must not read .env");
     assert!(!code.contains("ports:"), "worker must not publish ports");
 }
+
+/// A block without its comment lines, so a note cannot satisfy or break an assertion.
+fn code_of(block: &str) -> String {
+    block
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn worker_mounts_the_token_file_read_only_and_the_state_directory() {
+    let worker = code_of(&service_block("worker"));
+    assert!(
+        worker.contains("./secrets/rd_token:/run/secrets/rd_token:ro"),
+        "the token file must be mounted read-only"
+    );
+    assert!(
+        worker.contains("./worker-state:/state\""),
+        "state volume missing"
+    );
+    assert!(worker.contains("RD_TOKEN_FILE: /run/secrets/rd_token"));
+    assert!(worker.contains("WORKER_STATE_DIR: /state"));
+    assert!(
+        !worker.contains("RD_TOKEN:"),
+        "the token value must never be an environment entry"
+    );
+}
+
+#[test]
+fn portal_gets_neither_the_token_nor_the_state_directory() {
+    let portal = service_block("portal");
+    for needle in ["rd_token", "/state", "RD_TOKEN", "worker-state", "secrets"] {
+        assert!(!portal.contains(needle), "portal block mentions {needle}");
+    }
+}
+
+#[test]
+fn gitignore_keeps_the_token_and_the_state_out_of_the_repository() {
+    let ignored: Vec<&str> = include_str!("../.gitignore").lines().collect();
+    for path in ["/secrets/", "/worker-state/"] {
+        assert!(ignored.contains(&path), "{path} is not ignored");
+    }
+}
