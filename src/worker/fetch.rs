@@ -23,6 +23,10 @@ use super::{
     state::StateError,
 };
 
+/// Failed reads of the worker settings in a row that a wait puts up with.
+/// The checks before an add and before a selection allow none.
+const SETTINGS_MISSES: u32 = 3;
+
 /// What a run needs besides the job.
 pub struct Env<'a> {
     pub rd: &'a RdRuntime,
@@ -236,6 +240,9 @@ async fn drive(env: &Env<'_>, job: &Job, trace: &mut Trace) -> Step<Report> {
     }
 
     gate_caps_and_slots(env).await?;
+    // The last look before anything is added: the slot check above is a
+    // network call, and an admin may have switched the worker off meanwhile.
+    require_switch_on(env).await?;
     env.rd.state.record_add().map_err(|error| match error {
         StateError::CapReached => gate("daily_cap", "the daily cap of adds is reached"),
         _ => gate("rd_error", "the counters file could not be written"),
@@ -275,12 +282,15 @@ async fn gate_switch_and_breaker(env: &Env<'_>) -> Step<()> {
     if env.rd.state.breaker_trip(env.rd.state.now()).is_some() {
         return Err(gate("rate_limited", "real-debrid is being left alone"));
     }
+    require_switch_on(env).await
+}
+
+/// Reads the kill switch and stops unless it is plainly on. A read that
+/// fails counts as off: nothing is added or selected on a guess.
+async fn require_switch_on(env: &Env<'_>) -> Step<()> {
     match env.portal.settings().await {
         Ok(settings) if settings.enabled && settings.mode != Mode::DryRun => Ok(()),
-        Ok(_) => Err(gate(
-            "worker_disabled",
-            "the worker was switched off during the run",
-        )),
+        Ok(_) => Err(switched_off()),
         Err(error) => {
             tracing::warn!(%error, "could not re-read the worker settings");
             Err(gate(
@@ -289,6 +299,13 @@ async fn gate_switch_and_breaker(env: &Env<'_>) -> Step<()> {
             ))
         }
     }
+}
+
+fn switched_off() -> Stop {
+    gate(
+        "worker_disabled",
+        "the worker was switched off during the run",
+    )
 }
 
 /// Before an add: today's caps, and a free active slot.
@@ -349,20 +366,30 @@ async fn library_hit(
     ))
 }
 
-/// A look at the world between steps: the kill switch must still be on and
-/// the claim still ours. A portal that cannot be reached for either does not
-/// end the run; the next look will see.
-async fn checkpoint(env: &Env<'_>, job: &Job) -> Step<()> {
+/// A look at the world while waiting: the kill switch must still be on and
+/// the claim still ours. A few failed reads in a row are put up with
+/// (`misses` counts them); one more ends the run.
+async fn checkpoint(env: &Env<'_>, job: &Job, misses: &mut u32) -> Step<()> {
     match env.portal.settings().await {
-        Ok(settings) if settings.enabled && settings.mode != Mode::DryRun => {}
-        Ok(_) => {
-            return Err(gate(
-                "worker_disabled",
-                "the worker was switched off during the run",
-            ));
+        Ok(settings) if settings.enabled && settings.mode != Mode::DryRun => *misses = 0,
+        Ok(_) => return Err(switched_off()),
+        Err(error) => {
+            *misses += 1;
+            tracing::warn!(job = job.id, %error, misses = *misses, "could not re-read the worker settings");
+            if *misses > SETTINGS_MISSES {
+                return Err(gate(
+                    "rd_error",
+                    "could not confirm that the worker is switched on",
+                ));
+            }
         }
-        Err(error) => tracing::warn!(job = job.id, %error, "could not re-read the worker settings"),
     }
+    tell_portal(env, job, Progress::default()).await
+}
+
+/// The look before a file is selected: no failed read is put up with.
+async fn checkpoint_strict(env: &Env<'_>, job: &Job) -> Step<()> {
+    require_switch_on(env).await?;
     tell_portal(env, job, Progress::default()).await
 }
 
@@ -394,6 +421,7 @@ async fn finish(env: &Env<'_>, job: &Job, id: &str, hash: &str) -> Step<Report> 
     let mut chosen: Option<u64> = None;
     let mut selected_at: Option<Instant> = None;
     let mut polls = 0usize;
+    let mut misses = 0u32;
 
     loop {
         let info = env.rd.client.info(id).await.map_err(rd_stop)?;
@@ -409,7 +437,7 @@ async fn finish(env: &Env<'_>, job: &Job, id: &str, hash: &str) -> Step<Report> 
             } else if info.status == TorrentStatus::WaitingFilesSelection
                 && let Some(file_id) = chosen
             {
-                checkpoint(env, job).await?;
+                checkpoint_strict(env, job).await?;
                 env.rd
                     .client
                     .select_files(id, file_id)
@@ -469,7 +497,7 @@ async fn finish(env: &Env<'_>, job: &Job, id: &str, hash: &str) -> Step<Report> 
             _ => {}
         }
 
-        checkpoint(env, job).await?;
+        checkpoint(env, job, &mut misses).await?;
         let steps = &env.timing.rd_poll;
         tokio::time::sleep(steps[polls.min(steps.len() - 1)]).await;
         polls += 1;

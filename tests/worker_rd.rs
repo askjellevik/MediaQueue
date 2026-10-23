@@ -1115,64 +1115,6 @@ async fn a_run_whose_claim_is_gone_deletes_a_torrent_the_portal_no_longer_names(
     assert_eq!(rd_calls(&rig, "DELETE", "/torrents/delete/").await, 1);
 }
 
-#[tokio::test]
-async fn switching_the_worker_off_between_add_and_select_deletes_the_torrent() {
-    let mut rig = rig_with(None, slow_timing()).await;
-    mount_roomy(&rig.rd).await;
-    let waiting = info(
-        "waiting_files_selection",
-        vec![file(1, MOVIE, 4 * GIB, false)],
-        false,
-    );
-    // The first look is slow, which leaves the test time to flip the switch.
-    Mock::given(method("GET"))
-        .and(path(format!("/torrents/info/{RD_ID}")))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(waiting)
-                .set_delay(Duration::from_millis(600)),
-        )
-        .mount(&rig.rd)
-        .await;
-    Mock::given(method("POST"))
-        .and(path(format!("/torrents/selectFiles/{RD_ID}")))
-        .respond_with(ResponseTemplate::new(204))
-        .mount(&rig.rd)
-        .await;
-    mount_delete(&rig.rd, RD_ID).await;
-    let job = picked_job(&rig).await;
-
-    let (cycle, ()) = tokio::join!(
-        rig.worker.as_mut().unwrap().run_once(Instant::now()),
-        async {
-            wait_until(|| async { job_row(&rig.app.pool, job).await.rd_torrent_id.is_some() })
-                .await;
-            let response = admin_call(
-                &rig.app,
-                &rig.admin,
-                "PUT",
-                "/api/admin/worker",
-                r#"{"enabled":false}"#,
-            )
-            .await;
-            assert_eq!(response.status, 200, "{}", response.body);
-        }
-    );
-
-    assert_eq!(cycle.unwrap(), Cycle::Worked);
-    let row = job_row(&rig.app.pool, job).await;
-    assert_eq!(
-        (row.state.as_str(), row.reason.as_deref()),
-        ("needs_pick", Some("worker_disabled"))
-    );
-    assert_eq!(rd_calls(&rig, "POST", "/torrents/selectFiles/").await, 0);
-    assert_eq!(
-        rd_calls(&rig, "DELETE", &format!("/torrents/delete/{RD_ID}")).await,
-        1
-    );
-    assert!(!rig.state.owns(RD_ID));
-}
-
 /// The file list, then Real-Debrid asks us to slow down.
 async fn mount_rate_limit_on_the_poll(rd: &MockServer) {
     let waiting = info(
@@ -1350,15 +1292,28 @@ async fn stub_portal(
     alert_status: u16,
     untrusted_file: bool,
 ) -> StubPortal {
+    stub_portal_with(clock, alert_status, untrusted_file, true).await
+}
+
+/// `settings_on` mounts a settings answer that is always "on"; a test that
+/// scripts the answers passes false and mounts its own.
+async fn stub_portal_with(
+    clock: Option<Arc<dyn Clock>>,
+    alert_status: u16,
+    untrusted_file: bool,
+    settings_on: bool,
+) -> StubPortal {
     let portal = MockServer::start().await;
-    mount_json(
-        &portal,
-        "GET",
-        "/internal/settings",
-        200,
-        json!({"enabled": true, "mode": "assisted"}),
-    )
-    .await;
+    if settings_on {
+        mount_json(
+            &portal,
+            "GET",
+            "/internal/settings",
+            200,
+            json!({"enabled": true, "mode": "assisted"}),
+        )
+        .await;
+    }
     mount_json(&portal, "POST", "/internal/jobs/claim", 200, claim_json()).await;
     mount_json(
         &portal,
@@ -1567,4 +1522,212 @@ async fn a_failing_alert_call_changes_nothing_about_the_run() {
     assert_eq!(reports.len(), 1);
     assert_eq!(reports[0]["reason"], "rate_limited");
     assert_eq!(mp.alerts().await, ["breaker_open"]);
+}
+
+// ---------------------------------------------------------------------
+// The kill switch, read in a script (no timing involved)
+// ---------------------------------------------------------------------
+
+#[derive(Clone, Copy)]
+enum Switch {
+    On,
+    Off,
+    Down,
+}
+
+/// The portal's settings answers in order: each step for its number of
+/// reads, the last one for every read after that.
+async fn script_settings(portal: &MockServer, steps: &[(Switch, u64)]) {
+    for (i, (answer, reads)) in steps.iter().enumerate() {
+        let response = match answer {
+            Switch::On => ResponseTemplate::new(200)
+                .set_body_json(json!({"enabled": true, "mode": "assisted"})),
+            Switch::Off => ResponseTemplate::new(200)
+                .set_body_json(json!({"enabled": false, "mode": "assisted"})),
+            Switch::Down => ResponseTemplate::new(500),
+        };
+        let mock = Mock::given(method("GET"))
+            .and(path("/internal/settings"))
+            .respond_with(response);
+        if i + 1 < steps.len() {
+            mock.up_to_n_times(*reads).mount(portal).await;
+        } else {
+            mock.mount(portal).await;
+        }
+    }
+}
+
+/// One file list, then `downloading` for `waits` looks, then done.
+async fn mount_slow_torrent(rd: &MockServer, waits: u64) {
+    let waiting = info(
+        "waiting_files_selection",
+        vec![file(1, MOVIE, 4 * GIB, false)],
+        false,
+    );
+    Mock::given(method("GET"))
+        .and(path(format!("/torrents/info/{RD_ID}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(waiting))
+        .up_to_n_times(1)
+        .mount(rd)
+        .await;
+    let downloading = info("downloading", vec![file(1, MOVIE, 4 * GIB, true)], false);
+    if waits > 0 {
+        Mock::given(method("GET"))
+            .and(path(format!("/torrents/info/{RD_ID}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(downloading))
+            .up_to_n_times(waits)
+            .mount(rd)
+            .await;
+    }
+    let done = info("downloaded", vec![file(1, MOVIE, 4 * GIB, true)], true);
+    mount_json(rd, "GET", &format!("/torrents/info/{RD_ID}"), 200, done).await;
+    Mock::given(method("POST"))
+        .and(path(format!("/torrents/selectFiles/{RD_ID}")))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(rd)
+        .await;
+    mount_delete(rd, RD_ID).await;
+}
+
+async fn last_report(mp: &StubPortal) -> Value {
+    mp.posted("/internal/jobs/1/report")
+        .await
+        .pop()
+        .expect("a report was sent")
+}
+
+// Reads of the settings in one picked run: the loop (1), the gate at the
+// start (2), the look before the add (3), the look before the selection
+// (4), then one per poll.
+
+#[tokio::test]
+async fn a_switch_turned_off_just_before_the_add_adds_nothing() {
+    let mut mp = stub_portal_with(None, 200, false, false).await;
+    script_settings(&mp.portal, &[(Switch::On, 2), (Switch::Off, 0)]).await;
+    mount_roomy(&mp.rd).await;
+
+    assert_eq!(mp.run().await, Cycle::Worked);
+
+    let report = last_report(&mp).await;
+    assert_eq!(report["reason"], "worker_disabled");
+    assert_eq!(rd_calls_on(&mp.rd, "POST", "/torrents/addMagnet").await, 0);
+    assert_eq!(mp.state.adds_left(), 50, "no add was counted");
+}
+
+#[tokio::test]
+async fn a_switch_turned_off_between_the_add_and_the_selection_deletes_the_torrent() {
+    let mut mp = stub_portal_with(None, 200, false, false).await;
+    script_settings(&mp.portal, &[(Switch::On, 3), (Switch::Off, 0)]).await;
+    mount_roomy(&mp.rd).await;
+    mount_slow_torrent(&mp.rd, 0).await;
+
+    assert_eq!(mp.run().await, Cycle::Worked);
+
+    assert_eq!(last_report(&mp).await["reason"], "worker_disabled");
+    assert_eq!(rd_calls_on(&mp.rd, "POST", "/torrents/addMagnet").await, 1);
+    assert_eq!(
+        rd_calls_on(&mp.rd, "POST", "/torrents/selectFiles/").await,
+        0
+    );
+    assert_eq!(
+        rd_calls_on(&mp.rd, "DELETE", &format!("/torrents/delete/{RD_ID}")).await,
+        1
+    );
+    assert!(!mp.state.owns(RD_ID));
+}
+
+#[tokio::test]
+async fn an_unreadable_switch_before_the_selection_fails_closed() {
+    let mut mp = stub_portal_with(None, 200, false, false).await;
+    script_settings(
+        &mp.portal,
+        &[(Switch::On, 3), (Switch::Down, 1), (Switch::On, 0)],
+    )
+    .await;
+    mount_roomy(&mp.rd).await;
+    mount_slow_torrent(&mp.rd, 0).await;
+
+    assert_eq!(mp.run().await, Cycle::Worked);
+
+    assert_eq!(last_report(&mp).await["reason"], "rd_error");
+    assert_eq!(
+        rd_calls_on(&mp.rd, "POST", "/torrents/selectFiles/").await,
+        0
+    );
+    assert_eq!(
+        rd_calls_on(&mp.rd, "DELETE", &format!("/torrents/delete/{RD_ID}")).await,
+        1
+    );
+}
+
+#[tokio::test]
+async fn three_failed_reads_in_a_row_while_waiting_are_put_up_with() {
+    let mut mp = stub_portal_with(None, 200, false, false).await;
+    // Reads 5 to 7 fail, 8 and on work.
+    script_settings(
+        &mp.portal,
+        &[(Switch::On, 4), (Switch::Down, 3), (Switch::On, 0)],
+    )
+    .await;
+    mount_roomy(&mp.rd).await;
+    mount_slow_torrent(&mp.rd, 3).await;
+
+    assert_eq!(mp.run().await, Cycle::Worked);
+
+    let report = last_report(&mp).await;
+    assert_eq!(report["state"], "done", "{report}");
+    assert_eq!(rd_calls_on(&mp.rd, "DELETE", "/torrents/delete/").await, 0);
+}
+
+#[tokio::test]
+async fn a_fourth_failed_read_in_a_row_while_waiting_ends_the_run_and_deletes_the_torrent() {
+    let mut mp = stub_portal_with(None, 200, false, false).await;
+    script_settings(
+        &mp.portal,
+        &[(Switch::On, 4), (Switch::Down, 4), (Switch::On, 0)],
+    )
+    .await;
+    mount_roomy(&mp.rd).await;
+    mount_slow_torrent(&mp.rd, 20).await;
+
+    assert_eq!(mp.run().await, Cycle::Worked);
+
+    assert_eq!(last_report(&mp).await["reason"], "rd_error");
+    assert_eq!(
+        rd_calls_on(&mp.rd, "DELETE", &format!("/torrents/delete/{RD_ID}")).await,
+        1
+    );
+    assert!(!mp.state.owns(RD_ID));
+}
+
+#[tokio::test]
+async fn a_good_read_resets_the_count_of_failed_ones() {
+    let mut mp = stub_portal_with(None, 200, false, false).await;
+    // 3 failures, one good read, 3 failures again: never four in a row.
+    script_settings(
+        &mp.portal,
+        &[
+            (Switch::On, 4),
+            (Switch::Down, 3),
+            (Switch::On, 1),
+            (Switch::Down, 3),
+            (Switch::On, 0),
+        ],
+    )
+    .await;
+    mount_roomy(&mp.rd).await;
+    mount_slow_torrent(&mp.rd, 6).await;
+
+    assert_eq!(mp.run().await, Cycle::Worked);
+
+    assert_eq!(last_report(&mp).await["state"], "done");
+}
+
+async fn rd_calls_on(rd: &MockServer, verb: &str, route_prefix: &str) -> usize {
+    rd.received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.method.as_str() == verb && r.url.path().starts_with(route_prefix))
+        .count()
 }
