@@ -2,7 +2,7 @@ services:
   portal:
     image: ghcr.io/askjellevik/mediaqueue:latest   # built for linux/arm64 by GitHub Actions
     restart: unless-stopped
-    env_file: .env
+    env_file: .env   # also AUTO_FETCH_PER_MEMBER_DAY (default 3): automatic jobs per opted-in member and UTC day, 0 = none
     environment:
       INTERNAL_LISTEN: "0.0.0.0:8001"   # wildcard bind only where the dedicated network exists
     networks: [workernet]

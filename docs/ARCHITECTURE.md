@@ -148,6 +148,7 @@ ignored.
 | `CF_ACCESS_ENABLED`, `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD`, `CF_ACCESS_CERTS_URL` | off | Cloudflare Access check (needs the `cf-access` build feature). |
 | `INTERNAL_LISTEN`, `INTERNAL_TOKEN` | off | Address of the worker listener (must differ from `BIND_ADDR`) and its bearer token, at least 32 bytes. Both or neither: a token without an address is a startup error. |
 | `WORKER_ENABLED`, `WORKER_MODE` | unset | Pin the kill switch (`true` or `false`) and the mode (`dry_run`, `assisted`, `auto`) so the admin toggle cannot change them. |
+| `AUTO_FETCH_PER_MEMBER_DAY` | `3` | Automatic jobs the portal's sweep may create per opted-in member and UTC day (counted from the jobs' creation time); `0` switches the sweep off. |
 | `RD_TOKEN`, `RD_TOKEN_FILE` | must be unset | The portal refuses to start if either is set: the Real-Debrid token belongs to the worker service only. |
 | `TRUSTED_PROXY_CIDRS` | loopback and `172.16.0.0/12` | Proxies trusted to send `X-Real-IP`. |
 | `RUST_LOG` | `info` | Log filter. |
