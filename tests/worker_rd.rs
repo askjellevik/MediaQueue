@@ -97,6 +97,8 @@ fn timing() -> Timing {
         rd_conversion: Duration::from_millis(300),
         rd_picked_wait: Duration::from_millis(200),
         rd_picked_deadline: Duration::from_secs(10),
+        rd_auto_wait: Duration::from_millis(200),
+        rd_auto_deadline: Duration::from_secs(10),
     }
 }
 
@@ -209,6 +211,11 @@ async fn admin_call(
 
 /// A queued job for a new pending request; returns the job id.
 async fn queue_job(rig: &Rig, tmdb_id: i64) -> i64 {
+    queue_job_for(rig, tmdb_id, false).await
+}
+
+/// [`queue_job`] for a request that is, or is not, for a PRO profile.
+async fn queue_job_for(rig: &Rig, tmdb_id: i64, pro: bool) -> i64 {
     let app = &rig.app;
     let member = match sqlx::query_scalar::<_, i64>("SELECT id FROM members WHERE name = 'Alice'")
         .fetch_optional(&app.pool)
@@ -226,10 +233,11 @@ async fn queue_job(rig: &Rig, tmdb_id: i64) -> i64 {
     let request: i64 = sqlx::query_scalar(
         "INSERT INTO requests (tmdb_id, media_type, imdb_id, title, year, infuse_pro, status,
                                requested_by, created_at, status_changed_at)
-         VALUES (?, 'movie', ?, 'Example Movie', 1994, 0, 'pending', ?, ?, ?) RETURNING id",
+         VALUES (?, 'movie', ?, 'Example Movie', 1994, ?, 'pending', ?, ?, ?) RETURNING id",
     )
     .bind(tmdb_id)
     .bind(IMDB)
+    .bind(pro)
     .bind(member)
     .bind(now)
     .bind(now)
@@ -331,15 +339,19 @@ fn file(id: u64, path: &str, bytes: u64, selected: bool) -> Value {
 }
 
 fn info(status: &str, files: Vec<Value>, links: bool) -> Value {
+    info_for(RD_ID, HASH, status, files, links)
+}
+
+fn info_for(id: &str, hash: &str, status: &str, files: Vec<Value>, links: bool) -> Value {
     let selected_bytes: u64 = files
         .iter()
         .filter(|f| f["selected"] == 1)
         .map(|f| f["bytes"].as_u64().unwrap())
         .sum();
     json!({
-        "id": RD_ID,
+        "id": id,
         "filename": "Example.Movie.1994.1080p.WEB-DL.AAC",
-        "hash": HASH,
+        "hash": hash,
         "bytes": selected_bytes,
         "original_bytes": 5 * GIB,
         "progress": if status == "downloaded" { 100 } else { 40 },
@@ -1204,26 +1216,430 @@ async fn an_unpicked_job_in_assisted_mode_waits_for_a_pick_with_the_shortlist() 
     assert!(rig.rd.received_requests().await.unwrap().is_empty());
 }
 
-#[tokio::test]
-async fn auto_mode_behaves_like_assisted_for_now() {
-    let mut rig = rig().await;
-    admin_call(
+// ---------------------------------------------------------------------
+// The auto run
+// ---------------------------------------------------------------------
+
+/// A hash that is one letter 40 times, so a test reads which is which.
+fn hash_of(letter: char) -> String {
+    letter.to_string().repeat(40)
+}
+
+/// The release name every auto test uses: 1080p BluRay x264 with AAC audio,
+/// which a free profile plays, so its badge is `yes`.
+const PLAYS: &str = "Example.Movie.1994.1080p.BluRay.x264.AAC";
+/// The same release without an audio tag: a free profile cannot tell.
+const UNTAGGED: &str = "Example.Movie.1994.1080p.BluRay.x264";
+
+fn stream(hash: &str, release: &str, seeders: u32, size: &str) -> Value {
+    json!({
+        "name": "Torrentio\n1080p",
+        "title": format!("{release}\n\u{1F464} {seeders} \u{1F4BE} {size} \u{2699}\u{FE0F} ExampleSite"),
+        "infoHash": hash,
+        "fileIdx": 0,
+        "behaviorHints": { "filename": format!("{release}.mkv") },
+    })
+}
+
+async fn serve_streams(stub: &MockServer, streams: Vec<Value>) {
+    Mock::given(method("GET"))
+        .and(path(format!("/stream/movie/{IMDB}.json")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "streams": streams })))
+        .mount(stub)
+        .await;
+}
+
+async fn set_mode(rig: &Rig, mode: &str) {
+    let response = admin_call(
         &rig.app,
         &rig.admin,
         "PUT",
         "/api/admin/worker",
-        r#"{"mode":"auto"}"#,
+        &format!(r#"{{"mode":"{mode}"}}"#),
     )
     .await;
-    serve_fixture(&rig.stub).await;
+    assert_eq!(response.status, 200, "{}", response.body);
+}
+
+/// Free slots and an empty library.
+async fn mount_free_slots(rd: &MockServer) {
+    mount_json(
+        rd,
+        "GET",
+        "/torrents/activeCount",
+        200,
+        json!({"nb": 1, "limit": 25}),
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path("/torrents"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(rd)
+        .await;
+}
+
+/// The answers to the first, second, ... `addMagnet`.
+async fn mount_adds(rd: &MockServer, answers: Vec<ResponseTemplate>) {
+    for answer in answers {
+        Mock::given(method("POST"))
+            .and(path("/torrents/addMagnet"))
+            .respond_with(answer)
+            .up_to_n_times(1)
+            .mount(rd)
+            .await;
+    }
+}
+
+fn added(id: &str) -> ResponseTemplate {
+    ResponseTemplate::new(201)
+        .set_body_json(json!({"id": id, "uri": "https://example.invalid/t/1"}))
+}
+
+fn refused() -> ResponseTemplate {
+    ResponseTemplate::new(403).set_body_json(json!({"error": "infringing_file", "error_code": 35}))
+}
+
+/// A torrent that is cached: the file list, then done once its file is
+/// selected. `movie_bytes` is what Real-Debrid says the video weighs.
+async fn mount_cached_for(rd: &MockServer, id: &str, hash: &str, movie_bytes: u64) {
+    let waiting = info_for(
+        id,
+        hash,
+        "waiting_files_selection",
+        vec![file(1, MOVIE, movie_bytes, false)],
+        false,
+    );
+    Mock::given(method("GET"))
+        .and(path(format!("/torrents/info/{id}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(waiting))
+        .up_to_n_times(1)
+        .mount(rd)
+        .await;
+    let done = info_for(
+        id,
+        hash,
+        "downloaded",
+        vec![file(1, MOVIE, movie_bytes, true)],
+        true,
+    );
+    mount_json(rd, "GET", &format!("/torrents/info/{id}"), 200, done).await;
+    Mock::given(method("POST"))
+        .and(path(format!("/torrents/selectFiles/{id}")))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(rd)
+        .await;
+    mount_delete(rd, id).await;
+}
+
+/// The file list, then a download that never finishes.
+async fn mount_stalled_for(rd: &MockServer, id: &str, hash: &str) {
+    let waiting = info_for(
+        id,
+        hash,
+        "waiting_files_selection",
+        vec![file(1, MOVIE, 4 * GIB, false)],
+        false,
+    );
+    Mock::given(method("GET"))
+        .and(path(format!("/torrents/info/{id}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(waiting))
+        .up_to_n_times(1)
+        .mount(rd)
+        .await;
+    let slow = info_for(
+        id,
+        hash,
+        "downloading",
+        vec![file(1, MOVIE, 4 * GIB, true)],
+        false,
+    );
+    mount_json(rd, "GET", &format!("/torrents/info/{id}"), 200, slow).await;
+    Mock::given(method("POST"))
+        .and(path(format!("/torrents/selectFiles/{id}")))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(rd)
+        .await;
+    mount_delete(rd, id).await;
+}
+
+/// The hashes `addMagnet` was called with, in order.
+async fn added_hashes(rig: &Rig) -> Vec<String> {
+    rig.rd
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path() == "/torrents/addMagnet")
+        .map(|r| {
+            let body = String::from_utf8_lossy(&r.body).into_owned();
+            body[body.len() - 40..].to_string()
+        })
+        .collect()
+}
+
+/// No hash went to `addMagnet` twice.
+fn assert_added_once_each(hashes: &[String]) {
+    let distinct: std::collections::HashSet<_> = hashes.iter().collect();
+    assert_eq!(distinct.len(), hashes.len(), "added twice: {hashes:?}");
+}
+
+async fn blocked_of(rig: &Rig, job: i64) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT b.infohash FROM blocked_hashes b JOIN fetch_jobs j ON j.request_id = b.request_id
+         WHERE j.id = ? ORDER BY b.infohash",
+    )
+    .bind(job)
+    .fetch_all(&rig.app.pool)
+    .await
+    .unwrap()
+}
+
+/// Three releases the free profile plays, best first (more seeders, all in
+/// the size sweet spot), and a near-identical twin of the first.
+fn three_and_a_twin() -> Vec<Value> {
+    vec![
+        stream(&hash_of('1'), PLAYS, 200, "8.0 GB"),
+        stream(&hash_of('9'), &format!("{PLAYS}-OTHER"), 20, "8.05 GB"),
+        stream(&hash_of('2'), PLAYS, 150, "9.0 GB"),
+        stream(&hash_of('3'), PLAYS, 100, "10.0 GB"),
+    ]
+}
+
+#[tokio::test]
+async fn a_refused_first_candidate_falls_through_to_the_second_and_is_blocked() {
+    let mut rig = rig().await;
+    set_mode(&rig, "auto").await;
+    serve_streams(&rig.stub, three_and_a_twin()).await;
+    mount_free_slots(&rig.rd).await;
+    mount_adds(&rig.rd, vec![refused(), added("SECOND")]).await;
+    mount_cached_for(&rig.rd, "SECOND", &hash_of('2'), 4 * GIB).await;
+    let job = queue_job(&rig, 1).await;
+
+    assert_eq!(run(&mut rig).await, Cycle::Worked);
+
+    let row = job_row(&rig.app.pool, job).await;
+    assert_eq!(
+        (
+            row.state.as_str(),
+            row.rd_torrent_id.as_deref(),
+            row.reason.as_deref()
+        ),
+        ("done", Some("SECOND"), None),
+        "{row:?}"
+    );
+    assert_eq!(row.chosen_infohash, Some(hash_of('2')));
+    assert_eq!(request_status(&rig.app.pool, job).await, "added");
+    assert_eq!(blocked_of(&rig, job).await, [hash_of('1')]);
+    // The next planned candidate, not the first one's near-duplicate.
+    let adds = added_hashes(&rig).await;
+    assert_eq!(adds, [hash_of('1'), hash_of('2')]);
+    assert_added_once_each(&adds);
+    let saved = counters(&rig);
+    assert_eq!(
+        (saved["adds"].as_u64(), saved["refusals"].as_u64()),
+        (Some(1), Some(1)),
+        "the refused add is given back"
+    );
+    assert!(rig.state.owns("SECOND"));
+}
+
+#[tokio::test]
+async fn three_refused_candidates_send_the_job_back_with_all_three_blocked() {
+    let mut rig = rig().await;
+    set_mode(&rig, "auto").await;
+    serve_streams(&rig.stub, three_and_a_twin()).await;
+    mount_free_slots(&rig.rd).await;
+    mount_adds(&rig.rd, vec![refused(), refused(), refused(), refused()]).await;
     let job = queue_job(&rig, 1).await;
 
     run(&mut rig).await;
 
     let row = job_row(&rig.app.pool, job).await;
-    assert_eq!(row.reason.as_deref(), Some("no_clear_choice"));
+    assert_eq!(
+        (row.state.as_str(), row.reason.as_deref()),
+        ("needs_pick", Some("rd_refused")),
+        "{row:?}"
+    );
+    assert!(
+        row.last_error
+            .as_deref()
+            .is_some_and(|e| e.starts_with("3 of 3 tried")),
+        "{row:?}"
+    );
+    assert!(
+        row.candidates.is_some(),
+        "the shortlist is kept for the admin"
+    );
+    assert_eq!(row.rd_torrent_id, None);
+    assert_eq!(
+        blocked_of(&rig, job).await,
+        [hash_of('1'), hash_of('2'), hash_of('3')]
+    );
+    let adds = added_hashes(&rig).await;
+    assert_eq!(adds, [hash_of('1'), hash_of('2'), hash_of('3')]);
+    assert_added_once_each(&adds);
+    assert_eq!(request_status(&rig.app.pool, job).await, "pending");
 }
 
+#[tokio::test]
+async fn a_stalled_first_candidate_is_deleted_not_blocked_and_the_second_is_used() {
+    let mut rig = rig().await;
+    set_mode(&rig, "auto").await;
+    serve_streams(&rig.stub, three_and_a_twin()).await;
+    mount_free_slots(&rig.rd).await;
+    mount_adds(&rig.rd, vec![added("FIRST"), added("SECOND")]).await;
+    mount_stalled_for(&rig.rd, "FIRST", &hash_of('1')).await;
+    mount_cached_for(&rig.rd, "SECOND", &hash_of('2'), 4 * GIB).await;
+    let job = queue_job(&rig, 1).await;
+
+    run(&mut rig).await;
+
+    let row = job_row(&rig.app.pool, job).await;
+    assert_eq!(
+        (row.state.as_str(), row.rd_torrent_id.as_deref()),
+        ("done", Some("SECOND")),
+        "{row:?}"
+    );
+    assert_eq!(row.chosen_infohash, Some(hash_of('2')));
+    assert_eq!(row.uncached_adds, 1);
+    assert_eq!(rd_calls(&rig, "DELETE", "/torrents/delete/FIRST").await, 1);
+    assert_eq!(rd_calls(&rig, "DELETE", "/torrents/delete/SECOND").await, 0);
+    assert!(
+        blocked_of(&rig, job).await.is_empty(),
+        "a timeout blocks nothing"
+    );
+    assert!(!rig.state.owns("FIRST"));
+    let saved = counters(&rig);
+    assert_eq!(
+        (saved["adds"].as_u64(), saved["uncached"].as_u64()),
+        (Some(2), Some(1))
+    );
+    assert_added_once_each(&added_hashes(&rig).await);
+}
+
+#[tokio::test]
+async fn a_free_job_with_only_untagged_releases_waits_for_a_pick_and_never_calls_real_debrid() {
+    let mut rig = rig().await;
+    set_mode(&rig, "auto").await;
+    serve_streams(
+        &rig.stub,
+        vec![
+            stream(&hash_of('1'), UNTAGGED, 200, "8.0 GB"),
+            stream(&hash_of('2'), UNTAGGED, 150, "9.0 GB"),
+        ],
+    )
+    .await;
+    let job = queue_job(&rig, 1).await;
+
+    run(&mut rig).await;
+
+    let row = job_row(&rig.app.pool, job).await;
+    assert_eq!(
+        (row.state.as_str(), row.reason.as_deref()),
+        ("needs_pick", Some("no_clear_choice")),
+        "{row:?}"
+    );
+    let shortlist: Value = serde_json::from_str(row.candidates.as_deref().unwrap()).unwrap();
+    assert_eq!(shortlist.as_array().map(Vec::len), Some(2));
+    assert!(
+        rig.rd.received_requests().await.unwrap().is_empty(),
+        "no call to real-debrid"
+    );
+    assert!(
+        !rig.state_dir.join("counters.json").exists(),
+        "nothing was counted"
+    );
+}
+
+#[tokio::test]
+async fn a_pro_job_ignores_the_badge() {
+    let mut rig = rig().await;
+    set_mode(&rig, "auto").await;
+    serve_streams(
+        &rig.stub,
+        vec![stream(&hash_of('1'), UNTAGGED, 200, "8.0 GB")],
+    )
+    .await;
+    mount_free_slots(&rig.rd).await;
+    mount_adds(&rig.rd, vec![added("FIRST")]).await;
+    mount_cached_for(&rig.rd, "FIRST", &hash_of('1'), 4 * GIB).await;
+    let job = queue_job_for(&rig, 1, true).await;
+
+    run(&mut rig).await;
+
+    let row = job_row(&rig.app.pool, job).await;
+    assert_eq!(
+        (row.state.as_str(), row.rd_torrent_id.as_deref()),
+        ("done", Some("FIRST")),
+        "{row:?}"
+    );
+    assert_eq!(added_hashes(&rig).await, [hash_of('1')]);
+}
+
+#[tokio::test]
+async fn a_candidate_over_15_gb_is_skipped_or_fails_the_check_for_free_and_pro() {
+    for pro in [false, true] {
+        let mut rig = rig().await;
+        set_mode(&rig, "auto").await;
+        serve_streams(
+            &rig.stub,
+            vec![
+                // Too big by the source's own size: never added.
+                stream(&hash_of('1'), PLAYS, 300, "16.0 GB"),
+                // Fine by the source, 16 GiB by Real-Debrid's file list.
+                stream(&hash_of('2'), PLAYS, 200, "8.0 GB"),
+                stream(&hash_of('3'), PLAYS, 150, "9.0 GB"),
+            ],
+        )
+        .await;
+        mount_free_slots(&rig.rd).await;
+        mount_adds(&rig.rd, vec![added("BIG"), added("FINE")]).await;
+        mount_cached_for(&rig.rd, "BIG", &hash_of('2'), 16 * GIB).await;
+        mount_cached_for(&rig.rd, "FINE", &hash_of('3'), 4 * GIB).await;
+        let job = queue_job_for(&rig, 1, pro).await;
+
+        run(&mut rig).await;
+
+        let row = job_row(&rig.app.pool, job).await;
+        assert_eq!(
+            (row.state.as_str(), row.rd_torrent_id.as_deref()),
+            ("done", Some("FINE")),
+            "pro={pro} {row:?}"
+        );
+        let adds = added_hashes(&rig).await;
+        assert_eq!(adds, [hash_of('2'), hash_of('3')], "pro={pro}");
+        assert_added_once_each(&adds);
+        assert_eq!(rd_calls(&rig, "DELETE", "/torrents/delete/BIG").await, 1);
+        assert!(blocked_of(&rig, job).await.is_empty(), "pro={pro}");
+    }
+}
+
+#[tokio::test]
+async fn the_uncached_cap_reached_mid_job_ends_in_daily_cap_without_another_add() {
+    let mut rig = rig().await;
+    set_mode(&rig, "auto").await;
+    serve_streams(&rig.stub, three_and_a_twin()).await;
+    mount_free_slots(&rig.rd).await;
+    mount_adds(&rig.rd, vec![added("FIRST"), added("SECOND")]).await;
+    mount_stalled_for(&rig.rd, "FIRST", &hash_of('1')).await;
+    mount_cached_for(&rig.rd, "SECOND", &hash_of('2'), 4 * GIB).await;
+    // One uncached add already today; the cap is two.
+    rig.state.record_uncached().unwrap();
+    let job = queue_job(&rig, 1).await;
+
+    run(&mut rig).await;
+
+    let row = job_row(&rig.app.pool, job).await;
+    assert_eq!(
+        (row.state.as_str(), row.reason.as_deref()),
+        ("needs_pick", Some("daily_cap")),
+        "{row:?}"
+    );
+    assert_eq!(added_hashes(&rig).await, [hash_of('1')]);
+    assert_eq!(rd_calls(&rig, "DELETE", "/torrents/delete/FIRST").await, 1);
+    assert!(row.candidates.is_some());
+    assert!(blocked_of(&rig, job).await.is_empty());
+}
 #[tokio::test]
 async fn an_owned_removal_is_deleted_and_cleared() {
     let mut rig = rig().await;

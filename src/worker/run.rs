@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use serde_json::json;
+use serde_json::{Map, Value, json};
 use thiserror::Error;
 use tokio::sync::watch;
 
@@ -63,6 +63,11 @@ pub struct Timing {
     pub rd_picked_wait: Duration,
     /// The whole run of a picked job, well under the portal's reclaim.
     pub rd_picked_deadline: Duration,
+    /// How long a candidate the worker chose may take after its file was
+    /// selected: a cached torrent is ready within seconds.
+    pub rd_auto_wait: Duration,
+    /// The whole run of an auto job, all its candidates together.
+    pub rd_auto_deadline: Duration,
 }
 
 impl Default for Timing {
@@ -78,6 +83,8 @@ impl Default for Timing {
             rd_conversion: Duration::from_secs(60),
             rd_picked_wait: Duration::from_secs(10 * 60),
             rd_picked_deadline: Duration::from_secs(15 * 60),
+            rd_auto_wait: Duration::from_secs(90),
+            rd_auto_deadline: Duration::from_secs(8 * 60),
         }
     }
 }
@@ -350,7 +357,7 @@ impl<S: CandidateSource> Worker<S> {
         let mut stop = self.shutdown.clone();
         let run = rd::within_job(job.id, async {
             let report = if mode != Mode::DryRun && self.rd.is_some() {
-                self.report_rd(&job, now).await
+                self.report_rd(&job, now, mode).await
             } else {
                 Some(self.report_for(&job, now, mode).await)
             };
@@ -393,14 +400,27 @@ impl<S: CandidateSource> Worker<S> {
             };
         }
         // Nothing picked: the shortlist goes to the admin. In dry-run that
-        // is the whole point; in the Real-Debrid modes it is the fallback
-        // until the auto rule decides.
+        // is the whole point; in assisted mode it is where the job waits for
+        // a person.
         let pick_reason = if dry_run {
             "dry_run"
         } else {
             "no_clear_choice"
         };
+        let evaluation = match self.search(job, now).await {
+            Ok(Searched::Nothing(reason)) => return bare_needs_pick(reason),
+            Ok(Searched::Ranked(evaluation)) => evaluation,
+            Err(report) => return report,
+        };
+        Report::needs_pick(
+            shortlist_maps(&evaluation),
+            evaluation.top_infohash,
+            pick_reason,
+        )
+    }
 
+    /// Asks the source for the title and ranks what came back.
+    async fn search(&mut self, job: &Job, now: Instant) -> Result<Searched, Report> {
         let began = Instant::now();
         let raw = match self.fetch(&job.imdb_id).await {
             Ok(raw) => {
@@ -424,7 +444,7 @@ impl<S: CandidateSource> Worker<S> {
                         format!("candidate source sent an unusable response: {text}")
                     }
                 };
-                return Report::failed(Some("source_unreachable"), &text);
+                return Err(Report::failed(Some("source_unreachable"), &text));
             }
         };
 
@@ -441,31 +461,18 @@ impl<S: CandidateSource> Worker<S> {
         let evaluation = evaluate(&spec, &raw, &self.rank);
         log_run(job, &evaluation);
 
-        if raw.is_empty() {
-            bare_needs_pick("no_candidates")
+        Ok(if raw.is_empty() {
+            Searched::Nothing("no_candidates")
         } else if evaluation.shortlist.is_empty() {
-            bare_needs_pick("no_safe_candidate")
+            Searched::Nothing("no_safe_candidate")
         } else {
-            let survivors = json!(evaluation.survivors);
-            Report::needs_pick(
-                evaluation
-                    .shortlist
-                    .iter()
-                    .map(|candidate| {
-                        let mut map = candidate.to_report_map();
-                        map.insert("survivors".into(), survivors.clone());
-                        map
-                    })
-                    .collect(),
-                evaluation.top_infohash,
-                pick_reason,
-            )
-        }
+            Searched::Ranked(evaluation)
+        })
     }
 
     /// The Real-Debrid modes. Returns `None` when the claim is gone and
     /// there is nothing to report.
-    async fn report_rd(&mut self, job: &Job, now: Instant) -> Option<Report> {
+    async fn report_rd(&mut self, job: &Job, now: Instant, mode: Mode) -> Option<Report> {
         if let Some(report) = refuse_unsupported(job) {
             return Some(report);
         }
@@ -476,10 +483,14 @@ impl<S: CandidateSource> Worker<S> {
             rd,
             portal: &self.portal,
             timing: &self.timing,
+            auto_max_bytes: self.rank.auto_max_bytes,
         };
         fetch::handle_removal(&env, job).await;
 
         if !(job.picked && job.chosen_infohash.is_some()) {
+            if mode == Mode::Auto {
+                return self.report_auto(job, now).await;
+            }
             return Some(self.report_for(job, now, Mode::Assisted).await);
         }
 
@@ -504,6 +515,65 @@ impl<S: CandidateSource> Worker<S> {
             self.note_rd_run(report).await;
         }
         report
+    }
+
+    /// An unpicked job in auto mode: search, rank, then let the auto rule
+    /// walk the planned candidates. A chosen hash the job may carry from an
+    /// earlier run is a hint at most; the plan decides. Every report that
+    /// sends the job back to the admin carries the shortlist.
+    async fn report_auto(&mut self, job: &Job, now: Instant) -> Option<Report> {
+        let searched = match tokio::time::timeout(RUN_DEADLINE, self.search(job, now)).await {
+            Ok(Ok(searched)) => searched,
+            Ok(Err(report)) => return Some(report),
+            Err(_) => {
+                self.stats.errors += 1;
+                tracing::warn!(job = job.id, "search exceeded 5 minutes");
+                fetch::run_ended(job.id, "timeout");
+                return Some(Report::failed(Some("timeout"), "run exceeded 5 minutes"));
+            }
+        };
+        let evaluation = match searched {
+            Searched::Nothing(reason) => return Some(bare_needs_pick(reason)),
+            Searched::Ranked(evaluation) => evaluation,
+        };
+        let Some(rd) = &self.rd else {
+            return Some(Report::failed(None, "no real-debrid runtime"));
+        };
+        let env = Env {
+            rd,
+            portal: &self.portal,
+            timing: &self.timing,
+            auto_max_bytes: self.rank.auto_max_bytes,
+        };
+        let mut trace = Trace {
+            candidates: shortlist_maps(&evaluation),
+            top_infohash: evaluation.top_infohash.clone(),
+            ..Trace::default()
+        };
+        let deadline = self.timing.rd_auto_deadline;
+        let mut report =
+            match tokio::time::timeout(deadline, fetch::auto(&env, job, &evaluation, &mut trace))
+                .await
+            {
+                Ok(Outcome::Report(report)) => report,
+                Ok(Outcome::Dropped) => return None,
+                Err(_) => {
+                    fetch::cleanup(&env, &mut trace, None).await;
+                    self.stats.errors += 1;
+                    tracing::warn!(job = job.id, "auto run exceeded its deadline");
+                    fetch::run_ended(job.id, "timeout");
+                    Report::needs_pick_with("rd_timeout", "the run took too long")
+                }
+            };
+        if report.state == ReportState::NeedsPick && report.candidates.is_none() {
+            report.candidates = Some(std::mem::take(&mut trace.candidates));
+            report.top_infohash = trace.top_infohash.take();
+        }
+        // Nothing eligible never reached Real-Debrid: not a failed run.
+        if report.reason != Some("no_clear_choice") {
+            self.note_rd_run(&report).await;
+        }
+        Some(report)
     }
 
     /// Asks the source, trying an unreachable one again after short pauses.
@@ -620,6 +690,27 @@ fn refuse_unsupported(job: &Job) -> Option<Report> {
     None
 }
 
+/// What a search found.
+enum Searched {
+    /// The source offered nothing, or nothing survived the filters.
+    Nothing(&'static str),
+    Ranked(Evaluation),
+}
+
+/// The shortlist as the portal takes it, each entry with the survivor count.
+fn shortlist_maps(evaluation: &Evaluation) -> Vec<Map<String, Value>> {
+    let survivors = json!(evaluation.survivors);
+    evaluation
+        .shortlist
+        .iter()
+        .map(|candidate| {
+            let mut map = candidate.to_report_map();
+            map.insert("survivors".into(), survivors.clone());
+            map
+        })
+        .collect()
+}
+
 /// `needs_pick` with no candidates sent, so the portal keeps any it holds.
 fn bare_needs_pick(reason: &'static str) -> Report {
     Report {
@@ -720,5 +811,17 @@ mod tests {
         assert!(timing.rd_picked_deadline > one_candidate);
         // The dry run has its own, shorter limit.
         assert!(RUN_DEADLINE < reclaim);
+    }
+
+    #[test]
+    fn an_auto_run_fits_all_its_tries_before_its_deadline_and_the_reclaim() {
+        let timing = Timing::default();
+        let tries = u32::try_from(RankSettings::default().auto_max_tries).unwrap();
+        let all_tries = (timing.rd_conversion + timing.rd_auto_wait) * tries;
+        assert!(all_tries < timing.rd_auto_deadline, "{all_tries:?}");
+        let reclaim = Duration::from_secs(u64::try_from(RECLAIM_AFTER_SECS).unwrap());
+        assert!(timing.rd_auto_deadline < reclaim);
+        // A cached torrent is ready long before a human's pick would be given up on.
+        assert!(timing.rd_auto_wait < timing.rd_picked_wait);
     }
 }
