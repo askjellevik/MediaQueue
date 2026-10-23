@@ -270,8 +270,9 @@ fn a_multi_file_torrent_named_for_the_film_is_kept() {
         let eval = run(pro);
         let film = find(&eval, 13).expect("kept");
         assert_eq!(film.badge, FreeBadge::Yes, "pro={pro}");
-        // A free job adds the verified-badge bonus.
-        let expected = if pro { 105.4 } else { 111.4 };
+        // A free job adds the verified-badge bonus; a PRO job scores a 1080p
+        // BluRay AAC encode of 8 GB by its own weights.
+        let expected = if pro { 69.7 } else { 111.4 };
         assert_eq!(film.score, expected, "pro={pro}");
     }
 }
@@ -351,8 +352,9 @@ fn the_cut_name_gets_its_audio_from_the_file_name() {
 
 #[test]
 fn a_clear_winner_appears_once_the_close_runners_up_are_blocked() {
-    // The untagged popular release (9) and the multi-file film (13) are
-    // within a few points of the top; block them and the lead is wide.
+    // For a free job the untagged popular release (9) and the multi-file
+    // film (13) are within a few points of the top; block them and the lead
+    // is wide. A PRO job's remux (3) leads by far either way.
     for pro in [false, true] {
         let mut spec = job(pro);
         spec.blocked.insert(h(9));
@@ -362,7 +364,7 @@ fn a_clear_winner_appears_once_the_close_runners_up_are_blocked() {
         assert!(!hashes(&eval).contains(&h(13)), "pro={pro}");
         assert_eq!(eval.dropped.get(&DropReason::Blocked), Some(&2));
         assert!(eval.clear_winner, "pro={pro}");
-        assert_eq!(eval.top_infohash, Some(h(1)));
+        assert_eq!(eval.top_infohash, Some(h(if pro { 3 } else { 1 })));
         assert!(eval.shortlist[0].clear_winner);
         assert!(eval.shortlist[1..].iter().all(|c| !c.clear_winner));
     }

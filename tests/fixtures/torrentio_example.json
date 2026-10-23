@@ -25,12 +25,12 @@
   },
   {
    "name": "Torrentio\n4k DV | HDR",
-   "title": "Example.Movie.1994.2160p.BluRay.DV.HDR.DTS-HD.MA.5.1.HEVC-GRPONE\n\ud83d\udc64 40 \ud83d\udcbe 30.5 GB \u2699\ufe0f ExampleSite",
+   "title": "Example.Movie.1994.2160p.UHD.BluRay.REMUX.DV.HDR.DTS-HD.MA.5.1.HEVC-GRPONE\n\ud83d\udc64 40 \ud83d\udcbe 38.0 GB \u2699\ufe0f ExampleSite",
    "infoHash": "0000000000000000000000000000000000000003",
    "fileIdx": 0,
    "behaviorHints": {
     "bingeGroup": "torrentio|4k|BluRay|x265|HDR|DV",
-    "filename": "Example.Movie.1994.2160p.BluRay.DV.HDR.DTS-HD.MA.5.1.HEVC-GRPONE.mkv"
+    "filename": "Example.Movie.1994.2160p.UHD.BluRay.REMUX.DV.HDR.DTS-HD.MA.5.1.HEVC-GRPONE.mkv"
    }
   },
   {
@@ -97,12 +97,12 @@
   },
   {
    "name": "Torrentio\n1080p",
-   "title": "Example Movie 1994 Bluray 1080p AV1 EN/FR/ES OPUS5.1-GRPONE\n\ud83d\udc64 25 \ud83d\udcbe 5.7 GB \u2699\ufe0f ExampleSite\nMulti Audio / \ud83c\uddec\ud83c\udde7 / \ud83c\uddeb\ud83c\uddf7 / \ud83c\uddea\ud83c\uddf8",
+   "title": "Example Movie 1994 Bluray 1080p AV1 EN/FR/ES OPUS5.1-FRAMESTOR\n\ud83d\udc64 25 \ud83d\udcbe 5.7 GB \u2699\ufe0f ExampleSite\nMulti Audio / \ud83c\uddec\ud83c\udde7 / \ud83c\uddeb\ud83c\uddf7 / \ud83c\uddea\ud83c\uddf8",
    "infoHash": "000000000000000000000000000000000000000c",
    "fileIdx": 0,
    "behaviorHints": {
     "bingeGroup": "torrentio|1080p|BluRay|av1",
-    "filename": "Example.Movie.1994.Bluray.1080p.AV1.OPUS.5.1-GRPONE.mkv"
+    "filename": "Example.Movie.1994.Bluray.1080p.AV1.OPUS.5.1-FRAMESTOR.mkv"
    }
   },
   {
