@@ -733,6 +733,8 @@ function renderQueue(panel, tab, { say, expired }) {
 const JOB_CHIP = { needs_pick: 'pending', done: 'added', failed: 'refused' };
 const FREE_CHIP = { yes: 'added', unknown: 'pending', no: 'refused' };
 const WORKER_MODES = ['dry_run', 'assisted', 'auto'];
+// Reasons that mark the chosen hash as the one that failed last.
+const FAILED_REASONS = ['picked_failed', 'rd_refused', 'rd_timeout', 'rd_error'];
 const JOB_FILTERS = ['needs_pick', 'all', 'queued', 'fetching', 'failed', 'done'];
 
 const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -780,11 +782,12 @@ function renderJobs(panel, { say, expired }) {
     WORKER_MODES.map((value) =>
       el('option', {
         value,
-        text: value === 'dry_run' ? ta.workerModes[value] : ta.workerModes[value] + ta.workerModeLater,
-        disabled: value !== 'dry_run',
+        text: value === 'auto' ? ta.workerModes[value] + ta.workerModeLater : ta.workerModes[value],
+        disabled: value === 'auto',
       }),
     ),
   );
+  const modeHint = el('span', { class: 'muted', text: ta.workerModeHint });
   const lockedNote = el('span', { class: 'muted', text: ta.workerLocked, hidden: true });
   const workerBar = el(
     'div',
@@ -793,6 +796,7 @@ function renderJobs(panel, { say, expired }) {
     el('label', {}, enabledBox, ` ${ta.workerOn}`),
     el('label', { for: 'worker-mode', text: ta.workerModeLabel }),
     modeSelect,
+    modeHint,
     lockedNote,
   );
 
@@ -981,7 +985,7 @@ function renderJobs(panel, { say, expired }) {
       if (hash !== null && hash === job.top_infohash) tags.push(tag(ta.topPick));
       if (c.clear_winner === true) tags.push(tag(ta.clearWinner));
       if (hash !== null && hash === job.chosen_infohash) tags.push(tag(ta.chosenTag));
-      if (hash !== null && hash === job.chosen_infohash && job.reason === 'picked_failed') tags.push(tag(ta.lastFailed));
+      if (hash !== null && hash === job.chosen_infohash && FAILED_REASONS.includes(job.reason)) tags.push(tag(ta.lastFailed));
       if (blocked) tags.push(tag(ta.blockedTag));
       if (c.foreign_language === true) tags.push(tag(ta.foreignLang));
       const canPick = job.state === 'needs_pick' && job.request_status === 'pending' && hash !== null && !blocked;
