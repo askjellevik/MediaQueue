@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT COUNT(*) AS \"count!: i64\"\n                       FROM fetch_jobs j JOIN requests r ON r.id = j.request_id\n                       WHERE j.origin = 'auto' AND r.requested_by = ? AND j.created_at >= ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "count!: i64",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0fd2bbeaadecf7d6cfd2e0aa8ff7d947a24ffebd0ecceb63874886932f75b6f4"
+}

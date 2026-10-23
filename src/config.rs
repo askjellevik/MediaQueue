@@ -22,6 +22,7 @@ pub const MAX_SESSIONS_PER_MEMBER: i64 = 10;
 
 const DEFAULT_TMDB_BASE_URL: &str = "https://api.themoviedb.org/3";
 const DEFAULT_DMM_BASE_URL: &str = "https://debridmediamanager.com";
+const DEFAULT_AUTO_FETCH_PER_MEMBER_DAY: u32 = 3;
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -64,6 +65,9 @@ pub struct Config {
     pub worker_enabled: Option<bool>,
     /// `WORKER_MODE`: overrides the mode stored in the database.
     pub worker_mode: Option<WorkerMode>,
+    /// `AUTO_FETCH_PER_MEMBER_DAY`: automatic jobs one member may have per
+    /// UTC day; 0 switches the sweep off.
+    pub auto_fetch_per_member_day: u32,
 }
 
 /// How far the worker may go on its own.
@@ -543,6 +547,14 @@ impl Config {
             })
             .transpose()?;
 
+        let auto_fetch_per_member_day = match env.get("AUTO_FETCH_PER_MEMBER_DAY") {
+            Some(v) => v.trim().parse::<u32>().map_err(|_| ConfigError::Invalid {
+                name: "AUTO_FETCH_PER_MEMBER_DAY",
+                reason: "must be a whole number, 0 or more".into(),
+            })?,
+            None => DEFAULT_AUTO_FETCH_PER_MEMBER_DAY,
+        };
+
         Ok(Config {
             public_origin,
             bind_addr,
@@ -562,6 +574,7 @@ impl Config {
             internal_token,
             worker_enabled,
             worker_mode,
+            auto_fetch_per_member_day,
         })
     }
 }

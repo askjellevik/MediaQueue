@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT m.id AS \"id!\", m.name AS \"name!\",\n                  m.daily_limit, m.created_at AS \"created_at!\", m.rotated_at, m.revoked_at,\n                  m.last_seen_at,\n                  (SELECT COUNT(*) FROM requests r WHERE r.requested_by = m.id)\n                    AS \"request_count!: i64\"\n           FROM members m ORDER BY m.id DESC",
+  "query": "SELECT m.id AS \"id!\", m.name AS \"name!\",\n                  m.daily_limit, m.created_at AS \"created_at!\", m.rotated_at, m.revoked_at,\n                  m.last_seen_at,\n                  (SELECT COUNT(*) FROM requests r WHERE r.requested_by = m.id)\n                    AS \"request_count!: i64\",\n                  m.auto_fetch AS \"auto_fetch!: bool\"\n           FROM members m ORDER BY m.id DESC",
   "describe": {
     "columns": [
       {
@@ -85,6 +85,17 @@
         "ordinal": 7,
         "type_info": "Integer",
         "origin": "Expression"
+      },
+      {
+        "name": "auto_fetch!: bool",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "members",
+            "name": "auto_fetch"
+          }
+        }
       }
     ],
     "parameters": {
@@ -98,8 +109,9 @@
       true,
       true,
       true,
+      false,
       false
     ]
   },
-  "hash": "eea9d3ef9684cdf49bac6c77dfd4ef99b9a6e2545f319c5c21ea0febae746b75"
+  "hash": "13557d97472b2f5c03dd5ef1b477f73500943edf12281b691bfa3ce3cc4b2ee8"
 }

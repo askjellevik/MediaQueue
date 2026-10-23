@@ -1058,6 +1058,8 @@ pub struct MemberRow {
     pub revoked_at: Option<i64>,
     pub last_seen_at: Option<i64>,
     pub request_count: i64,
+    /// The member opted in to automatic fetching of what they request.
+    pub auto_fetch: bool,
 }
 
 /// Every member, newest first. Never selects `code_hash`.
@@ -1068,7 +1070,8 @@ pub async fn list_members(pool: &SqlitePool) -> Result<Vec<MemberRow>, sqlx::Err
                   m.daily_limit, m.created_at AS "created_at!", m.rotated_at, m.revoked_at,
                   m.last_seen_at,
                   (SELECT COUNT(*) FROM requests r WHERE r.requested_by = m.id)
-                    AS "request_count!: i64"
+                    AS "request_count!: i64",
+                  m.auto_fetch AS "auto_fetch!: bool"
            FROM members m ORDER BY m.id DESC"#
     )
     .fetch_all(pool)
@@ -1166,6 +1169,7 @@ pub async fn create_member(
 pub struct MemberUpdate<'a> {
     pub name: Option<&'a str>,
     pub daily_limit: Option<Option<i64>>,
+    pub auto_fetch: Option<bool>,
 }
 
 pub async fn update_member(
@@ -1188,11 +1192,13 @@ pub async fn update_member(
     let result = sqlx::query!(
         "UPDATE members
          SET name = COALESCE(?, name),
-             daily_limit = CASE WHEN ? THEN ? ELSE daily_limit END
+             daily_limit = CASE WHEN ? THEN ? ELSE daily_limit END,
+             auto_fetch = COALESCE(?, auto_fetch)
          WHERE id = ?",
         update.name,
         set_limit,
         new_limit,
+        update.auto_fetch,
         member_id
     )
     .execute(&mut *tx)
@@ -1478,6 +1484,8 @@ pub struct FetchJobRow {
     /// The request's blocked infohashes, comma-joined; `None` when there are
     /// none.
     pub blocked_hashes: Option<String>,
+    /// `admin` (the button) or `auto` (the sweep).
+    pub origin: String,
 }
 
 /// One page of jobs with their request's title, newest first, keyset-
@@ -1500,7 +1508,8 @@ pub async fn list_fetch_jobs(
                   r.title AS "title!", r.year, r.media_type AS "media_type!",
                   r.status AS "request_status!",
                   (SELECT group_concat(b.infohash) FROM blocked_hashes b
-                    WHERE b.request_id = j.request_id) AS blocked_hashes
+                    WHERE b.request_id = j.request_id) AS blocked_hashes,
+                  j.origin AS "origin!"
            FROM fetch_jobs j JOIN requests r ON r.id = j.request_id
            WHERE (?1 IS NULL OR j.state = ?1)
              AND (j.created_at < ?2 OR (j.created_at = ?2 AND j.id < ?3))
@@ -2349,6 +2358,112 @@ pub async fn worker_settings(
 
 pub const SETTING_WORKER_ENABLED: &str = "worker_enabled";
 pub const SETTING_WORKER_MODE: &str = "worker_mode";
+/// Unix seconds the mode last became `auto`: the auto sweep only takes
+/// requests created at or after it.
+pub const SETTING_WORKER_AUTO_SINCE: &str = "worker_auto_since";
+
+/// The start of the UTC day `now` falls in.
+fn utc_day_start(now: i64) -> i64 {
+    now - now.rem_euclid(86_400)
+}
+
+/// Queues an automatic job (`origin = 'auto'`) for every request that
+/// qualifies: pending, a movie, with an IMDb ID, no job yet, created at or
+/// after `worker_auto_since`, and whose first requester (the member on the
+/// request; a deleted or revoked member has none) opted in to
+/// `auto_fetch`. A member gets at most `per_member_day` automatic jobs per
+/// UTC day; 0 queues nothing. Returns the new jobs' ids, oldest request
+/// first. Everything happens in one write transaction.
+///
+/// The cut-off is stamped when the mode becomes `auto`; if the mode was
+/// switched on some other way (pinned in the environment) and no stamp
+/// exists, it is stamped now, so the backlog is never taken.
+pub async fn sweep_auto_jobs(
+    pool: &SqlitePool,
+    now: i64,
+    per_member_day: u32,
+) -> Result<Vec<i64>, sqlx::Error> {
+    if per_member_day == 0 {
+        return Ok(Vec::new());
+    }
+    let mut tx = begin_immediate(pool).await?;
+    let stamped = sqlx::query_scalar!(
+        r#"SELECT value AS "value!" FROM settings WHERE key = ?"#,
+        SETTING_WORKER_AUTO_SINCE
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .and_then(|value| value.parse::<i64>().ok())
+    .filter(|since| *since > 0);
+    let since = match stamped {
+        Some(since) => since,
+        None => {
+            let value = now.to_string();
+            sqlx::query!(
+                "INSERT INTO settings (key, value) VALUES (?, ?)
+                 ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                SETTING_WORKER_AUTO_SINCE,
+                value
+            )
+            .execute(&mut *tx)
+            .await?;
+            now
+        }
+    };
+
+    let candidates = sqlx::query!(
+        r#"SELECT r.id AS "id!", r.requested_by AS "member_id!",
+                  r.infuse_pro AS "infuse_pro!: bool"
+           FROM requests r JOIN members m ON m.id = r.requested_by
+           WHERE r.status = 'pending' AND r.media_type = 'movie'
+             AND r.imdb_id IS NOT NULL AND r.created_at >= ?
+             AND m.auto_fetch = 1 AND m.revoked_at IS NULL
+             AND NOT EXISTS (SELECT 1 FROM fetch_jobs j WHERE j.request_id = r.id)
+           ORDER BY r.created_at, r.id"#,
+        since
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+
+    let day_start = utc_day_start(now);
+    let mut made_today: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+    let mut created = Vec::new();
+    for request in candidates {
+        let made = match made_today.get(&request.member_id) {
+            Some(made) => *made,
+            None => {
+                sqlx::query_scalar!(
+                    r#"SELECT COUNT(*) AS "count!: i64"
+                       FROM fetch_jobs j JOIN requests r ON r.id = j.request_id
+                       WHERE j.origin = 'auto' AND r.requested_by = ? AND j.created_at >= ?"#,
+                    request.member_id,
+                    day_start
+                )
+                .fetch_one(&mut *tx)
+                .await?
+            }
+        };
+        if made >= i64::from(per_member_day) {
+            made_today.insert(request.member_id, made);
+            continue;
+        }
+        let id = sqlx::query!(
+            "INSERT INTO fetch_jobs (request_id, state, infuse_pro, origin, created_at, updated_at)
+             VALUES (?, 'queued', ?, 'auto', ?, ?)",
+            request.id,
+            request.infuse_pro,
+            now,
+            now
+        )
+        .execute(&mut *tx)
+        .await?
+        .last_insert_rowid();
+        made_today.insert(request.member_id, made + 1);
+        created.push(id);
+    }
+    tx.commit().await?;
+    Ok(created)
+}
 
 #[cfg(test)]
 mod tests {
@@ -2665,6 +2780,7 @@ mod tests {
             internal_token: None,
             worker_enabled: None,
             worker_mode: None,
+            auto_fetch_per_member_day: 3,
         }
     }
 
@@ -4643,6 +4759,7 @@ mod tests {
             let update = MemberUpdate {
                 name: Some(new_name),
                 daily_limit: None,
+                auto_fetch: None,
             };
             update_member(&pool, member_id, &update).await.unwrap();
         }

@@ -199,6 +199,7 @@ fn test_config() -> Config {
         internal_token: Some(TEST_INTERNAL_TOKEN.to_string()),
         worker_enabled: None,
         worker_mode: None,
+        auto_fetch_per_member_day: 3,
     }
 }
 

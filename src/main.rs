@@ -221,6 +221,7 @@ async fn serve_async(config: Config) -> anyhow::Result<()> {
     let state = AppState::new(pool.clone(), config)?;
     let events = state.events.clone();
     tasks::spawn_rate_limit_maintenance(state.limits.clone());
+    tasks::spawn_auto_sweep(state.clone());
     let app = build_router(state.clone());
     let internal_app = internal_router(state);
 

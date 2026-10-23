@@ -2413,8 +2413,10 @@ async fn the_jobs_list_pages_filters_and_parses_candidates() {
             "type",
             "request_status",
             "blocked_hashes",
+            "origin",
         ])
     );
+    assert_eq!(newest["origin"], "admin");
     assert_eq!(newest["state"], "needs_pick");
     assert_eq!(newest["reason"], "no_imdb_id");
     assert_eq!(newest["title"], "Dune");
@@ -2490,4 +2492,412 @@ async fn the_jobs_list_pages_filters_and_parses_candidates() {
         }
     }
     assert_eq!(seen, vec![jobs[2], jobs[1], jobs[0]]);
+}
+
+// ---------------------------------------------------------------------
+// The auto sweep
+// ---------------------------------------------------------------------
+
+/// Unix seconds on the app's fake clock.
+fn now_of(app: &TestApp) -> i64 {
+    i64::try_from(app.clock.unix_secs()).unwrap()
+}
+
+async fn member_named(app: &TestApp, name: &str) -> i64 {
+    common::create_member(&app.pool, &app.config, name).await.0
+}
+
+/// The admin opts a member in (or out) of automatic fetching.
+async fn set_auto_fetch(app: &TestApp, admin: &str, member: i64, on: bool) {
+    let response = admin_call(
+        app,
+        admin,
+        "PATCH",
+        &format!("/api/admin/members/{member}"),
+        Some(&json!({ "auto_fetch": on }).to_string()),
+    )
+    .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+}
+
+/// A request as `POST /api/requests` would leave it, with every field the
+/// sweep looks at under the caller's control. `member` of `None` is a
+/// deleted member.
+#[allow(clippy::too_many_arguments)]
+async fn sweep_request(
+    app: &TestApp,
+    tmdb_id: i64,
+    member: Option<i64>,
+    media_type: &str,
+    imdb: Option<&str>,
+    status: &str,
+    pro: bool,
+    created_at: i64,
+) -> i64 {
+    sqlx::query_scalar(
+        "INSERT INTO requests (tmdb_id, media_type, imdb_id, title, year, infuse_pro, status,
+                               requested_by, requested_by_name, created_at, status_changed_at)
+         VALUES (?, ?, ?, 'Dune', 2021, ?, ?, ?, 'Gone', ?, ?) RETURNING id",
+    )
+    .bind(tmdb_id)
+    .bind(media_type)
+    .bind(imdb)
+    .bind(pro)
+    .bind(status)
+    .bind(member)
+    .bind(created_at)
+    .bind(created_at)
+    .fetch_one(&app.pool)
+    .await
+    .unwrap()
+}
+
+/// A pending movie with an IMDb ID, made now.
+async fn plain_request(app: &TestApp, tmdb_id: i64, member: i64) -> i64 {
+    sweep_request(
+        app,
+        tmdb_id,
+        Some(member),
+        "movie",
+        Some("tt0000001"),
+        "pending",
+        false,
+        now_of(app),
+    )
+    .await
+}
+
+/// The admin switches the worker on in `auto` mode, which starts the sweep's
+/// clock at the app's current time.
+async fn switch_to_auto(app: &TestApp, admin: &str) {
+    let response = admin_call(
+        app,
+        admin,
+        "PUT",
+        "/api/admin/worker",
+        Some(r#"{"enabled":true,"mode":"auto"}"#),
+    )
+    .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+}
+
+async fn sweep(app: &TestApp) -> usize {
+    mediaqueue::tasks::auto_sweep_once(&app.state)
+        .await
+        .unwrap()
+}
+
+/// `(request id, origin)` of every job, by request id.
+async fn jobs_by_request(app: &TestApp) -> Vec<(i64, String)> {
+    sqlx::query_as("SELECT request_id, origin FROM fetch_jobs ORDER BY request_id")
+        .fetch_all(&app.pool)
+        .await
+        .unwrap()
+}
+
+async fn auto_since(app: &TestApp) -> Option<String> {
+    sqlx::query_scalar("SELECT value FROM settings WHERE key = 'worker_auto_since'")
+        .fetch_optional(&app.pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn the_sweep_queues_only_requests_that_qualify() {
+    let app = common::spawn_app_with(|config| config.auto_fetch_per_member_day = 10).await;
+    let admin = login_admin_cookie(&app).await;
+    let alice = member_named(&app, "Alice").await;
+    let bob = member_named(&app, "Bob").await;
+    set_auto_fetch(&app, &admin, alice, true).await;
+    switch_to_auto(&app, &admin).await;
+    let now = now_of(&app);
+    let movie = |tmdb, member, imdb, status, pro, at| {
+        sweep_request(&app, tmdb, member, "movie", imdb, status, pro, at)
+    };
+
+    let plain = plain_request(&app, 1, alice).await;
+    let pro = movie(2, Some(alice), Some("tt0000002"), "pending", true, now).await;
+    let tv = sweep_request(
+        &app,
+        3,
+        Some(alice),
+        "tv",
+        Some("tt0000003"),
+        "pending",
+        false,
+        now,
+    )
+    .await;
+    let no_imdb = movie(4, Some(alice), None, "pending", false, now).await;
+    let added = movie(5, Some(alice), Some("tt0000005"), "added", false, now).await;
+    let older = movie(6, Some(alice), Some("tt0000006"), "pending", false, now - 1).await;
+    let has_job = movie(7, Some(alice), Some("tt0000007"), "pending", false, now).await;
+    let created = admin_call(
+        &app,
+        &admin,
+        "POST",
+        &format!("/api/admin/requests/{has_job}/fetch"),
+        Some("{}"),
+    )
+    .await;
+    assert_eq!(created.status, 201, "{}", created.body);
+    // Bob is not opted in; Alice asks for the same title later.
+    let bobs = movie(8, Some(bob), Some("tt0000008"), "pending", false, now).await;
+    sql(
+        &app.pool,
+        &format!(
+            "INSERT INTO request_events (request_id, kind, actor, created_at)
+             VALUES ({bobs}, 'duplicate', 'Alice', {now})"
+        ),
+    )
+    .await;
+    let deleted = movie(9, None, Some("tt0000009"), "pending", false, now).await;
+
+    assert_eq!(sweep(&app).await, 2);
+
+    let jobs = jobs_by_request(&app).await;
+    assert_eq!(
+        jobs,
+        [
+            (plain, "auto".to_string()),
+            (pro, "auto".to_string()),
+            (has_job, "admin".to_string()),
+        ]
+    );
+    for request in [tv, no_imdb, added, older, bobs, deleted] {
+        assert!(
+            jobs.iter().all(|(id, _)| *id != request),
+            "request {request}"
+        );
+    }
+    let states: Vec<(i64, String, bool)> = sqlx::query_as(
+        "SELECT request_id, state, infuse_pro FROM fetch_jobs WHERE origin = 'auto' ORDER BY id",
+    )
+    .fetch_all(&app.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        states,
+        [
+            (plain, "queued".to_string(), false),
+            (pro, "queued".to_string(), true)
+        ]
+    );
+
+    // The admin lists see it: the member's switch and the job's origin.
+    let members = admin_call(&app, &admin, "GET", "/api/admin/members", None).await;
+    let members = json_of(&members);
+    let flag = |name: &str| {
+        members["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["name"] == name)
+            .map(|m| m["auto_fetch"].clone())
+    };
+    assert_eq!(flag("Alice"), Some(json!(true)));
+    assert_eq!(flag("Bob"), Some(json!(false)));
+    let listed = admin_call(&app, &admin, "GET", "/api/admin/jobs?state=queued", None).await;
+    let listed = json_of(&listed);
+    let origin = |request: i64| {
+        listed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|job| job["request_id"] == request)
+            .map(|job| job["origin"].clone())
+    };
+    assert_eq!(origin(plain), Some(json!("auto")));
+    assert_eq!(origin(has_job), Some(json!("admin")));
+
+    // Nothing is queued twice.
+    assert_eq!(sweep(&app).await, 0);
+    assert_eq!(jobs_by_request(&app).await.len(), 3);
+}
+
+#[tokio::test]
+async fn a_member_opts_out_and_back_in_and_a_revoked_one_is_left_out() {
+    let app = common::spawn_app().await;
+    let admin = login_admin_cookie(&app).await;
+    let alice = member_named(&app, "Alice").await;
+    switch_to_auto(&app, &admin).await;
+    plain_request(&app, 1, alice).await;
+    // Default: off for everyone.
+    assert_eq!(sweep(&app).await, 0);
+
+    set_auto_fetch(&app, &admin, alice, true).await;
+    let revoke = admin_call(
+        &app,
+        &admin,
+        "POST",
+        &format!("/api/admin/members/{alice}/revoke"),
+        Some("{}"),
+    )
+    .await;
+    assert_eq!(revoke.status, 200, "{}", revoke.body);
+    assert_eq!(sweep(&app).await, 0, "a revoked member's request waits");
+
+    let restore = admin_call(
+        &app,
+        &admin,
+        "POST",
+        &format!("/api/admin/members/{alice}/restore"),
+        Some("{}"),
+    )
+    .await;
+    assert_eq!(restore.status, 200, "{}", restore.body);
+    assert_eq!(sweep(&app).await, 1);
+}
+
+#[tokio::test]
+async fn nothing_is_swept_unless_the_worker_is_on_in_auto_mode() {
+    let app = common::spawn_app().await;
+    let admin = login_admin_cookie(&app).await;
+    let alice = member_named(&app, "Alice").await;
+    set_auto_fetch(&app, &admin, alice, true).await;
+    switch_to_auto(&app, &admin).await;
+    plain_request(&app, 1, alice).await;
+
+    for body in [
+        r#"{"mode":"assisted"}"#,
+        r#"{"mode":"dry_run"}"#,
+        r#"{"enabled":false,"mode":"auto"}"#,
+    ] {
+        let response = admin_call(&app, &admin, "PUT", "/api/admin/worker", Some(body)).await;
+        assert_eq!(response.status, 200, "{}", response.body);
+        assert_eq!(sweep(&app).await, 0, "{body}");
+    }
+    assert!(jobs_by_request(&app).await.is_empty());
+    let response = admin_call(
+        &app,
+        &admin,
+        "PUT",
+        "/api/admin/worker",
+        Some(r#"{"enabled":true}"#),
+    )
+    .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    assert_eq!(sweep(&app).await, 1, "on and in auto mode");
+}
+
+#[tokio::test]
+async fn a_member_gets_at_most_the_daily_number_of_automatic_jobs() {
+    let app = common::spawn_app_with(|config| config.auto_fetch_per_member_day = 2).await;
+    let admin = login_admin_cookie(&app).await;
+    let alice = member_named(&app, "Alice").await;
+    let bob = member_named(&app, "Bob").await;
+    for member in [alice, bob] {
+        set_auto_fetch(&app, &admin, member, true).await;
+    }
+    switch_to_auto(&app, &admin).await;
+    for tmdb in 1..=3 {
+        plain_request(&app, tmdb, alice).await;
+    }
+    plain_request(&app, 4, bob).await;
+
+    // Two for Alice, Bob's own allowance is separate.
+    assert_eq!(sweep(&app).await, 3);
+    assert_eq!(sweep(&app).await, 0, "the third waits for tomorrow");
+    let count: i64 = count(
+        &app.pool,
+        &format!(
+            "SELECT COUNT(*) FROM fetch_jobs j JOIN requests r ON r.id = j.request_id
+             WHERE r.requested_by = {alice}"
+        ),
+    )
+    .await;
+    assert_eq!(count, 2);
+
+    // The fake clock starts less than two hours before midnight UTC.
+    app.clock.advance(Duration::from_secs(3 * 3600));
+    assert_eq!(sweep(&app).await, 1);
+
+    // 0 switches the sweep off.
+    plain_request(&app, 5, bob).await;
+    let none = mediaqueue::db::sweep_auto_jobs(&app.pool, now_of(&app), 0)
+        .await
+        .unwrap();
+    assert!(none.is_empty());
+}
+
+#[tokio::test]
+async fn switching_to_auto_stamps_the_cut_off_and_leaves_older_requests_to_the_button() {
+    let app = common::spawn_app().await;
+    let admin = login_admin_cookie(&app).await;
+    let alice = member_named(&app, "Alice").await;
+    set_auto_fetch(&app, &admin, alice, true).await;
+    let backlog = plain_request(&app, 1, alice).await;
+    assert_eq!(auto_since(&app).await, None);
+
+    app.clock.advance(Duration::from_secs(60));
+    switch_to_auto(&app, &admin).await;
+    let stamped = now_of(&app);
+    assert_eq!(auto_since(&app).await, Some(stamped.to_string()));
+    assert_eq!(sweep(&app).await, 0, "the backlog is not swept in");
+
+    // Being in auto already, a later change does not move the cut-off.
+    app.clock.advance(Duration::from_secs(60));
+    let response = admin_call(
+        &app,
+        &admin,
+        "PUT",
+        "/api/admin/worker",
+        Some(r#"{"mode":"auto"}"#),
+    )
+    .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    assert_eq!(auto_since(&app).await, Some(stamped.to_string()));
+
+    // A request made after the switch is taken, even by a second.
+    let fresh = plain_request(&app, 2, alice).await;
+    assert_eq!(sweep(&app).await, 1);
+    assert_eq!(jobs_by_request(&app).await, [(fresh, "auto".to_string())]);
+
+    // The manual button still works for the older one.
+    let response = admin_call(
+        &app,
+        &admin,
+        "POST",
+        &format!("/api/admin/requests/{backlog}/fetch"),
+        Some("{}"),
+    )
+    .await;
+    assert_eq!(response.status, 201, "{}", response.body);
+    assert_eq!(
+        jobs_by_request(&app).await,
+        [(backlog, "admin".to_string()), (fresh, "auto".to_string())]
+    );
+}
+
+#[tokio::test]
+async fn a_mode_pinned_to_auto_in_the_environment_stamps_the_cut_off_on_the_first_sweep() {
+    let app = common::spawn_app_with(|config| {
+        config.worker_enabled = Some(true);
+        config.worker_mode = Some(mediaqueue::config::WorkerMode::Auto);
+    })
+    .await;
+    let admin = login_admin_cookie(&app).await;
+    let alice = member_named(&app, "Alice").await;
+    set_auto_fetch(&app, &admin, alice, true).await;
+    sweep_request(
+        &app,
+        1,
+        Some(alice),
+        "movie",
+        Some("tt0000001"),
+        "pending",
+        false,
+        now_of(&app) - 3600,
+    )
+    .await;
+    assert_eq!(auto_since(&app).await, None);
+
+    assert_eq!(sweep(&app).await, 0, "older than the first sweep");
+    let stamped = auto_since(&app).await.expect("stamped by the sweep");
+    assert_eq!(stamped, now_of(&app).to_string());
+    assert_ne!(stamped, "0");
+
+    plain_request(&app, 2, alice).await;
+    assert_eq!(sweep(&app).await, 1);
+    assert_eq!(auto_since(&app).await, Some(stamped));
 }

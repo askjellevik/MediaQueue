@@ -15,6 +15,7 @@ use super::{next_page, page_limit, parse_cursor, public::clean_text};
 use crate::{
     auth::{self, RequireAdmin},
     clientip::ClientIp,
+    config::WorkerMode,
     db,
     error::{AppError, AppJson, AppPath, AppQuery},
     events::Tick,
@@ -454,6 +455,7 @@ struct MemberView {
     revoked_at: Option<i64>,
     last_seen_at: Option<i64>,
     request_count: i64,
+    auto_fetch: bool,
     devices: Vec<DeviceView>,
 }
 
@@ -487,6 +489,7 @@ pub async fn get_members(
                 revoked_at: m.revoked_at,
                 last_seen_at: m.last_seen_at,
                 request_count: m.request_count,
+                auto_fetch: m.auto_fetch,
                 devices: mine,
             }
         })
@@ -580,6 +583,9 @@ pub struct PatchMemberBody {
     /// `null` removes the member's daily limit.
     #[serde(default, deserialize_with = "present")]
     daily_limit: Option<Option<i64>>,
+    /// Opt the member in or out of automatic fetching.
+    #[serde(default)]
+    auto_fetch: Option<bool>,
 }
 
 /// `PATCH /api/admin/members/{id}`
@@ -594,6 +600,7 @@ pub async fn patch_member(
     let update = db::MemberUpdate {
         name: name.as_deref(),
         daily_limit,
+        auto_fetch: body.auto_fetch,
     };
     match db::update_member(&state.pool, id, &update).await? {
         db::MemberWrite::Done(_) => {
@@ -956,6 +963,8 @@ struct JobView {
     media_type: String,
     request_status: String,
     blocked_hashes: Vec<String>,
+    /// `admin` or `auto`.
+    origin: String,
 }
 
 /// `GET /api/admin/jobs?state=&limit=&cursor=`. `candidates` and
@@ -998,6 +1007,7 @@ pub async fn get_jobs(
                 .blocked_hashes
                 .map(|joined| joined.split(',').map(str::to_string).collect())
                 .unwrap_or_default(),
+            origin: r.origin,
         })
         .collect();
     Ok(Json(json!({ "items": items, "next_cursor": next_cursor })))
@@ -1055,6 +1065,7 @@ pub async fn put_worker(
     _admin: RequireAdmin,
     AppJson(body): AppJson<WorkerBody>,
 ) -> Result<impl IntoResponse, AppError> {
+    let before = db::worker_settings(&state.pool, &state.config).await?;
     if let Some(enabled) = body.enabled {
         db::set_setting(
             &state.pool,
@@ -1065,6 +1076,18 @@ pub async fn put_worker(
     }
     if let Some(mode) = body.mode {
         db::set_setting(&state.pool, db::SETTING_WORKER_MODE, mode.as_str()).await?;
+    }
+    // Switching to auto starts the clock: only requests made from now on are
+    // taken by the sweep, so the backlog is never swept in. The admin's own
+    // button still works for older ones.
+    let after = db::worker_settings(&state.pool, &state.config).await?;
+    if after.mode == WorkerMode::Auto && before.mode != WorkerMode::Auto {
+        db::set_setting(
+            &state.pool,
+            db::SETTING_WORKER_AUTO_SINCE,
+            &now(&state).to_string(),
+        )
+        .await?;
     }
     if body.enabled.is_some() || body.mode.is_some() {
         tracing::info!(

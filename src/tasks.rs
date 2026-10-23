@@ -9,7 +9,7 @@ use std::{
 
 use sqlx::SqlitePool;
 
-use crate::{db, ratelimit::RateLimits};
+use crate::{config::WorkerMode, db, events::Tick, ratelimit::RateLimits, state::AppState};
 
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(3600);
 
@@ -27,6 +27,42 @@ pub fn spawn_session_cleanup(pool: SqlitePool) {
                 Ok(0) => {}
                 Ok(count) => tracing::info!(count, "cleaned up expired sessions"),
                 Err(error) => tracing::error!(%error, "session cleanup failed"),
+            }
+        }
+    });
+}
+
+const AUTO_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
+
+/// One pass of the auto sweep: nothing unless the worker is on and in
+/// `auto` mode, otherwise the jobs [`db::sweep_auto_jobs`] queues, and a tick
+/// for the admin page when there are any. Returns how many.
+pub async fn auto_sweep_once(state: &AppState) -> Result<usize, sqlx::Error> {
+    let settings = db::worker_settings(&state.pool, &state.config).await?;
+    if !settings.enabled || settings.mode != WorkerMode::Auto {
+        return Ok(0);
+    }
+    let now = i64::try_from(state.clock.unix_secs()).unwrap_or(i64::MAX);
+    let created =
+        db::sweep_auto_jobs(&state.pool, now, state.config.auto_fetch_per_member_day).await?;
+    if !created.is_empty() {
+        state.events.publish(Tick::Admin);
+    }
+    Ok(created.len())
+}
+
+/// Once a minute, queues automatic jobs for the members who opted in. The
+/// log carries counts only.
+pub fn spawn_auto_sweep(state: AppState) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(AUTO_SWEEP_INTERVAL);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            match auto_sweep_once(&state).await {
+                Ok(0) => {}
+                Ok(count) => tracing::info!(count, "automatic jobs queued"),
+                Err(error) => tracing::error!(%error, "automatic sweep failed"),
             }
         }
     });
