@@ -58,6 +58,7 @@ impl RdRuntime {
             Limits {
                 max_adds: config.max_adds_per_day,
                 max_uncached: config.max_uncached_per_day,
+                max_refusals: config.max_refusals_per_day,
             },
         );
         let client = RdClient::new(

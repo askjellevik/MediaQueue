@@ -32,6 +32,7 @@ const MAX_AUTO_GB: u64 = 100;
 const DEFAULT_STATE_DIR: &str = "/state";
 const DEFAULT_MAX_ADDS_PER_DAY: u32 = 5;
 const DEFAULT_MAX_UNCACHED_PER_DAY: u32 = 2;
+const DEFAULT_MAX_REFUSALS_PER_DAY: u32 = 20;
 const DEFAULT_RD_MAX_GB: u64 = 30;
 const DEFAULT_RD_PER_MIN: u32 = 20;
 const DEFAULT_KEEP_FREE_SLOTS: u32 = 2;
@@ -39,6 +40,7 @@ const DEFAULT_KEEP_FREE_SLOTS: u32 = 2;
 /// change, not just an edit of `.env`.
 const MAX_ADDS_PER_DAY_LIMIT: u64 = 50;
 const MAX_UNCACHED_PER_DAY_LIMIT: u64 = 20;
+const MAX_REFUSALS_PER_DAY_LIMIT: u64 = 200;
 const MAX_RD_MAX_GB: u64 = 100;
 const MAX_RD_PER_MIN: u64 = 30;
 const MAX_KEEP_FREE_SLOTS: u64 = 20;
@@ -72,6 +74,9 @@ pub struct RdConfig {
     pub state_dir: PathBuf,
     pub max_adds_per_day: u32,
     pub max_uncached_per_day: u32,
+    /// Refusals by Real-Debrid after which the worker stops choosing
+    /// torrents itself for the day. A human's pick is never stopped by it.
+    pub max_refusals_per_day: u32,
     /// The cap on one torrent's file, checked against Real-Debrid's size.
     pub max_bytes: u64,
     pub per_min: u32,
@@ -254,6 +259,13 @@ fn rd_config(
         MAX_UNCACHED_PER_DAY_LIMIT,
         u64::from(DEFAULT_MAX_UNCACHED_PER_DAY),
     )?;
+    let max_refusals_per_day = bounded(
+        value,
+        "WORKER_MAX_REFUSALS_PER_DAY",
+        0,
+        MAX_REFUSALS_PER_DAY_LIMIT,
+        u64::from(DEFAULT_MAX_REFUSALS_PER_DAY),
+    )?;
     let max_gb = bounded(
         value,
         "WORKER_RD_MAX_GB",
@@ -281,6 +293,7 @@ fn rd_config(
         state_dir,
         max_adds_per_day: max_adds_per_day as u32,
         max_uncached_per_day: max_uncached_per_day as u32,
+        max_refusals_per_day: max_refusals_per_day as u32,
         max_bytes: max_gb * GIB,
         per_min: per_min as u32,
         keep_free_slots: keep_free_slots as u32,

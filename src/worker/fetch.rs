@@ -270,7 +270,20 @@ async fn drive(env: &Env<'_>, job: &Job, trace: &mut Trace) -> Step<Report> {
         StateError::CapReached => gate("daily_cap", "the daily cap of adds is reached"),
         _ => gate("rd_error", "the counters file could not be written"),
     })?;
-    let id = env.rd.client.add_magnet(&hash).await.map_err(rd_stop)?;
+    let id = match env.rd.client.add_magnet(&hash).await {
+        Ok(id) => id,
+        Err(error) => {
+            // Only a refusal classified by Real-Debrid's own error code gives
+            // the add back; a network error, a 5xx or an answer nobody can
+            // read leaves it counted, since the torrent may have been taken.
+            if matches!(error, RdError::Refused(_))
+                && let Err(error) = env.rd.state.refund_refused_add(kind)
+            {
+                tracing::warn!(job = job.id, %error, "could not refund the refused add");
+            }
+            return Err(rd_stop(error));
+        }
+    };
     let known: HashSet<&str> = snapshot.iter().map(|t| t.id.as_str()).collect();
     if known.contains(id.as_str()) {
         // Real-Debrid answered with a torrent that was already there; it is

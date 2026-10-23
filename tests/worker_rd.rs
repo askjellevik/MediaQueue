@@ -130,6 +130,7 @@ fn build_worker(
         state_dir: dir.to_path_buf(),
         max_adds_per_day: 50,
         max_uncached_per_day: 2,
+        max_refusals_per_day: 20,
         max_bytes: 30 * GIB,
         per_min: 60_000,
         keep_free_slots: 2,
@@ -681,9 +682,47 @@ async fn a_refused_add_ends_picked_failed_and_nothing_is_owned() {
     assert_eq!(row.chosen_infohash.as_deref(), Some(HASH), "the pick stays");
     let saved = counters(&rig);
     assert_eq!(saved["owned"], json!([]));
-    // The add was counted before it was tried; a refusal is not a breaker trip.
-    assert_eq!(saved["human_adds"], 1);
+    // The add was counted before it was tried, then given back and counted
+    // as a refusal; a refusal is not a breaker trip.
+    assert_eq!(
+        (saved["human_adds"].as_u64(), saved["refusals"].as_u64()),
+        (Some(0), Some(1))
+    );
     assert_eq!(saved["breaker_until"], 0);
+}
+
+#[tokio::test]
+async fn a_5xx_or_an_unknown_answer_to_an_add_is_not_refunded() {
+    for (status, body) in [
+        (503, json!({"error": "service_unavailable"})),
+        (418, json!({"error": "teapot", "error_code": 9999})),
+    ] {
+        let mut rig = rig().await;
+        mount_json(
+            &rig.rd,
+            "GET",
+            "/torrents/activeCount",
+            200,
+            json!({"nb": 0, "limit": 25}),
+        )
+        .await;
+        Mock::given(method("GET"))
+            .and(path("/torrents"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&rig.rd)
+            .await;
+        mount_json(&rig.rd, "POST", "/torrents/addMagnet", status, body).await;
+        picked_job(&rig).await;
+
+        run(&mut rig).await;
+
+        let saved = counters(&rig);
+        assert_eq!(
+            (saved["human_adds"].as_u64(), saved["refusals"].as_u64()),
+            (Some(1), Some(0)),
+            "status {status}"
+        );
+    }
 }
 
 #[tokio::test]

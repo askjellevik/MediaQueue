@@ -169,6 +169,7 @@ async fn worker_async(config: WorkerConfig) -> anyhow::Result<()> {
                 state_dir = %rd.state_dir.display(),
                 max_adds_per_day = rd.max_adds_per_day,
                 max_uncached_per_day = rd.max_uncached_per_day,
+                max_refusals_per_day = rd.max_refusals_per_day,
                 max_gb = rd.max_bytes / (1024 * 1024 * 1024),
                 per_min = rd.per_min,
                 keep_free_slots = rd.keep_free_slots,

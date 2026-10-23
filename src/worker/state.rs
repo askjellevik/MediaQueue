@@ -79,6 +79,9 @@ pub enum AddKind {
 pub struct Limits {
     pub max_adds: u32,
     pub max_uncached: u32,
+    /// Refusals by Real-Debrid per day, after which the worker stops
+    /// choosing torrents itself.
+    pub max_refusals: u32,
 }
 
 impl Default for Limits {
@@ -86,6 +89,7 @@ impl Default for Limits {
         Self {
             max_adds: 5,
             max_uncached: 2,
+            max_refusals: 20,
         }
     }
 }
@@ -112,6 +116,10 @@ pub struct State {
     /// version 1 files.
     #[serde(default)]
     pub human_adds: u32,
+    /// Adds Real-Debrid definitively refused (and that were refunded), of
+    /// either kind. Absent in files from before it existed.
+    #[serde(default)]
+    pub refusals: u32,
     pub breaker_until: u64,
     pub breaker_trips: u32,
     pub owned: Vec<Owned>,
@@ -126,6 +134,7 @@ impl State {
             adds: 0,
             uncached: 0,
             human_adds: 0,
+            refusals: 0,
             breaker_until: 0,
             breaker_trips: 0,
             owned: Vec::new(),
@@ -228,12 +237,24 @@ impl StateStore {
             .saturating_sub(cell.state.uncached)
     }
 
-    /// No further add of the worker's own choosing is allowed today: either
-    /// cap is used up, or the file cannot be trusted. Every add may turn out
-    /// uncached, so the uncached cap stops adds too. A human's pick is not
-    /// stopped by this.
+    pub fn refusals_left(&self) -> u32 {
+        let (cell, _) = self.lock_rolled();
+        if cell.unreadable {
+            return 0;
+        }
+        self.inner
+            .limits
+            .max_refusals
+            .saturating_sub(cell.state.refusals)
+    }
+
+    /// No further add of the worker's own choosing is allowed today: a cap
+    /// is used up, or the file cannot be trusted. Every add may turn out
+    /// uncached, so the uncached cap stops adds too, and a day of refusals
+    /// means Real-Debrid does not like what is being asked for. A human's
+    /// pick is not stopped by this.
     pub fn auto_caps_reached(&self) -> bool {
-        self.adds_left() == 0 || self.uncached_left() == 0
+        self.adds_left() == 0 || self.uncached_left() == 0 || self.refusals_left() == 0
     }
 
     /// Adds a human picked today; for the log only.
@@ -257,6 +278,21 @@ impl StateStore {
                 }
                 AddKind::Picked => state.human_adds = state.human_adds.saturating_add(1),
             }
+            Ok(())
+        })
+    }
+
+    /// Real-Debrid definitively refused the add just counted: gives it back
+    /// and counts a refusal instead. Call it only for a refusal classified by
+    /// its error code; a network error, a 5xx or any answer that does not say
+    /// whether the torrent was taken keeps its add counted.
+    pub fn refund_refused_add(&self, kind: AddKind) -> Result<(), StateError> {
+        self.update(|state, _| {
+            match kind {
+                AddKind::Auto => state.adds = state.adds.saturating_sub(1),
+                AddKind::Picked => state.human_adds = state.human_adds.saturating_sub(1),
+            }
+            state.refusals = state.refusals.saturating_add(1);
             Ok(())
         })
     }
@@ -444,6 +480,7 @@ impl StateStore {
             cell.state.adds = 0;
             cell.state.uncached = 0;
             cell.state.human_adds = 0;
+            cell.state.refusals = 0;
         } else if cell.state.date > today && !cell.unreadable {
             tracing::error!("counters file is dated in the future; caps count as reached");
             cell.unreadable = true;
@@ -689,6 +726,44 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_add_is_refunded_and_counted_as_a_refusal() {
+        let dir = Dir::new();
+        let store = open(&dir, &FakeClock::at(NOON));
+        store.record_add(AddKind::Auto).unwrap();
+        store.record_add(AddKind::Picked).unwrap();
+        assert_eq!(store.adds_left(), 4);
+
+        store.refund_refused_add(AddKind::Auto).unwrap();
+        store.refund_refused_add(AddKind::Picked).unwrap();
+
+        assert_eq!(store.adds_left(), 5);
+        assert_eq!(store.picked_adds_today(), 0);
+        assert_eq!(store.refusals_left(), 18);
+        let on_disk: State = serde_json::from_slice(&fs::read(dir.file()).unwrap()).unwrap();
+        assert_eq!(
+            (on_disk.adds, on_disk.human_adds, on_disk.refusals),
+            (0, 0, 2)
+        );
+    }
+
+    #[test]
+    fn the_refusals_cap_idles_auto_jobs_only() {
+        let dir = Dir::new();
+        let store = open(&dir, &FakeClock::at(NOON));
+        for _ in 0..20 {
+            store.record_add(AddKind::Auto).unwrap();
+            store.refund_refused_add(AddKind::Auto).unwrap();
+        }
+        assert_eq!(store.refusals_left(), 0);
+        assert_eq!(store.adds_left(), 5);
+        assert!(store.auto_caps_reached());
+
+        store.record_add(AddKind::Picked).unwrap();
+        assert_eq!(store.picked_adds_today(), 1);
+        assert!(store.auto_caps_reached());
+    }
+
+    #[test]
     fn uncached_cap_stops_adds_too() {
         let dir = Dir::new();
         let store = open(&dir, &FakeClock::at(NOON));
@@ -853,6 +928,7 @@ mod tests {
                 "human_adds",
                 "owned",
                 "pending_delete",
+                "refusals",
                 "uncached",
                 "version"
             ]
