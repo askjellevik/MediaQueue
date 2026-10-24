@@ -209,6 +209,10 @@ pub struct Flags {
     pub extras_words: Vec<&'static str>,
     /// A disc image or a full disc copy rather than a video file.
     pub disc: bool,
+    /// Words that say the picture was made up by software: an AI upscale or
+    /// interpolated frames. Like the pack words, kept so a caller can ignore
+    /// the ones that are part of the film's own title.
+    pub upscale_words: Vec<&'static str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -280,6 +284,11 @@ impl ParsedRelease {
         for word in &other.flags.extras_words {
             if !self.flags.extras_words.contains(word) {
                 self.flags.extras_words.push(*word);
+            }
+        }
+        for word in &other.flags.upscale_words {
+            if !self.flags.upscale_words.contains(word) {
+                self.flags.upscale_words.push(*word);
             }
         }
         self.flags.disc |= other.flags.disc;
@@ -684,6 +693,25 @@ fn flags(t: &Toks) -> Flags {
         if t.has(word) {
             flags.extras_words.push(word);
         }
+    }
+    for word in [
+        "upscale",
+        "upscaled",
+        "upscaler",
+        "theupscaler",
+        "60fps",
+        "interpolated",
+        "aiupscale",
+        "aiupscaled",
+    ] {
+        if t.has(word) {
+            flags.upscale_words.push(word);
+        }
+    }
+    // "AI Upscaled" is caught by the second word, "AIUpscaled" by the glued
+    // forms above; "ai" alone says nothing. "60 fps" may be written apart.
+    if t.seq(&["60", "fps"]) {
+        flags.upscale_words.push("60 fps");
     }
     flags.disc = t.has_any(&[
         "bdmv", "iso", "bd25", "bd50", "bd66", "bd100", "dvd5", "dvd9",

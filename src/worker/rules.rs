@@ -34,6 +34,7 @@ pub enum DropReason {
     Extras,
     Disc,
     CamOrScreener,
+    Upscaled,
     TitleMismatch,
     YearMismatch,
     Size,
@@ -48,6 +49,7 @@ impl DropReason {
             DropReason::Extras => "extras",
             DropReason::Disc => "disc",
             DropReason::CamOrScreener => "cam_or_screener",
+            DropReason::Upscaled => "upscaled",
             DropReason::TitleMismatch => "title_mismatch",
             DropReason::YearMismatch => "year_mismatch",
             DropReason::Size => "size",
@@ -165,6 +167,12 @@ pub fn passes_hard_filters(
     }
     if release.source.is_poor_copy() {
         return Err(DropReason::CamOrScreener);
+    }
+    // A PRO job wants the real picture; software upscales and 60 fps
+    // interpolations pass for a better release than they are. A free job's
+    // ranking is left alone.
+    if job.infuse_pro && outside_title(&release.flags.upscale_words) {
+        return Err(DropReason::Upscaled);
     }
 
     if !title_tokens.is_empty() && name_run.is_none() && file_run.is_none() {
@@ -395,6 +403,34 @@ mod tests {
             ),
             Err(DropReason::Pack)
         );
+    }
+
+    #[test]
+    fn upscales_are_dropped_for_a_pro_job_only() {
+        let pro = job("Example Movie", Some(1994), true);
+        let free = job("Example Movie", Some(1994), false);
+        for name in [
+            "Example.Movie.1994.2160P.Ai.Upscaled.BluRay.60FPS.H265",
+            "Example.Movie.1994.2160p.BluRay.Upscale.x265",
+            "Example.Movie.1994.2160p.AIUpscaled.x265",
+            "Example.Movie.1994.1080p.BluRay.Interpolated.x264",
+            "Example.Movie.1994.1080p.60.fps.x264",
+            "[TheUpscaler] Example Movie (1994) 2160p BluRay x265",
+            "Example.Movie.1994.2160p.Upscaler.x265",
+        ] {
+            assert_eq!(judge(&raw(name), &pro), Err(DropReason::Upscaled), "{name}");
+            assert!(judge(&raw(name), &free).is_ok(), "{name}");
+        }
+        // The marker may be in the file name only.
+        let mut inner = raw("Example.Movie.1994.2160p.BluRay.x265");
+        inner.filename = Some("Example.Movie.1994.2160p.60FPS.mkv".to_string());
+        assert_eq!(judge(&inner, &pro), Err(DropReason::Upscaled));
+        // "AI" alone is not one, and a plain release is untouched.
+        assert!(judge(&raw("Example.Movie.1994.AI.Cut.1080p.BluRay.x264"), &pro).is_ok());
+        assert!(judge(&raw(GOOD), &pro).is_ok());
+        // A word that is part of the film's own title says nothing.
+        let titled = job("The Upscaler", Some(2012), true);
+        assert!(judge(&raw("The.Upscaler.2012.1080p.BluRay.x264-GRPONE"), &titled).is_ok());
     }
 
     #[test]

@@ -1,5 +1,5 @@
 # pro job: Example Movie (1994)
-considered	14
+considered	16
 survivors	11
 collapsed	0
 top	0000000000000000000000000000000000000003
@@ -9,6 +9,7 @@ auto	0000000000000000000000000000000000000003,0000000000000000000000000000000000
 foreign_language	1	1
 dropped	pack	2
 dropped	cam_or_screener	1
+dropped	upscaled	2
 # rank	infohash	score	free_badge	foreign_language	clear_winner	similar
 1	0000000000000000000000000000000000000003	133.0	no	false	true	0
 2	0000000000000000000000000000000000000004	92.8	no	false	false	0

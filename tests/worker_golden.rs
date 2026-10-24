@@ -26,6 +26,9 @@ use wiremock::{
 };
 
 const FIXTURE: &str = include_str!("fixtures/torrentio_example.json");
+/// Two invented upscales, kept apart from the main fixture so the free
+/// golden file, which must not change, never sees them.
+const UPSCALES: &str = include_str!("fixtures/torrentio_upscales.json");
 const CORPUS: &str = include_str!("fixtures/release_names.tsv");
 
 fn h(n: u32) -> String {
@@ -69,6 +72,12 @@ fn run(pro: bool) -> Evaluation {
         &candidates_from(FIXTURE),
         &RankSettings::default(),
     )
+}
+
+fn run_with_upscales(pro: bool) -> Evaluation {
+    let mut raw = candidates_from(FIXTURE);
+    raw.extend(candidates_from(UPSCALES));
+    evaluate(&job(pro), &raw, &RankSettings::default())
 }
 
 fn hashes(eval: &Evaluation) -> Vec<String> {
@@ -238,7 +247,7 @@ fn the_pro_ranking_matches_its_golden_file() {
     golden(
         "golden_pro.tsv",
         "pro job: Example Movie (1994)",
-        &run(true),
+        &run_with_upscales(true),
     );
 }
 
@@ -262,6 +271,18 @@ fn the_collections_and_the_cinema_copy_are_dropped_for_every_job() {
         }
         assert_eq!(eval.considered, 14);
     }
+}
+
+#[test]
+fn upscales_are_dropped_for_a_pro_job_and_left_alone_for_a_free_job() {
+    let pro = run_with_upscales(true);
+    assert_eq!(pro.dropped.get(&DropReason::Upscaled), Some(&2));
+    assert!(find(&pro, 15).is_none() && find(&pro, 16).is_none());
+    assert!(!pro.auto.contains(&h(15)) && !pro.auto.contains(&h(16)));
+
+    let free = run_with_upscales(false);
+    assert!(!free.dropped.contains_key(&DropReason::Upscaled));
+    assert!(find(&free, 15).is_some() && find(&free, 16).is_some());
 }
 
 #[test]
