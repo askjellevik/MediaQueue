@@ -26,7 +26,7 @@ use super::{
     files::{self, Choice, FileRules},
     portal::{Abandon, Job, Mode, PortalClient, Progress, ProgressResult, Report},
     rd::{ListedTorrent, RdError, RdRuntime, TorrentInfo, TorrentStatus, current_job, valid_id},
-    rules::FreeBadge,
+    rules::{FreeBadge, JobSpec, free_badge, library_release},
     run::Timing,
     score::Evaluation,
     state::{AddKind, StateError},
@@ -47,6 +47,10 @@ pub struct Env<'a> {
     /// The largest file any job for a PRO request may take; it replaces the
     /// Real-Debrid cap and the auto ceiling, which are the free jobs'.
     pub pro_max_bytes: u64,
+    /// What a library release must be to satisfy a PRO job: this many lines
+    /// of height and this many bytes.
+    pub pro_have_min_lines: u32,
+    pub pro_have_min_bytes: u64,
 }
 
 impl Env<'_> {
@@ -391,6 +395,39 @@ fn most_recent(hashes: &[String]) -> Vec<String> {
     hashes[hashes.len().saturating_sub(5)..].to_vec()
 }
 
+/// The hash of a torrent in the library that already serves this job, if
+/// one does. It must be downloaded, be a release of the job's film (title
+/// and year from the name), and fit the job's profile: for a free job the
+/// free badge `yes`, for a PRO job at least the configured height and size.
+/// Each profile is judged on its own terms: a TrueHD remux does not stand
+/// in for a free copy, a small AAC encode does not stand in for a PRO one.
+/// The check reads the listing the walk fetches anyway; an entry without a
+/// name never matches.
+fn already_had(env: &Env<'_>, job: &Job, snapshot: &[ListedTorrent]) -> Option<String> {
+    let spec = JobSpec {
+        title: job.title.clone(),
+        year: job.year.and_then(|year| i32::try_from(year).ok()),
+        infuse_pro: job.infuse_pro,
+        blocked: HashSet::new(),
+    };
+    snapshot
+        .iter()
+        .filter(|t| t.status == TorrentStatus::Downloaded)
+        .filter(|t| t.hash.len() == 40 && t.hash.bytes().all(|b| b.is_ascii_hexdigit()))
+        .find(|t| {
+            let Some(release) = library_release(&t.filename, &spec) else {
+                return false;
+            };
+            if job.infuse_pro {
+                release.resolution.lines() >= env.pro_have_min_lines
+                    && t.bytes >= env.pro_have_min_bytes
+            } else {
+                free_badge(&release, false) == FreeBadge::Yes
+            }
+        })
+        .map(|t| t.hash.clone())
+}
+
 async fn walk(
     env: &Env<'_>,
     job: &Job,
@@ -401,6 +438,12 @@ async fn walk(
 ) -> Step<Report> {
     gate_switch_and_breaker(env).await?;
     let snapshot = env.rd.client.list_torrents().await.map_err(rd_stop)?;
+    // A copy that already serves this request's profile ends the job before
+    // anything is added. A human's pick never comes through here.
+    if let Some(hash) = already_had(env, job, &snapshot) {
+        run_ended(job.id, "already_had");
+        return Ok(Report::already_had(hash));
+    }
     // Every planned hash is looked for in the library before anything is
     // added, so a release that is already there wins over a new add.
     let in_library = |hash: &&String| snapshot.iter().any(|t| t.hash == **hash);

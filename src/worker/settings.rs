@@ -160,6 +160,13 @@ pub struct RankSettings {
     /// A free job's candidate must have a known size of at most this. A PRO
     /// job's ceiling is `pro_max_bytes`.
     pub auto_max_bytes: u64,
+
+    // What counts as "already had" for a PRO auto job: a downloaded release
+    // in the library of at least this height and size. A free job's test is
+    // the free profile, with no numbers. Env `WORKER_PRO_HAVE_MIN_HEIGHT`
+    // and `WORKER_PRO_HAVE_MIN_GB`.
+    pub pro_have_min_lines: u32,
+    pub pro_have_min_bytes: u64,
 }
 
 impl Default for RankSettings {
@@ -258,6 +265,8 @@ impl Default for RankSettings {
             pro_auto_min_seeders: 3,
             auto_max_tries: 3,
             auto_max_bytes: 15 * GIB,
+            pro_have_min_lines: 1080,
+            pro_have_min_bytes: 8 * GIB,
         }
     }
 }

@@ -2694,3 +2694,297 @@ async fn rd_calls_on(rd: &MockServer, verb: &str, route_prefix: &str) -> usize {
         .filter(|r| r.method.as_str() == verb && r.url.path().starts_with(route_prefix))
         .count()
 }
+
+// ---------------------------------------------------------------------
+// Already in the library (auto jobs only, judged per profile)
+// ---------------------------------------------------------------------
+
+/// A downloaded torrent in the library listing, with the name and size the
+/// "already had" check reads.
+fn library_entry(letter: char, name: &str, bytes: u64) -> Value {
+    json!({
+        "id": format!("LIB{letter}"), "hash": hash_of(letter), "filename": name,
+        "bytes": bytes, "status": "downloaded",
+    })
+}
+
+async fn mount_library(rd: &MockServer, entries: Vec<Value>) {
+    mount_json(
+        rd,
+        "GET",
+        "/torrents/activeCount",
+        200,
+        json!({"nb": 1, "limit": 25}),
+    )
+    .await;
+    mount_json(rd, "GET", "/torrents", 200, json!(entries)).await;
+}
+
+const REMUX: &str = "Example.Movie.1994.2160p.BluRay.REMUX.TrueHD.7.1-GRPONE";
+const PRO_ENCODE: &str = "Example.Movie.1994.2160p.BluRay.x265.DTS-HD.MA.5.1-GRPONE";
+
+/// The job ended `done` as `already_had`: nothing added, nothing counted,
+/// no torrent id.
+async fn assert_already_had(rig: &Rig, job: i64) {
+    let row = job_row(&rig.app.pool, job).await;
+    assert_eq!(
+        (
+            row.state.as_str(),
+            row.reason.as_deref(),
+            row.rd_torrent_id.as_deref()
+        ),
+        ("done", Some("already_had"), None),
+        "{row:?}"
+    );
+    assert_eq!(request_status(&rig.app.pool, job).await, "already_had");
+    assert_eq!(rd_calls(rig, "POST", "/torrents/addMagnet").await, 0);
+    assert!(
+        !rig.state_dir.join("counters.json").exists(),
+        "no add was counted"
+    );
+}
+
+#[tokio::test]
+async fn an_auto_free_job_is_already_had_when_the_library_holds_a_free_safe_copy() {
+    let mut rig = rig().await;
+    set_mode(&rig, "auto").await;
+    serve_streams(&rig.stub, three_and_a_twin()).await;
+    mount_library(
+        &rig.rd,
+        vec![library_entry(
+            'e',
+            "Example.Movie.1994.1080p.BluRay.x264.AAC-GRPTWO",
+            5 * GIB,
+        )],
+    )
+    .await;
+    let job = queue_job(&rig, 1).await;
+
+    run(&mut rig).await;
+
+    assert_already_had(&rig, job).await;
+}
+
+#[tokio::test]
+async fn an_auto_pro_job_is_already_had_when_the_library_holds_a_big_enough_copy() {
+    let mut rig = rig().await;
+    set_mode(&rig, "auto").await;
+    serve_streams(&rig.stub, vec![stream(&hash_of('1'), REMUX, 80, "40.0 GB")]).await;
+    mount_library(&rig.rd, vec![library_entry('e', REMUX, 38 * GIB)]).await;
+    let job = queue_job_for(&rig, 1, true).await;
+
+    run(&mut rig).await;
+
+    assert_already_had(&rig, job).await;
+}
+
+#[tokio::test]
+async fn a_human_pick_is_added_even_when_the_library_holds_a_copy() {
+    for pro in [false, true] {
+        let mut rig = rig().await;
+        mount_free_slots(&rig.rd).await;
+        mount_library(
+            &rig.rd,
+            vec![
+                library_entry(
+                    'e',
+                    "Example.Movie.1994.1080p.BluRay.x264.AAC-GRPTWO",
+                    12 * GIB,
+                ),
+                library_entry('f', PRO_ENCODE, 30 * GIB),
+            ],
+        )
+        .await;
+        mount_adds(&rig.rd, vec![added("PICKED")]).await;
+        mount_cached_for(&rig.rd, "PICKED", HASH, 4 * GIB).await;
+        let job = picked_job(&rig).await;
+        sqlx::query("UPDATE requests SET infuse_pro = ? WHERE id = (SELECT request_id FROM fetch_jobs WHERE id = ?)")
+            .bind(pro)
+            .bind(job)
+            .execute(&rig.app.pool)
+            .await
+            .unwrap();
+
+        run(&mut rig).await;
+
+        let row = job_row(&rig.app.pool, job).await;
+        assert_eq!(
+            (
+                row.state.as_str(),
+                row.rd_torrent_id.as_deref(),
+                row.reason.as_deref()
+            ),
+            ("done", Some("PICKED"), None),
+            "pro={pro} {row:?}"
+        );
+        assert_eq!(added_hashes(&rig).await, [HASH], "pro={pro}");
+    }
+}
+
+#[tokio::test]
+async fn the_pro_library_thresholds_are_a_height_and_a_size() {
+    // (name in the library, size, counts as already had)
+    let cases = [
+        (
+            "Example.Movie.1994.1080p.BluRay.x264.DTS-GRPONE",
+            8 * GIB,
+            true,
+        ),
+        (
+            "Example.Movie.1994.1080p.BluRay.x264.DTS-GRPONE",
+            8 * GIB - 1,
+            false,
+        ),
+        (
+            "Example.Movie.1994.720p.BluRay.x264.DTS-GRPONE",
+            20 * GIB,
+            false,
+        ),
+        (
+            "Example.Movie.1994.2160p.BluRay.x265.DTS-GRPONE",
+            9 * GIB,
+            true,
+        ),
+        // Not the same film: another year, or no year at all.
+        (
+            "Example.Movie.2004.2160p.BluRay.x265.DTS-GRPONE",
+            20 * GIB,
+            false,
+        ),
+        (
+            "Example.Movie.2160p.BluRay.x265.DTS-GRPONE",
+            20 * GIB,
+            false,
+        ),
+        // Software upscales never count for a PRO job.
+        ("Example.Movie.1994.2160p.Ai.Upscaled.x265", 20 * GIB, false),
+    ];
+    for (name, bytes, had) in cases {
+        let mut rig = rig().await;
+        set_mode(&rig, "auto").await;
+        serve_streams(&rig.stub, vec![stream(&hash_of('1'), REMUX, 80, "40.0 GB")]).await;
+        mount_library(&rig.rd, vec![library_entry('e', name, bytes)]).await;
+        mount_adds(&rig.rd, vec![added("NEW")]).await;
+        mount_cached_for(&rig.rd, "NEW", &hash_of('1'), 40 * GIB).await;
+        let job = queue_job_for(&rig, 1, true).await;
+
+        run(&mut rig).await;
+
+        let row = job_row(&rig.app.pool, job).await;
+        if had {
+            assert_already_had(&rig, job).await;
+        } else {
+            assert_eq!(
+                (row.state.as_str(), row.rd_torrent_id.as_deref()),
+                ("done", Some("NEW")),
+                "{name} {bytes}: {row:?}"
+            );
+            assert_eq!(added_hashes(&rig).await, [hash_of('1')], "{name} {bytes}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_downloaded_pro_remux_does_not_satisfy_a_free_request() {
+    let mut rig = rig().await;
+    set_mode(&rig, "auto").await;
+    serve_streams(&rig.stub, three_and_a_twin()).await;
+    mount_library(&rig.rd, vec![library_entry('e', REMUX, 38 * GIB)]).await;
+    mount_adds(&rig.rd, vec![added("FREE")]).await;
+    mount_cached_for(&rig.rd, "FREE", &hash_of('1'), 4 * GIB).await;
+    let job = queue_job(&rig, 1).await;
+
+    run(&mut rig).await;
+
+    let row = job_row(&rig.app.pool, job).await;
+    assert_eq!(
+        (
+            row.state.as_str(),
+            row.rd_torrent_id.as_deref(),
+            row.reason.as_deref()
+        ),
+        ("done", Some("FREE"), None),
+        "{row:?}"
+    );
+    assert_eq!(added_hashes(&rig).await, [hash_of('1')]);
+}
+
+#[tokio::test]
+async fn a_small_free_safe_encode_does_not_satisfy_a_pro_request() {
+    let mut rig = rig().await;
+    set_mode(&rig, "auto").await;
+    serve_streams(&rig.stub, vec![stream(&hash_of('1'), REMUX, 80, "40.0 GB")]).await;
+    mount_library(
+        &rig.rd,
+        vec![library_entry(
+            'e',
+            "Example.Movie.1994.1080p.BluRay.x264.AAC-GRPTWO",
+            7 * GIB,
+        )],
+    )
+    .await;
+    mount_adds(&rig.rd, vec![added("PRO")]).await;
+    mount_cached_for(&rig.rd, "PRO", &hash_of('1'), 40 * GIB).await;
+    let job = queue_job_for(&rig, 1, true).await;
+
+    run(&mut rig).await;
+
+    let row = job_row(&rig.app.pool, job).await;
+    assert_eq!(
+        (
+            row.state.as_str(),
+            row.rd_torrent_id.as_deref(),
+            row.reason.as_deref()
+        ),
+        ("done", Some("PRO"), None),
+        "{row:?}"
+    );
+    assert_eq!(added_hashes(&rig).await, [hash_of('1')]);
+}
+
+#[tokio::test]
+async fn a_free_copy_and_a_pro_copy_of_the_same_film_can_coexist() {
+    // The library holds the free-safe copy; a PRO request for the same film
+    // still adds its own release, and the free request stays satisfied.
+    let mut rig = rig().await;
+    set_mode(&rig, "auto").await;
+    serve_streams(
+        &rig.stub,
+        vec![
+            stream(&hash_of('1'), REMUX, 80, "40.0 GB"),
+            stream(&hash_of('2'), PLAYS, 120, "6.0 GB"),
+        ],
+    )
+    .await;
+    mount_library(
+        &rig.rd,
+        vec![library_entry(
+            'e',
+            "Example.Movie.1994.1080p.BluRay.x264.AAC-GRPTWO",
+            7 * GIB,
+        )],
+    )
+    .await;
+    mount_adds(&rig.rd, vec![added("PRO")]).await;
+    mount_cached_for(&rig.rd, "PRO", &hash_of('1'), 40 * GIB).await;
+    let pro = queue_job_for(&rig, 1, true).await;
+    run(&mut rig).await;
+    assert_eq!(
+        job_row(&rig.app.pool, pro).await.rd_torrent_id.as_deref(),
+        Some("PRO")
+    );
+
+    let free = queue_job(&rig, 2).await;
+    run(&mut rig).await;
+    let row = job_row(&rig.app.pool, free).await;
+    assert_eq!(
+        (
+            row.state.as_str(),
+            row.reason.as_deref(),
+            row.rd_torrent_id.as_deref()
+        ),
+        ("done", Some("already_had"), None),
+        "{row:?}"
+    );
+    assert_eq!(added_hashes(&rig).await.len(), 1);
+}

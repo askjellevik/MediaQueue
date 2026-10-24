@@ -238,6 +238,26 @@ impl WorkerConfig {
             }
             rank.auto_max_bytes = gb * GIB;
         }
+        if let Some(v) = value("WORKER_PRO_HAVE_MIN_HEIGHT") {
+            let lines = whole_number("WORKER_PRO_HAVE_MIN_HEIGHT", &v)?;
+            if !(240..=4320).contains(&lines) {
+                return Err(invalid(
+                    "WORKER_PRO_HAVE_MIN_HEIGHT",
+                    "must be between 240 and 4320",
+                ));
+            }
+            rank.pro_have_min_lines = lines as u32;
+        }
+        if let Some(v) = value("WORKER_PRO_HAVE_MIN_GB") {
+            let gb = whole_number("WORKER_PRO_HAVE_MIN_GB", &v)?;
+            if !(1..=MAX_PRO_GB).contains(&gb) {
+                return Err(invalid(
+                    "WORKER_PRO_HAVE_MIN_GB",
+                    format!("must be between 1 and {MAX_PRO_GB}"),
+                ));
+            }
+            rank.pro_have_min_bytes = gb * GIB;
+        }
 
         let rd = match value("RD_TOKEN_FILE") {
             None => None,
@@ -820,6 +840,42 @@ mod tests {
             assert!(
                 load(&[("INTERNAL_TOKEN", TOKEN), ("WORKER_PRO_MAX_GB", bad)]).is_err(),
                 "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_pro_library_thresholds_default_and_can_be_overridden() {
+        let config = load(&[("INTERNAL_TOKEN", TOKEN)]).unwrap();
+        assert_eq!(
+            (
+                config.rank.pro_have_min_lines,
+                config.rank.pro_have_min_bytes
+            ),
+            (1080, 8 * GIB)
+        );
+        let config = load(&[
+            ("INTERNAL_TOKEN", TOKEN),
+            ("WORKER_PRO_HAVE_MIN_HEIGHT", "2160"),
+            ("WORKER_PRO_HAVE_MIN_GB", "20"),
+        ])
+        .unwrap();
+        assert_eq!(
+            (
+                config.rank.pro_have_min_lines,
+                config.rank.pro_have_min_bytes
+            ),
+            (2160, 20 * GIB)
+        );
+        for (name, bad) in [
+            ("WORKER_PRO_HAVE_MIN_HEIGHT", "0"),
+            ("WORKER_PRO_HAVE_MIN_HEIGHT", "tall"),
+            ("WORKER_PRO_HAVE_MIN_GB", "0"),
+            ("WORKER_PRO_HAVE_MIN_GB", "501"),
+        ] {
+            assert!(
+                load(&[("INTERNAL_TOKEN", TOKEN), (name, bad)]).is_err(),
+                "{name}={bad}"
             );
         }
     }

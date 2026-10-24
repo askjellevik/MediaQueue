@@ -203,6 +203,12 @@ pub struct ListedTorrent {
     #[serde(default, deserialize_with = "lowercase")]
     pub hash: String,
     pub status: TorrentStatus,
+    /// The torrent's name; empty when the listing gives none.
+    #[serde(default, deserialize_with = "lenient_name")]
+    pub filename: String,
+    /// The size of the selected files; 0 when the listing gives none.
+    #[serde(default, deserialize_with = "lenient_bytes")]
+    pub bytes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -241,6 +247,19 @@ pub struct ActiveCount {
 #[derive(Deserialize)]
 struct Added {
     id: String,
+}
+
+/// The listing's name and size only feed the "already had" check; a field
+/// that is missing or odd must not make the whole listing unreadable.
+fn lenient_name<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::String(name) => name,
+        _ => String::new(),
+    })
+}
+
+fn lenient_bytes<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+    Ok(serde_json::Value::deserialize(d)?.as_u64().unwrap_or(0))
 }
 
 fn lowercase<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {

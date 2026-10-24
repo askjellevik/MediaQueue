@@ -221,6 +221,39 @@ pub fn passes_hard_filters(
     })
 }
 
+/// Reads the name of a torrent in the library as a release of the job's
+/// film, or `None` when it is not one: the title must be found in the name
+/// and, when the job has a year, that year must stand beside it (a name with
+/// no year could be another film of the same title). Packs, extras, disc
+/// images and cam copies are not releases of the film, and a PRO job does
+/// not take an upscale for one either. The same matching as the hard filters.
+pub fn library_release(name: &str, job: &JobSpec) -> Option<ParsedRelease> {
+    let title_tokens = tokenize(&job.title);
+    let tokens = tokenize(name);
+    let run = title_run(&tokens, &title_tokens)?;
+    if let Some(year) = job.year {
+        let years = years_in(&without_run(&tokens, Some(run)));
+        if !years.iter().any(|y| i32::from(*y) == year) {
+            return None;
+        }
+    }
+    let release = parse_release(name);
+    let outside_title = |words: &[&'static str]| {
+        words
+            .iter()
+            .any(|word| !title_tokens.iter().any(|token| token == word))
+    };
+    if outside_title(&release.flags.pack_words)
+        || outside_title(&release.flags.extras_words)
+        || release.flags.disc
+        || release.source.is_poor_copy()
+        || (job.infuse_pro && outside_title(&release.flags.upscale_words))
+    {
+        return None;
+    }
+    Some(release)
+}
+
 /// Where the title starts in the release's tokens, as a token run. A
 /// leading "the" is optional on the release's side, so "The Example Movie"
 /// is also found as "Example Movie" (when that is at least two tokens).
@@ -431,6 +464,25 @@ mod tests {
         // A word that is part of the film's own title says nothing.
         let titled = job("The Upscaler", Some(2012), true);
         assert!(judge(&raw("The.Upscaler.2012.1080p.BluRay.x264-GRPONE"), &titled).is_ok());
+    }
+
+    #[test]
+    fn a_library_name_must_carry_the_title_and_the_year() {
+        let spec = job("Example Movie", Some(1994), false);
+        assert!(library_release(GOOD, &spec).is_some());
+        for name in [
+            "Example.Movie.2004.1080p.BluRay.x264.AAC",
+            "Example.Movie.1080p.BluRay.x264.AAC",
+            "Other.Movie.1994.1080p.BluRay.x264.AAC",
+            "Example.Movie.Collection.1994.1080p.BluRay.x264.AAC",
+            "Example.Movie.1994.BDMV",
+            "",
+        ] {
+            assert!(library_release(name, &spec).is_none(), "{name}");
+        }
+        // No year on the job: the title alone decides.
+        let no_year = job("Example Movie", None, false);
+        assert!(library_release("Example.Movie.1080p.BluRay.x264.AAC", &no_year).is_some());
     }
 
     #[test]
