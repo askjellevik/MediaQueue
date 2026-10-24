@@ -2988,3 +2988,138 @@ async fn a_free_copy_and_a_pro_copy_of_the_same_film_can_coexist() {
     );
     assert_eq!(added_hashes(&rig).await.len(), 1);
 }
+
+// ---------------------------------------------------------------------
+// Auditable auto jobs: the report carries what the worker saw
+// ---------------------------------------------------------------------
+
+/// The shortlist stored on the job, which the portal only keeps once its own
+/// validation took the report.
+fn stored_candidates(row: &JobRow) -> Vec<Value> {
+    serde_json::from_str(row.candidates.as_deref().expect("a stored shortlist")).unwrap()
+}
+
+#[tokio::test]
+async fn a_done_auto_job_keeps_the_shortlist_the_top_and_the_chosen_hash() {
+    let mut rig = rig().await;
+    set_mode(&rig, "auto").await;
+    serve_streams(&rig.stub, three_and_a_twin()).await;
+    mount_free_slots(&rig.rd).await;
+    mount_adds(&rig.rd, vec![refused(), added("SECOND")]).await;
+    mount_cached_for(&rig.rd, "SECOND", &hash_of('2'), 4 * GIB).await;
+    let job = queue_job(&rig, 1).await;
+
+    run(&mut rig).await;
+
+    let row = job_row(&rig.app.pool, job).await;
+    assert_eq!(row.state, "done", "{row:?}");
+    assert_eq!(row.chosen_infohash, Some(hash_of('2')));
+    let candidates = stored_candidates(&row);
+    let listed: Vec<&str> = candidates
+        .iter()
+        .map(|c| c["infohash"].as_str().unwrap())
+        .collect();
+    for hash in ['1', '2', '3'] {
+        assert!(
+            listed.contains(&hash_of(hash).as_str()),
+            "{hash} in {listed:?}"
+        );
+    }
+    let top: Option<String> =
+        sqlx::query_scalar("SELECT top_infohash FROM fetch_jobs WHERE id = ?")
+            .bind(job)
+            .fetch_one(&rig.app.pool)
+            .await
+            .unwrap();
+    assert_eq!(top.as_deref(), Some(listed[0]));
+}
+
+#[tokio::test]
+async fn a_failed_auto_job_keeps_the_shortlist_and_the_last_hash_it_tried() {
+    let mut rig = rig().await;
+    set_mode(&rig, "auto").await;
+    serve_streams(&rig.stub, three_and_a_twin()).await;
+    mount_free_slots(&rig.rd).await;
+    mount_adds(&rig.rd, vec![refused(), refused(), refused()]).await;
+    let job = queue_job(&rig, 1).await;
+
+    run(&mut rig).await;
+
+    let row = job_row(&rig.app.pool, job).await;
+    assert_eq!(
+        (row.state.as_str(), row.reason.as_deref()),
+        ("needs_pick", Some("rd_refused")),
+        "{row:?}"
+    );
+    assert_eq!(stored_candidates(&row).len(), 3, "the twin is folded");
+    assert_eq!(row.chosen_infohash, Some(hash_of('3')));
+}
+
+#[tokio::test]
+async fn an_already_had_auto_job_keeps_the_shortlist_too() {
+    let mut rig = rig().await;
+    set_mode(&rig, "auto").await;
+    serve_streams(&rig.stub, three_and_a_twin()).await;
+    mount_library(
+        &rig.rd,
+        vec![library_entry(
+            'e',
+            "Example.Movie.1994.1080p.BluRay.x264.AAC-GRPTWO",
+            5 * GIB,
+        )],
+    )
+    .await;
+    let job = queue_job(&rig, 1).await;
+
+    run(&mut rig).await;
+
+    let row = job_row(&rig.app.pool, job).await;
+    assert_eq!(row.reason.as_deref(), Some("already_had"), "{row:?}");
+    assert_eq!(stored_candidates(&row).len(), 3, "the twin is folded");
+    assert_eq!(row.chosen_infohash, Some(hash_of('e')));
+}
+
+#[tokio::test]
+async fn the_biggest_auto_report_stays_inside_the_portals_limits() {
+    // Ten candidates with the longest names the source can send: every key
+    // present, every string at its cap. The portal must still take it all.
+    let long = "A".repeat(380);
+    let streams: Vec<Value> = (0..10u32)
+        .map(|n| {
+            let letter = char::from_digit(n + 1, 16).unwrap();
+            let name = format!("{PLAYS}-{long}{letter}");
+            let mut stream = stream(
+                &hash_of(letter),
+                &name,
+                200 - n * 10,
+                &format!("{:.1} GB", 8.0 + f64::from(n) * 0.5),
+            );
+            stream["title"] = json!(format!(
+                "{name}\n\u{1F464} {} \u{1F4BE} {:.1} GB \u{2699}\u{FE0F} {}",
+                200 - n * 10,
+                8.0 + f64::from(n) * 0.5,
+                "P".repeat(380)
+            ));
+            stream
+        })
+        .collect();
+    let mut rig = rig().await;
+    set_mode(&rig, "auto").await;
+    serve_streams(&rig.stub, streams).await;
+    mount_free_slots(&rig.rd).await;
+    mount_adds(&rig.rd, vec![added("FIRST")]).await;
+    mount_cached_for(&rig.rd, "FIRST", &hash_of('1'), 4 * GIB).await;
+    let job = queue_job(&rig, 1).await;
+
+    run(&mut rig).await;
+
+    let row = job_row(&rig.app.pool, job).await;
+    assert_eq!(row.state, "done", "the portal took the report: {row:?}");
+    let candidates = stored_candidates(&row);
+    assert_eq!(candidates.len(), 10);
+    for candidate in &candidates {
+        assert!(candidate.as_object().unwrap().len() <= 24);
+    }
+    // The portal measures the list as text and refuses one over 64 KiB.
+    assert!(row.candidates.as_deref().unwrap().len() < 64 * 1024);
+}

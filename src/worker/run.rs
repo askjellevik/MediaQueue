@@ -571,9 +571,14 @@ impl<S: CandidateSource> Worker<S> {
                     Report::needs_pick_with("rd_timeout", "the run took too long")
                 }
             };
-        if report.state == ReportState::NeedsPick && report.candidates.is_none() {
+        // Whatever the outcome, the card shows what the worker saw and what
+        // it was working on.
+        if report.candidates.is_none() {
             report.candidates = Some(std::mem::take(&mut trace.candidates));
-            report.top_infohash = trace.top_infohash.take();
+            report.top_infohash = report.top_infohash.take().or(trace.top_infohash.take());
+        }
+        if report.chosen_infohash.is_none() {
+            report.chosen_infohash = trace.chosen.take();
         }
         // Nothing eligible never reached Real-Debrid: not a failed run.
         if report.reason != Some("no_clear_choice") {

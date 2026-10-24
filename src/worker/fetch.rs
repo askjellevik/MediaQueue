@@ -95,6 +95,9 @@ struct Terms {
 #[derive(Debug, Default)]
 pub struct Trace {
     pub torrent: Option<String>,
+    /// The hash the run was working on when it ended (an auto run only), for
+    /// the report that ends it.
+    pub chosen: Option<String>,
     pub candidates: Vec<Map<String, Value>>,
     pub top_infohash: Option<String>,
 }
@@ -366,7 +369,7 @@ pub async fn auto(env: &Env<'_>, job: &Job, evaluation: &Evaluation, trace: &mut
         ));
     }
     let mut refused: Vec<String> = Vec::new();
-    let result = walk(env, job, trace, terms, &picks, &mut refused).await;
+    let result = walk(env, job, trace, terms, evaluation, &picks, &mut refused).await;
     let mut report = match result {
         Ok(report) => {
             // Done: the torrent is the result and stays.
@@ -433,6 +436,7 @@ async fn walk(
     job: &Job,
     trace: &mut Trace,
     terms: Terms,
+    evaluation: &Evaluation,
     picks: &[String],
     refused: &mut Vec<String>,
 ) -> Step<Report> {
@@ -442,6 +446,7 @@ async fn walk(
     // anything is added. A human's pick never comes through here.
     if let Some(hash) = already_had(env, job, &snapshot) {
         run_ended(job.id, "already_had");
+        trace.chosen = Some(hash.clone());
         return Ok(Report::already_had(hash));
     }
     // Every planned hash is looked for in the library before anything is
@@ -455,11 +460,21 @@ async fn walk(
 
     let mut last: Option<(Fail, String)> = None;
     for (n, hash) in order.iter().enumerate() {
-        match candidate(env, job, trace, terms, picks, hash, &snapshot).await {
+        trace.chosen = Some((*hash).clone());
+        let tried = candidate(env, job, trace, terms, picks, hash, &snapshot).await;
+        let outcome = match &tried {
+            Ok(report) if report.rd_torrent_id.is_some() => "added",
+            Ok(_) => "already_had",
+            Err(Stop::Failed(Fail::Refused, _)) => "refused",
+            Err(Stop::Failed(Fail::Timeout, _)) => "timed out",
+            Err(Stop::Failed(..)) => "skipped",
+            Err(_) => "stopped",
+        };
+        log_candidate(job, n + 1, evaluation, hash, outcome);
+        match tried {
             Ok(report) => return Ok(report),
             Err(Stop::Failed(fail, text)) => {
                 cleanup(env, trace, None).await;
-                tracing::info!(job = job.id, %hash, ?fail, "candidate failed");
                 if fail == Fail::Refused {
                     refused.push((*hash).clone());
                 }
@@ -482,6 +497,23 @@ async fn walk(
         fail.reason(),
         &format!("{} of {} tried; last: {text}", order.len(), picks.len()),
     ))
+}
+
+/// One line per candidate the auto walk tried: the job, its place in the
+/// walk, its score, its size and how it went. No hash and no name.
+fn log_candidate(job: &Job, position: usize, evaluation: &Evaluation, hash: &str, outcome: &str) {
+    let found = evaluation.shortlist.iter().find(|c| c.raw.infohash == hash);
+    let size_gb = found
+        .and_then(|c| c.raw.size_bytes)
+        .map(|bytes| bytes as f64 / (1024.0 * 1024.0 * 1024.0));
+    tracing::info!(
+        job = job.id,
+        position,
+        score = found.map(|c| c.score),
+        size_gb = size_gb.map(|gb| (gb * 10.0).round() / 10.0),
+        outcome,
+        "auto candidate"
+    );
 }
 
 /// One planned hash through the library check and the add. Only a hash on
@@ -935,6 +967,62 @@ mod tests {
             blocked: HashSet::new(),
         };
         evaluate(&spec, candidates, &RankSettings::default())
+    }
+
+    #[derive(Clone, Default)]
+    struct Lines(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Lines {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_tried_candidate_logs_job_position_score_size_and_outcome_but_no_hash_or_name() {
+        let eval = evaluation(false, &[raw('b', PLAYS, 9)]);
+        let job = Job {
+            id: 7,
+            claim_id: "claim".into(),
+            tmdb_id: 1,
+            imdb_id: "tt1234567".into(),
+            media_type: "movie".into(),
+            title: "Example Movie".into(),
+            year: Some(1994),
+            infuse_pro: false,
+            chosen_infohash: None,
+            picked: false,
+            rd_torrent_id: None,
+            remove_rd_torrent_id: None,
+            blocked_hashes: Vec::new(),
+        };
+        let lines = Lines::default();
+        let writer = lines.clone();
+        let guard = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::INFO)
+                .with_ansi(false)
+                .with_writer(move || writer.clone())
+                .finish(),
+        );
+        log_candidate(&job, 2, &eval, &"b".repeat(40), "timed out");
+        drop(guard);
+        let text = String::from_utf8(lines.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(text.lines().count(), 1, "{text}");
+        for part in [
+            "job=7",
+            "position=2",
+            "score=",
+            "size_gb=9.0",
+            r#"outcome="timed out""#,
+        ] {
+            assert!(text.contains(part), "{part} in {text}");
+        }
+        assert!(!text.contains(&"b".repeat(40)) && !text.contains("Example.Movie"));
     }
 
     const PLAYS: &str = "Example.Movie.1994.1080p.BluRay.x264.AAC";
