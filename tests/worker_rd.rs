@@ -1282,9 +1282,9 @@ fn hash_of(letter: char) -> String {
 
 /// The release name every auto test uses: 1080p BluRay x264 with AAC audio,
 /// which a free profile plays, so its badge is `yes`.
-const PLAYS: &str = "Example.Movie.1994.1080p.BluRay.x264.AAC";
+const PLAYS: &str = "Example.Movie.1994.1080p.BluRay.h264.AAC";
 /// The same release without an audio tag: a free profile cannot tell.
-const UNTAGGED: &str = "Example.Movie.1994.1080p.BluRay.x264";
+const UNTAGGED: &str = "Example.Movie.1994.1080p.BluRay.h264";
 
 fn stream(hash: &str, release: &str, seeders: u32, size: &str) -> Value {
     json!({
@@ -2754,7 +2754,7 @@ async fn an_auto_free_job_is_already_had_when_the_library_holds_a_free_safe_copy
         &rig.rd,
         vec![library_entry(
             'e',
-            "Example.Movie.1994.1080p.BluRay.x264.AAC-GRPTWO",
+            "Example.Movie.1994.1080p.BluRay.h264.AAC-GRPTWO",
             5 * GIB,
         )],
     )
@@ -2789,7 +2789,7 @@ async fn a_human_pick_is_added_even_when_the_library_holds_a_copy() {
             vec![
                 library_entry(
                     'e',
-                    "Example.Movie.1994.1080p.BluRay.x264.AAC-GRPTWO",
+                    "Example.Movie.1994.1080p.BluRay.h264.AAC-GRPTWO",
                     12 * GIB,
                 ),
                 library_entry('f', PRO_ENCODE, 30 * GIB),
@@ -2827,17 +2827,17 @@ async fn the_pro_library_thresholds_are_a_height_and_a_size() {
     // (name in the library, size, counts as already had)
     let cases = [
         (
-            "Example.Movie.1994.1080p.BluRay.x264.DTS-GRPONE",
+            "Example.Movie.1994.1080p.BluRay.h264.DTS-GRPONE",
             8 * GIB,
             true,
         ),
         (
-            "Example.Movie.1994.1080p.BluRay.x264.DTS-GRPONE",
+            "Example.Movie.1994.1080p.BluRay.h264.DTS-GRPONE",
             8 * GIB - 1,
             false,
         ),
         (
-            "Example.Movie.1994.720p.BluRay.x264.DTS-GRPONE",
+            "Example.Movie.1994.720p.BluRay.h264.DTS-GRPONE",
             20 * GIB,
             false,
         ),
@@ -2919,7 +2919,7 @@ async fn a_small_free_safe_encode_does_not_satisfy_a_pro_request() {
         &rig.rd,
         vec![library_entry(
             'e',
-            "Example.Movie.1994.1080p.BluRay.x264.AAC-GRPTWO",
+            "Example.Movie.1994.1080p.BluRay.h264.AAC-GRPTWO",
             7 * GIB,
         )],
     )
@@ -2961,7 +2961,7 @@ async fn a_free_copy_and_a_pro_copy_of_the_same_film_can_coexist() {
         &rig.rd,
         vec![library_entry(
             'e',
-            "Example.Movie.1994.1080p.BluRay.x264.AAC-GRPTWO",
+            "Example.Movie.1994.1080p.BluRay.h264.AAC-GRPTWO",
             7 * GIB,
         )],
     )
@@ -3065,7 +3065,7 @@ async fn an_already_had_auto_job_keeps_the_shortlist_too() {
         &rig.rd,
         vec![library_entry(
             'e',
-            "Example.Movie.1994.1080p.BluRay.x264.AAC-GRPTWO",
+            "Example.Movie.1994.1080p.BluRay.h264.AAC-GRPTWO",
             5 * GIB,
         )],
     )

@@ -29,6 +29,10 @@ const FIXTURE: &str = include_str!("fixtures/torrentio_example.json");
 /// Two invented upscales, kept apart from the main fixture so the free
 /// golden file, which must not change, never sees them.
 const UPSCALES: &str = include_str!("fixtures/torrentio_upscales.json");
+/// Thirteen invented names that probe the Real-Debrid name filter, kept
+/// apart from the main fixture so the facts about that one keep their
+/// numbers. Only the golden rankings see them.
+const RD_NAMES: &str = include_str!("fixtures/torrentio_rd_names.json");
 const CORPUS: &str = include_str!("fixtures/release_names.tsv");
 
 fn h(n: u32) -> String {
@@ -66,17 +70,34 @@ fn job(pro: bool) -> JobSpec {
     }
 }
 
+/// The facts below are about the ranking, not about what Real-Debrid
+/// refuses, and the fixture's names (WEB-DL, BDRip, DVDRip) are the kind it
+/// does refuse: they are read with the name filter off. The golden rankings
+/// use the default settings.
+fn unfiltered() -> RankSettings {
+    RankSettings {
+        rd_blocked_terms: Vec::new(),
+        ..RankSettings::default()
+    }
+}
+
 fn run(pro: bool) -> Evaluation {
-    evaluate(
-        &job(pro),
-        &candidates_from(FIXTURE),
-        &RankSettings::default(),
-    )
+    evaluate(&job(pro), &candidates_from(FIXTURE), &unfiltered())
 }
 
 fn run_with_upscales(pro: bool) -> Evaluation {
     let mut raw = candidates_from(FIXTURE);
     raw.extend(candidates_from(UPSCALES));
+    evaluate(&job(pro), &raw, &unfiltered())
+}
+
+/// Everything the golden files cover, with the default settings.
+fn run_golden(pro: bool) -> Evaluation {
+    let mut raw = candidates_from(FIXTURE);
+    if pro {
+        raw.extend(candidates_from(UPSCALES));
+    }
+    raw.extend(candidates_from(RD_NAMES));
     evaluate(&job(pro), &raw, &RankSettings::default())
 }
 
@@ -238,7 +259,7 @@ fn the_free_ranking_matches_its_golden_file() {
     golden(
         "golden_free.tsv",
         "free job: Example Movie (1994)",
-        &run(false),
+        &run_golden(false),
     );
 }
 
@@ -247,7 +268,7 @@ fn the_pro_ranking_matches_its_golden_file() {
     golden(
         "golden_pro.tsv",
         "pro job: Example Movie (1994)",
-        &run_with_upscales(true),
+        &run_golden(true),
     );
 }
 
@@ -380,7 +401,7 @@ fn a_clear_winner_appears_once_the_close_runners_up_are_blocked() {
         let mut spec = job(pro);
         spec.blocked.insert(h(9));
         spec.blocked.insert(h(13));
-        let eval = evaluate(&spec, &candidates_from(FIXTURE), &RankSettings::default());
+        let eval = evaluate(&spec, &candidates_from(FIXTURE), &unfiltered());
         assert!(!hashes(&eval).contains(&h(9)), "pro={pro}");
         assert!(!hashes(&eval).contains(&h(13)), "pro={pro}");
         assert_eq!(eval.dropped.get(&DropReason::Blocked), Some(&2));

@@ -176,6 +176,18 @@ pub struct RankSettings {
     pub pro_have_min_bytes: u64,
 }
 
+#[cfg(test)]
+impl RankSettings {
+    /// The defaults without the Real-Debrid name filter, for tests of the
+    /// ranking whose invented releases carry names the filter would drop.
+    pub fn unfiltered() -> Self {
+        Self {
+            rd_blocked_terms: Vec::new(),
+            ..Self::default()
+        }
+    }
+}
+
 impl Default for RankSettings {
     fn default() -> Self {
         Self {

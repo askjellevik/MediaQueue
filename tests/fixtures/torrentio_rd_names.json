@@ -1,0 +1,121 @@
+{
+ "streams": [
+  {
+   "name": "Torrentio\n1080p",
+   "title": "Example.Movie.1994.1080p.BluRay.x264.AAC-GRPA\n👤 80 💾 5.1 GB ⚙️ ExampleSite",
+   "infoHash": "0000000000000000000000000000000000000011",
+   "fileIdx": 0,
+   "behaviorHints": {
+    "bingeGroup": "torrentio|1080p"
+   }
+  },
+  {
+   "name": "Torrentio\n1080p",
+   "title": "Example.Movie.1994.1080p.WEBRip.x265.AAC-GRPB\n👤 70 💾 3.2 GB ⚙️ ExampleSite",
+   "infoHash": "0000000000000000000000000000000000000012",
+   "fileIdx": 0,
+   "behaviorHints": {
+    "bingeGroup": "torrentio|1080p"
+   }
+  },
+  {
+   "name": "Torrentio\n1080p",
+   "title": "Example.Movie.1994.1080p.WEB-DL.h264.AAC-GRPC\n👤 65 💾 4.4 GB ⚙️ ExampleSite",
+   "infoHash": "0000000000000000000000000000000000000013",
+   "fileIdx": 0,
+   "behaviorHints": {
+    "bingeGroup": "torrentio|1080p"
+   }
+  },
+  {
+   "name": "Torrentio\n1080p",
+   "title": "Example.Movie.1994.1080p.web-dl.h264.AAC-GRPD\n👤 60 💾 4.7 GB ⚙️ ExampleSite",
+   "infoHash": "0000000000000000000000000000000000000014",
+   "fileIdx": 0,
+   "behaviorHints": {
+    "bingeGroup": "torrentio|1080p"
+   }
+  },
+  {
+   "name": "Torrentio\n1080p",
+   "title": "Example.Movie.1994.1080p.WEB.h264.AAC-GRPE\n👤 55 💾 3.9 GB ⚙️ ExampleSite",
+   "infoHash": "0000000000000000000000000000000000000015",
+   "fileIdx": 0,
+   "behaviorHints": {
+    "bingeGroup": "torrentio|1080p"
+   }
+  },
+  {
+   "name": "Torrentio\n1080p",
+   "title": "Example.Movie.1994.1080p.BluRay-DTS.h264-GRPF\n👤 50 💾 9.2 GB ⚙️ ExampleSite",
+   "infoHash": "0000000000000000000000000000000000000016",
+   "fileIdx": 0,
+   "behaviorHints": {
+    "bingeGroup": "torrentio|1080p"
+   }
+  },
+  {
+   "name": "Torrentio\n1080p",
+   "title": "Example.Movie.1994.1080p.BluRay.DTS.h264-GRPG\n👤 45 💾 9.6 GB ⚙️ ExampleSite",
+   "infoHash": "0000000000000000000000000000000000000017",
+   "fileIdx": 0,
+   "behaviorHints": {
+    "bingeGroup": "torrentio|1080p"
+   }
+  },
+  {
+   "name": "Torrentio\n1080p",
+   "title": "Example.Movie.1994.1080p.REMUX.BluRay.DTS.h264-GRPH\n👤 40 💾 22.0 GB ⚙️ ExampleSite",
+   "infoHash": "0000000000000000000000000000000000000018",
+   "fileIdx": 0,
+   "behaviorHints": {
+    "bingeGroup": "torrentio|1080p"
+   }
+  },
+  {
+   "name": "Torrentio\n1080p",
+   "title": "Example.Movie.1994.BluRay.DTS.1080p.h264-GRPI\n👤 35 💾 10.4 GB ⚙️ ExampleSite",
+   "infoHash": "0000000000000000000000000000000000000019",
+   "fileIdx": 0,
+   "behaviorHints": {
+    "bingeGroup": "torrentio|1080p"
+   }
+  },
+  {
+   "name": "Torrentio\n1080p",
+   "title": "Example.Movie.1994.1080p.BluRay.x265.AAC-GRPJ\n👤 30 💾 6.3 GB ⚙️ ExampleSite",
+   "infoHash": "000000000000000000000000000000000000001a",
+   "fileIdx": 0,
+   "behaviorHints": {
+    "bingeGroup": "torrentio|1080p"
+   }
+  },
+  {
+   "name": "Torrentio\n1080p",
+   "title": "Example.Movie.1994.1080p.BluRay.h264.AAC-GRPK\n👤 25 💾 7.1 GB ⚙️ ExampleSite",
+   "infoHash": "000000000000000000000000000000000000001b",
+   "fileIdx": 0,
+   "behaviorHints": {
+    "bingeGroup": "torrentio|1080p"
+   }
+  },
+  {
+   "name": "Torrentio\n1080p",
+   "title": "Example.Movie.1994.1080p.BluRay.REMUX.h264.AAC-GRPL\n👤 20 💾 24.5 GB ⚙️ ExampleSite",
+   "infoHash": "000000000000000000000000000000000000001c",
+   "fileIdx": 0,
+   "behaviorHints": {
+    "bingeGroup": "torrentio|1080p"
+   }
+  },
+  {
+   "name": "Torrentio\n1080p",
+   "title": "Example.Movie.1994.1080p.BluRay.h264.AAC.Webster.Ripley-GRPM\n👤 15 💾 8.3 GB ⚙️ ExampleSite",
+   "infoHash": "000000000000000000000000000000000000001d",
+   "fileIdx": 0,
+   "behaviorHints": {
+    "bingeGroup": "torrentio|1080p"
+   }
+  }
+ ]
+}

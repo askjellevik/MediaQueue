@@ -10,6 +10,7 @@ use std::collections::HashSet;
 
 use super::{
     candidate::RawCandidate,
+    rd_terms::{BlockedTerm, any_match},
     release::{Audio, ParsedRelease, Video, parse_release, tokenize, years_in},
     settings::RankSettings,
 };
@@ -39,6 +40,10 @@ pub enum DropReason {
     YearMismatch,
     Size,
     FreeProfile,
+    /// Real-Debrid would refuse the name (see [`rd_terms`](super::rd_terms)).
+    /// Last, so the count says how many candidates that were otherwise fine
+    /// the filter removed, and the earlier counts do not change.
+    RdBlocked,
 }
 
 impl DropReason {
@@ -54,6 +59,7 @@ impl DropReason {
             DropReason::YearMismatch => "year_mismatch",
             DropReason::Size => "size",
             DropReason::FreeProfile => "free_profile",
+            DropReason::RdBlocked => "rd_blocked",
         }
     }
 }
@@ -116,6 +122,16 @@ pub fn free_badge(release: &ParsedRelease, tags_may_be_cut: bool) -> FreeBadge {
     } else {
         FreeBadge::Unknown
     }
+}
+
+/// Would Real-Debrid refuse the candidate's torrent title or its file name?
+/// Either one is enough; the raw strings are tested, never the parsed ones.
+pub fn rd_refuses(terms: &[BlockedTerm], raw: &RawCandidate) -> bool {
+    any_match(terms, &raw.name)
+        || raw
+            .filename
+            .as_deref()
+            .is_some_and(|filename| any_match(terms, filename))
 }
 
 pub fn passes_hard_filters(
@@ -211,6 +227,9 @@ pub fn passes_hard_filters(
     let badge = free_badge(&release, tags_may_be_cut);
     if !job.infuse_pro && badge == FreeBadge::No {
         return Err(DropReason::FreeProfile);
+    }
+    if rd_refuses(&settings.rd_blocked_terms, raw) {
+        return Err(DropReason::RdBlocked);
     }
 
     let language = language_fit(&release, raw, &settings.allowed_languages);
@@ -351,7 +370,7 @@ mod tests {
     }
 
     fn judge(raw: &RawCandidate, job: &JobSpec) -> Result<Accepted, DropReason> {
-        passes_hard_filters(raw, job, &RankSettings::default())
+        passes_hard_filters(raw, job, &RankSettings::unfiltered())
     }
 
     const GOOD: &str = "Example.Movie.1994.1080p.BluRay.x264.AAC-GRPONE";
@@ -361,6 +380,69 @@ mod tests {
         let accepted = judge(&raw(GOOD), &job("Example Movie", Some(1994), false)).unwrap();
         assert_eq!(accepted.badge, FreeBadge::Yes);
         assert_eq!(accepted.language, LanguageFit::Ok);
+    }
+
+    /// With the default list of names Real-Debrid refuses.
+    fn judge_listed(raw: &RawCandidate, job: &JobSpec) -> Result<Accepted, DropReason> {
+        passes_hard_filters(raw, job, &RankSettings::default())
+    }
+
+    #[test]
+    fn a_name_real_debrid_refuses_is_dropped_for_both_profiles() {
+        for pro in [false, true] {
+            let spec = job("Example Movie", Some(1994), pro);
+            for name in [
+                "Example.Movie.1994.1080p.BluRay.x264.AAC-GRPONE",
+                "Example.Movie.1994.1080p.WEB-DL.h264.AAC-GRPONE",
+                "Example.Movie.1994.1080p.WEBRip.h264.AAC-GRPONE",
+            ] {
+                assert_eq!(
+                    judge_listed(&raw(name), &spec),
+                    Err(DropReason::RdBlocked),
+                    "pro={pro} {name}"
+                );
+            }
+            for name in [
+                "Example.Movie.1994.1080p.BluRay.h264.AAC-GRPONE",
+                "Example.Movie.1994.1080p.web-dl.h264.AAC-GRPONE",
+            ] {
+                assert!(judge_listed(&raw(name), &spec).is_ok(), "pro={pro} {name}");
+            }
+            // The same name passes once the list is empty.
+            assert!(judge(&raw(GOOD), &spec).is_ok(), "pro={pro}");
+        }
+    }
+
+    #[test]
+    fn a_term_only_in_the_title_or_only_in_the_file_name_is_enough() {
+        for pro in [false, true] {
+            let spec = job("Example Movie", Some(1994), pro);
+            let mut in_title = raw("Example.Movie.1994.1080p.WEB-DL.h264.AAC-GRPONE");
+            in_title.filename = Some("Example.Movie.1994.1080p.h264.AAC-GRPONE.mkv".to_string());
+            assert_eq!(judge_listed(&in_title, &spec), Err(DropReason::RdBlocked));
+
+            let mut in_file = raw("Example.Movie.1994.1080p.h264.AAC-GRPONE");
+            in_file.filename = Some("Example.Movie.1994.1080p.WEBRip.h264.AAC-GRPONE.mkv".into());
+            assert_eq!(judge_listed(&in_file, &spec), Err(DropReason::RdBlocked));
+
+            let mut clean = raw("Example.Movie.1994.1080p.h264.AAC-GRPONE");
+            clean.filename = Some("Example.Movie.1994.1080p.h264.AAC-GRPONE.mkv".to_string());
+            assert!(judge_listed(&clean, &spec).is_ok());
+        }
+    }
+
+    #[test]
+    fn the_raw_names_are_tested_so_separators_are_not_normalised() {
+        // The release parser reads all of these as WEB-DL; Real-Debrid does not.
+        let spec = job("Example Movie", Some(1994), true);
+        for name in [
+            "Example.Movie.1994.1080p.WEB DL.h264.AAC-GRPONE",
+            "Example.Movie.1994.1080p.WEB.DL.h264.AAC-GRPONE",
+            "Example.Movie.1994.1080p.WEB-Rip.h264.AAC-GRPONE",
+            "Example.Movie.1994.1080p.BluRay-x264.AAC-GRPONE",
+        ] {
+            assert!(judge_listed(&raw(name), &spec).is_ok(), "{name}");
+        }
     }
 
     #[test]
@@ -621,7 +703,7 @@ mod tests {
     #[test]
     fn the_size_must_be_in_range_when_known() {
         let spec = job("Example Movie", Some(1994), false);
-        let settings = RankSettings::default();
+        let settings = RankSettings::unfiltered();
         let sized = |size: Option<u64>| {
             let mut candidate = raw(GOOD);
             candidate.size_bytes = size;
@@ -642,7 +724,7 @@ mod tests {
 
     #[test]
     fn a_pro_job_may_have_a_far_bigger_file_than_a_free_one() {
-        let settings = RankSettings::default();
+        let settings = RankSettings::unfiltered();
         let sized = |pro: bool, size: u64| {
             let mut candidate = raw(GOOD);
             candidate.size_bytes = Some(size);

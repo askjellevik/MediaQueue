@@ -1001,7 +1001,7 @@ mod tests {
             infuse_pro: pro,
             blocked: HashSet::new(),
         };
-        evaluate(&spec, candidates, &RankSettings::default())
+        evaluate(&spec, candidates, &RankSettings::unfiltered())
     }
 
     #[derive(Clone, Default)]

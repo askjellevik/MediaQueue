@@ -617,13 +617,13 @@ mod tests {
         RankSettings {
             clear_min_score: 0.0,
             clear_margin: 0.0,
-            ..RankSettings::default()
+            ..RankSettings::unfiltered()
         }
     }
 
     #[test]
     fn the_size_points_peak_in_the_sweet_spot_and_fall_off_linearly() {
-        let settings = RankSettings::default();
+        let settings = RankSettings::unfiltered();
         let points = |gib: f64| size_points(Some((gib * GIB) as u64), Resolution::R1080, &settings);
         // 1080p: 2 to 12 GiB earns the full 15.
         assert_eq!(points(1.0), 0.0);
@@ -648,7 +648,7 @@ mod tests {
 
     #[test]
     fn the_seeder_points_grow_slowly_and_stop_at_the_cap() {
-        let settings = RankSettings::default();
+        let settings = RankSettings::unfiltered();
         assert_eq!(seeder_points(Some(0), &settings), 0.0);
         assert_eq!(seeder_points(None, &settings), 0.0);
         assert_eq!(round1(seeder_points(Some(1), &settings)), 2.1);
@@ -662,9 +662,9 @@ mod tests {
     #[test]
     fn a_pro_job_ranks_a_big_lossless_remux_above_a_small_encode() {
         let candidates = [raw('a', SMALL, 2.8, 400), raw('b', REMUX, 30.0, 40)];
-        let pro = evaluate(&job(true), &candidates, &RankSettings::default());
+        let pro = evaluate(&job(true), &candidates, &RankSettings::unfiltered());
         assert_eq!(order(&pro), "ba");
-        let free = evaluate(&job(false), &candidates, &RankSettings::default());
+        let free = evaluate(&job(false), &candidates, &RankSettings::unfiltered());
         assert_eq!(free.shortlist[0].raw.infohash, "a".repeat(40));
     }
 
@@ -673,7 +673,7 @@ mod tests {
         let eval = evaluate(
             &job(true),
             &[raw('b', REMUX, 30.0, 40)],
-            &RankSettings::default(),
+            &RankSettings::unfiltered(),
         );
         let p = eval.shortlist[0].parts;
         assert_eq!(p.resolution, 45.0);
@@ -687,7 +687,7 @@ mod tests {
 
     #[test]
     fn the_best_audio_counts_and_dolby_vision_does_not_stack_on_hdr() {
-        let settings = RankSettings::default();
+        let settings = RankSettings::unfiltered();
         assert_eq!(
             pro_audio_points(&[Audio::Aac, Audio::Atmos], &settings),
             20.0
@@ -703,7 +703,7 @@ mod tests {
 
     #[test]
     fn a_preferred_group_in_the_name_or_the_file_name_earns_the_bonus() {
-        let settings = RankSettings::default();
+        let settings = RankSettings::unfiltered();
         let mut named = raw(
             'a',
             "Example.Movie.1994.1080p.BluRay.x264.AAC-FRAMESTOR",
@@ -732,7 +732,7 @@ mod tests {
                 raw('a', BEST, 3.0, 50),
                 raw('b', WEB_720, 3.0, 50),
             ],
-            &RankSettings::default(),
+            &RankSettings::unfiltered(),
         );
         let order: Vec<(char, f64)> = eval
             .shortlist
@@ -762,7 +762,7 @@ mod tests {
                 raw('f', BEST, 3.0, 50),
                 raw('9', BEST, 5.0, 50),
             ],
-            &RankSettings::default(),
+            &RankSettings::unfiltered(),
         );
         let hashes: Vec<char> = eval
             .shortlist
@@ -783,7 +783,7 @@ mod tests {
                 raw('1', BEST, 3.0, 1_000_000),
                 raw('2', BEST, 3.0, 2_000_000),
             ],
-            &RankSettings::default(),
+            &RankSettings::unfiltered(),
         );
         assert_eq!(eval.shortlist[0].raw.infohash, "2".repeat(40));
     }
@@ -797,7 +797,7 @@ mod tests {
             .enumerate()
             .map(|(i, d)| raw(d, BEST, 2.0 + i as f64 * 0.5, 10))
             .collect();
-        let eval = evaluate(&job(true), &many, &RankSettings::default());
+        let eval = evaluate(&job(true), &many, &RankSettings::unfiltered());
         assert_eq!(eval.shortlist.len(), 10);
         assert_eq!(eval.survivors, 15);
         assert_eq!(eval.considered, 15);
@@ -835,7 +835,7 @@ mod tests {
     #[test]
     fn a_twin_no_longer_blocks_a_clear_winner() {
         let twins = [raw('a', BEST, 3.0, 50), raw('b', BEST, 3.02, 40)];
-        let settings = RankSettings::default();
+        let settings = RankSettings::unfiltered();
         let eval = evaluate(&job(false), &twins, &settings);
         assert!(eval.margin.is_none(), "one release is left");
         assert!(eval.clear_winner);
@@ -951,7 +951,7 @@ mod tests {
         let eval = evaluate(
             &job(false),
             &[untagged.clone(), tagged.clone()],
-            &RankSettings::default(),
+            &RankSettings::unfiltered(),
         );
         assert_eq!(order(&eval), "ab");
         assert_eq!(eval.shortlist[0].badge, FreeBadge::Unknown);
@@ -962,7 +962,7 @@ mod tests {
 
     #[test]
     fn a_big_or_unsized_free_candidate_is_skipped() {
-        let at_limit = RankSettings::default().auto_max_bytes;
+        let at_limit = RankSettings::unfiltered().auto_max_bytes;
         let mut exact = raw('a', BEST, 3.0, 50);
         exact.size_bytes = Some(at_limit);
         let mut over = raw('b', BEST, 3.0, 50);
@@ -976,7 +976,7 @@ mod tests {
 
     #[test]
     fn a_pro_candidate_may_be_far_bigger_than_the_free_ceiling_but_not_unsized() {
-        let settings = RankSettings::default();
+        let settings = RankSettings::unfiltered();
         let mut big = raw('a', BEST, 3.0, 50);
         big.size_bytes = Some(settings.auto_max_bytes + 25 * GIB_BYTES);
         let mut exact = raw('b', BEST, 3.0, 50);
@@ -1002,25 +1002,25 @@ mod tests {
                 weak.clone(),
                 remux.clone(),
             ],
-            &RankSettings::default(),
+            &RankSettings::unfiltered(),
         );
         assert_eq!(order(&eval), "abcd");
         assert_eq!(auto_hashes(&eval), "abc", "three tries; no badge, no score");
-        assert!(eval.shortlist[3].score < RankSettings::default().auto_min_score);
+        assert!(eval.shortlist[3].score < RankSettings::unfiltered().auto_min_score);
         assert_eq!(eval.shortlist[3].auto_rank, 0);
 
         // The free job takes neither the badge-less release nor the DVDRip.
         let free = evaluate(
             &job(false),
             &[encode, unbadged, weak],
-            &RankSettings::default(),
+            &RankSettings::unfiltered(),
         );
         assert_eq!(auto_hashes(&free), "b");
     }
 
     #[test]
     fn a_pro_job_skips_few_seeders_foreign_truncated_unsized_and_oversized() {
-        let settings = RankSettings::default();
+        let settings = RankSettings::unfiltered();
         let ok = raw('a', SMALL, 2.8, 3);
         let few = raw('b', SMALL, 3.2, 2);
         let mut foreign = raw('c', SMALL, 3.6, 50);
@@ -1057,7 +1057,7 @@ mod tests {
         let fine = raw('a', BEST, 3.0, 10);
         let all = [foreign, cut, few, weak.clone(), fine];
 
-        let eval = evaluate(&job(false), &all, &RankSettings::default());
+        let eval = evaluate(&job(false), &all, &RankSettings::unfiltered());
         assert!(
             eval.shortlist
                 .iter()
@@ -1070,7 +1070,7 @@ mod tests {
         let none = RankSettings {
             auto_min_score: 0.0,
             auto_min_seeders: 0,
-            ..RankSettings::default()
+            ..RankSettings::unfiltered()
         };
         assert_eq!(
             only(none.clone()).len(),
@@ -1113,12 +1113,12 @@ mod tests {
         let eval = evaluate(
             &job(false),
             &[raw('a', BEST, 3.0, 2), raw('b', WEB_720, 3.0, 3)],
-            &RankSettings::default(),
+            &RankSettings::unfiltered(),
         );
         assert!(eval.auto.is_empty());
         assert!(eval.shortlist.iter().all(|c| c.auto_rank == 0));
         assert!(
-            evaluate(&job(false), &[], &RankSettings::default())
+            evaluate(&job(false), &[], &RankSettings::unfiltered())
                 .auto
                 .is_empty()
         );
@@ -1134,7 +1134,7 @@ mod tests {
                 raw('b', BEST, 3.02, 40),
                 raw('c', WEB_720, 3.0, 50),
             ],
-            &RankSettings::default(),
+            &RankSettings::unfiltered(),
         );
         assert_eq!(auto_hashes(&eval), "ac");
     }
@@ -1151,13 +1151,44 @@ mod tests {
                 raw('c', "Other.Film.1994.1080p.BluRay.x264", 3.0, 50),
                 raw('d', WEB_720, 3.0, 50),
             ],
-            &RankSettings::default(),
+            &RankSettings::unfiltered(),
         );
         assert_eq!(eval.shortlist.len(), 1);
         assert_eq!(eval.shortlist[0].raw.infohash, "d".repeat(40));
         assert_eq!(eval.dropped[&DropReason::Blocked], 1);
         assert_eq!(eval.dropped[&DropReason::CamOrScreener], 1);
         assert_eq!(eval.dropped[&DropReason::TitleMismatch], 1);
+    }
+
+    #[test]
+    fn names_real_debrid_refuses_are_counted_and_never_ranked_in_either_profile() {
+        let input = [
+            raw(
+                'a',
+                "Example.Movie.1994.1080p.BluRay.x264.AAC-GRPONE",
+                3.0,
+                50,
+            ),
+            raw(
+                'b',
+                "Example.Movie.1994.1080p.WEB-DL.h264.AAC-GRPONE",
+                3.0,
+                50,
+            ),
+            raw(
+                'c',
+                "Example.Movie.1994.1080p.BluRay.h264.AAC-GRPONE",
+                3.0,
+                50,
+            ),
+        ];
+        for pro in [false, true] {
+            let eval = evaluate(&job(pro), &input, &RankSettings::default());
+            assert_eq!(eval.dropped[&DropReason::RdBlocked], 2, "pro={pro}");
+            assert_eq!(DropReason::RdBlocked.as_str(), "rd_blocked");
+            assert_eq!(eval.survivors, 1, "pro={pro}");
+            assert_eq!(eval.shortlist[0].raw.infohash, "c".repeat(40));
+        }
     }
 
     #[test]
@@ -1171,8 +1202,8 @@ mod tests {
             ),
             raw('b', WEB_720, 3.0, 50),
         ];
-        let free = evaluate(&job(false), &input, &RankSettings::default());
-        let pro = evaluate(&job(true), &input, &RankSettings::default());
+        let free = evaluate(&job(false), &input, &RankSettings::unfiltered());
+        let pro = evaluate(&job(true), &input, &RankSettings::unfiltered());
         assert_eq!(free.shortlist.len(), 1);
         assert_eq!(free.shortlist[0].raw.infohash, "b".repeat(40));
         assert_eq!(free.dropped[&DropReason::FreeProfile], 1);
@@ -1183,13 +1214,13 @@ mod tests {
 
     #[test]
     fn nothing_to_rank_means_no_top_and_no_winner() {
-        let eval = evaluate(&job(true), &[], &RankSettings::default());
+        let eval = evaluate(&job(true), &[], &RankSettings::unfiltered());
         assert!(eval.shortlist.is_empty() && eval.top_infohash.is_none());
         assert!(!eval.clear_winner && eval.margin.is_none());
         let all_bad = evaluate(
             &job(true),
             &[raw('a', "Example.Movie.1994.HDCAM.x264", 3.0, 5)],
-            &RankSettings::default(),
+            &RankSettings::unfiltered(),
         );
         assert!(all_bad.top_infohash.is_none() && !all_bad.clear_winner);
         assert_eq!(all_bad.considered, 1);
@@ -1204,7 +1235,7 @@ mod tests {
                 &input,
                 &RankSettings {
                     clear_min_score: min,
-                    ..RankSettings::default()
+                    ..RankSettings::unfiltered()
                 },
             )
         };
@@ -1227,7 +1258,7 @@ mod tests {
                 &RankSettings {
                     clear_margin: m,
                     clear_min_score: 0.0,
-                    ..RankSettings::default()
+                    ..RankSettings::unfiltered()
                 },
             )
         };
@@ -1371,7 +1402,7 @@ mod tests {
         let settings = RankSettings {
             max_size_bytes: u64::MAX,
             pro_max_bytes: u64::MAX,
-            ..RankSettings::default()
+            ..RankSettings::unfiltered()
         };
         let eval = evaluate(&job(true), &many, &settings);
         assert_eq!(
