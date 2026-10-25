@@ -11,6 +11,7 @@ use thiserror::Error;
 
 use super::{
     rd::{DEFAULT_BASE_URL, Secret},
+    rd_terms,
     settings::RankSettings,
 };
 
@@ -174,6 +175,16 @@ impl WorkerConfig {
                 return Err(invalid("WORKER_ALLOWED_LANGUAGES", "names no language"));
             }
             rank.allowed_languages = languages;
+        }
+        // Unlike the others, an empty value is a value: it switches the
+        // filter off. Only an unset variable keeps the default.
+        if let Some(v) = get("WORKER_RD_BLOCKED_TERMS") {
+            rank.rd_blocked_terms = rd_terms::parse_list(&v).map_err(|entry| {
+                invalid(
+                    "WORKER_RD_BLOCKED_TERMS",
+                    format!("the entry {entry:?} names no text after its prefix"),
+                )
+            })?;
         }
         if let Some(v) = value("WORKER_PRO_GROUPS") {
             // Empty switches the bonus off.
@@ -762,6 +773,40 @@ mod tests {
         let default = RankSettings::default();
         assert_eq!(config.rank.resolution, default.resolution);
         assert_eq!(config.rank.shortlist_len, default.shortlist_len);
+    }
+
+    #[test]
+    fn the_blocked_terms_default_to_the_list_and_an_empty_value_switches_them_off() {
+        let terms = |pairs: &[(&str, &str)]| {
+            let mut env = vec![("INTERNAL_TOKEN", TOKEN)];
+            env.extend_from_slice(pairs);
+            load(&env).unwrap().rank.rd_blocked_terms
+        };
+        assert_eq!(terms(&[]), RankSettings::default().rd_blocked_terms);
+        assert_eq!(terms(&[]).len(), 11);
+        assert!(terms(&[("WORKER_RD_BLOCKED_TERMS", "")]).is_empty());
+        assert!(terms(&[("WORKER_RD_BLOCKED_TERMS", "  ")]).is_empty());
+        let own = terms(&[("WORKER_RD_BLOCKED_TERMS", "=Abc, def ,#ghi")]);
+        assert_eq!(own.len(), 3);
+        assert!(own[0].matches("xAbc") && !own[0].matches("xabc"));
+        assert!(own[1].matches("xDEFx"));
+        assert!(own[2].matches("1080p.Ghi") && !own[2].matches("Ghi"));
+    }
+
+    #[test]
+    fn a_blocked_term_with_nothing_after_its_prefix_is_refused() {
+        for bad in ["=", "abc,#", " = "] {
+            assert!(
+                matches!(
+                    load(&[("INTERNAL_TOKEN", TOKEN), ("WORKER_RD_BLOCKED_TERMS", bad)]),
+                    Err(WorkerConfigError::Invalid {
+                        name: "WORKER_RD_BLOCKED_TERMS",
+                        ..
+                    })
+                ),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

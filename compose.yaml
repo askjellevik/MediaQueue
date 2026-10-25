@@ -53,6 +53,14 @@ services:
       # A free request counts a downloaded release that passes the free profile instead.
       WORKER_PRO_HAVE_MIN_HEIGHT: "${WORKER_PRO_HAVE_MIN_HEIGHT:-1080}"
       WORKER_PRO_HAVE_MIN_GB: "${WORKER_PRO_HAVE_MIN_GB:-8}"
+      # Names Real-Debrid refuses (error 35), dropped before ranking. The list comes from a
+      # third-party post ("Complete List of Real-Debrid's Filename Filters" on DMM), reflects
+      # the rules as of 14 October 2026, and may change. Comma separated: "=" in front makes a
+      # term case-sensitive, "#" makes it count only after a resolution such as "1080p.", any
+      # other term ignores case. Unlike the settings above an empty value is a value (the filter
+      # is off), so the default is kept only while the variable is unset (hence "-", not ":-").
+      # This default must equal DEFAULT_TERMS in src/worker/rd_terms.rs.
+      WORKER_RD_BLOCKED_TERMS: "${WORKER_RD_BLOCKED_TERMS-=WEB-DL,=WEB.x264,=WEB.H264,WEBRip,BDRip,HDRip,DVDRip,HDTV.x264,HDTV.XviD,BluRay.x264,#BluRay.DTS}"
     # One-time setup on the host, before the first assisted run (the container user is 65532):
     #   install -d -m 0700 secrets worker-state
     #   chown 65532:65532 secrets/rd_token worker-state && chmod 0400 secrets/rd_token

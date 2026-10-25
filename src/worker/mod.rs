@@ -10,6 +10,7 @@ pub mod fetch;
 pub mod files;
 pub mod portal;
 pub mod rd;
+pub mod rd_terms;
 pub mod release;
 pub mod rules;
 pub mod run;

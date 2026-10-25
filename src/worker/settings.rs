@@ -5,6 +5,8 @@
 //! The weights are starting guesses, to be tuned once the dry-run logs show
 //! how often the top pick matches a human's.
 
+use super::rd_terms::{self, BlockedTerm};
+
 const MIB: u64 = 1024 * 1024;
 const GIB: u64 = 1024 * MIB;
 
@@ -109,6 +111,11 @@ pub struct RankSettings {
     /// Languages that count as the wanted audio (ISO 639-1). A release whose
     /// language signals are all outside this list is penalised, not dropped.
     pub allowed_languages: Vec<String>,
+    /// Names Real-Debrid refuses, matched against a candidate's torrent
+    /// title and its file name. Env `WORKER_RD_BLOCKED_TERMS`; empty
+    /// switches the filter off. The default is a third party's list as of
+    /// 14 October 2026 and may be out of date.
+    pub rd_blocked_terms: Vec<BlockedTerm>,
 
     // Scoring.
     pub resolution: ResolutionPoints,
@@ -176,6 +183,7 @@ impl Default for RankSettings {
             max_size_bytes: 40 * GIB,
             pro_max_bytes: 100 * GIB,
             allowed_languages: vec!["en".to_string()],
+            rd_blocked_terms: rd_terms::default_terms(),
             resolution: ResolutionPoints {
                 r2160: 32.0,
                 r1440: 20.0,
