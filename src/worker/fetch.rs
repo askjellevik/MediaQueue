@@ -17,6 +17,7 @@
 
 use std::{
     collections::HashSet,
+    future::Future,
     time::{Duration, Instant},
 };
 
@@ -26,7 +27,8 @@ use super::{
     files::{self, Choice, FileRules},
     portal::{Abandon, Job, Mode, PortalClient, Progress, ProgressResult, Report},
     rd::{ListedTorrent, RdError, RdRuntime, TorrentInfo, TorrentStatus, current_job, valid_id},
-    rules::{FreeBadge, JobSpec, free_badge, library_release},
+    rd_terms::BlockedTerm,
+    rules::{FreeBadge, JobSpec, free_badge, library_release, rd_refuses},
     run::Timing,
     score::Evaluation,
     state::{AddKind, StateError},
@@ -51,6 +53,11 @@ pub struct Env<'a> {
     /// of height and this many bytes.
     pub pro_have_min_lines: u32,
     pub pro_have_min_bytes: u64,
+    /// The names Real-Debrid refuses: a refused add of a name that matches
+    /// none of them may be a burst refusal.
+    pub blocked_terms: &'a [BlockedTerm],
+    /// How long a burst refusal is waited out; zero switches the wait off.
+    pub burst_wait: Duration,
 }
 
 impl Env<'_> {
@@ -58,6 +65,7 @@ impl Env<'_> {
         Terms {
             kind: AddKind::Picked,
             wait: self.timing.rd_picked_wait,
+            clean_name: true,
             cap: if job.infuse_pro {
                 self.pro_max_bytes
             } else {
@@ -70,6 +78,7 @@ impl Env<'_> {
         Terms {
             kind: AddKind::Auto,
             wait: self.timing.rd_auto_wait,
+            clean_name: true,
             cap: if job.infuse_pro {
                 self.pro_max_bytes
             } else {
@@ -81,12 +90,16 @@ impl Env<'_> {
 
 /// What differs between a torrent a human picked and one the worker chose:
 /// which counters it touches, how long a download may take after its file
-/// was selected, and the biggest file it may have.
+/// was selected, and the biggest file it may have. `clean_name` is set per
+/// hash: its title and file name match none of the names Real-Debrid
+/// refuses, so a refusal of its add may be a burst. A human's pick is clean,
+/// since it was chosen from a shortlist the name filter had passed.
 #[derive(Debug, Clone, Copy)]
 struct Terms {
     kind: AddKind,
     wait: Duration,
     cap: u64,
+    clean_name: bool,
 }
 
 /// The torrent this run created or resumed, kept outside the run so it can
@@ -461,6 +474,10 @@ async fn walk(
     let mut last: Option<(Fail, String)> = None;
     for (n, hash) in order.iter().enumerate() {
         trace.chosen = Some((*hash).clone());
+        let terms = Terms {
+            clean_name: !name_is_listed(env, evaluation, hash),
+            ..terms
+        };
         let tried = candidate(env, job, trace, terms, picks, hash, &snapshot).await;
         let outcome = match &tried {
             Ok(report) if report.rd_torrent_id.is_some() => "added",
@@ -497,6 +514,18 @@ async fn walk(
         fail.reason(),
         &format!("{} of {} tried; last: {text}", order.len(), picks.len()),
     ))
+}
+
+/// True when the candidate behind `hash` has a title or file name that
+/// matches one of the names Real-Debrid refuses. Candidates reach the walk
+/// through the ranking, which has dropped such names already, so this holds
+/// only if the list changed or the ranking has a hole.
+fn name_is_listed(env: &Env<'_>, evaluation: &Evaluation, hash: &str) -> bool {
+    evaluation
+        .shortlist
+        .iter()
+        .find(|c| c.raw.infohash == hash)
+        .is_some_and(|c| rd_refuses(env.blocked_terms, &c.raw))
 }
 
 /// One line per candidate the auto walk tried: the job, its place in the
@@ -600,7 +629,15 @@ async fn add_and_finish(
         StateError::CapReached => gate("daily_cap", "the daily cap of adds is reached"),
         _ => gate("rd_error", "the counters file could not be written"),
     })?;
-    let id = match env.rd.client.add_magnet(hash).await {
+    let added = add_with_burst(
+        job.id,
+        terms.clean_name,
+        env.burst_wait,
+        || env.rd.client.add_magnet(hash),
+        || checkpoint_strict(env, job),
+    )
+    .await?;
+    let id = match added {
         Ok(id) => id,
         Err(error) => {
             // Only a refusal classified by Real-Debrid's own error code gives
@@ -652,6 +689,41 @@ async fn add_and_finish(
     .await?;
 
     finish(env, job, &id, hash, terms).await
+}
+
+/// Asks Real-Debrid to add the magnet. A refusal (error 35) of a name that
+/// matches nothing on the list is taken, once, for a burst refusal of the
+/// whole account rather than a verdict on the torrent: nothing is blocked or
+/// counted as a refusal, the run waits `burst_wait`, looks at the world again
+/// (`recheck`: the kill switch, the claim) and asks the same question a
+/// second time. A second refusal is a refusal like any other. The wait is
+/// part of the run, so the run's own deadline ends it the way it ends any
+/// slow run, and a zero `burst_wait` does without the wait and the retry.
+async fn add_with_burst<A, AF, R, RF>(
+    job: i64,
+    clean_name: bool,
+    burst_wait: Duration,
+    mut add: A,
+    recheck: R,
+) -> Step<Result<String, RdError>>
+where
+    A: FnMut() -> AF,
+    AF: Future<Output = Result<String, RdError>>,
+    R: FnOnce() -> RF,
+    RF: Future<Output = Step<()>>,
+{
+    let first = add().await;
+    if !matches!(first, Err(RdError::Refused(_))) || !clean_name || burst_wait.is_zero() {
+        return Ok(first);
+    }
+    tracing::info!(
+        job,
+        wait_secs = burst_wait.as_secs(),
+        "refused with a name that matches nothing listed; waiting before one more try"
+    );
+    tokio::time::sleep(burst_wait).await;
+    recheck().await?;
+    Ok(add().await)
 }
 
 /// The breaker and the kill switch, checked before anything is done.
@@ -1002,6 +1074,125 @@ mod tests {
             blocked: HashSet::new(),
         };
         evaluate(&spec, candidates, &RankSettings::unfiltered())
+    }
+
+    /// Answers an `addMagnet` from a script and counts the calls.
+    struct Adds {
+        answers: std::cell::RefCell<std::collections::VecDeque<Result<String, RdError>>>,
+        calls: std::cell::Cell<u32>,
+    }
+
+    impl Adds {
+        fn new(answers: Vec<Result<String, RdError>>) -> Self {
+            Self {
+                answers: std::cell::RefCell::new(answers.into()),
+                calls: std::cell::Cell::new(0),
+            }
+        }
+
+        async fn add(&self) -> Result<String, RdError> {
+            self.calls.set(self.calls.get() + 1);
+            self.answers
+                .borrow_mut()
+                .pop_front()
+                .unwrap_or(Err(RdError::Fatal))
+        }
+    }
+
+    fn refusal() -> Result<String, RdError> {
+        Err(RdError::Refused(35))
+    }
+
+    const WAIT: Duration = Duration::from_secs(180);
+
+    #[tokio::test(start_paused = true)]
+    async fn a_clean_name_refused_once_is_asked_again_after_the_wait() {
+        let adds = Adds::new(vec![refusal(), Ok("ABCDEFGHIJKLM".to_string())]);
+        let rechecked = std::cell::Cell::new(false);
+        let start = tokio::time::Instant::now();
+
+        let result = add_with_burst(
+            1,
+            true,
+            WAIT,
+            || adds.add(),
+            || async {
+                rechecked.set(true);
+                Ok(())
+            },
+        )
+        .await;
+
+        assert!(matches!(result, Ok(Ok(ref id)) if id == "ABCDEFGHIJKLM"));
+        assert_eq!(start.elapsed(), WAIT, "waited once, the whole time");
+        assert_eq!(adds.calls.get(), 2);
+        assert!(
+            rechecked.get(),
+            "the world is looked at again after the wait"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_clean_name_refused_twice_is_returned_as_a_refusal_after_one_wait() {
+        let adds = Adds::new(vec![refusal(), refusal(), Ok("NEVERASKED".to_string())]);
+        let start = tokio::time::Instant::now();
+
+        let result = add_with_burst(1, true, WAIT, || adds.add(), || async { Ok(()) }).await;
+
+        assert!(matches!(result, Ok(Err(RdError::Refused(35)))));
+        assert_eq!(start.elapsed(), WAIT, "one wait, not two");
+        assert_eq!(adds.calls.get(), 2, "one retry, not more");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_listed_name_another_error_or_no_wait_is_not_asked_again() {
+        let start = tokio::time::Instant::now();
+        // A name that is on the list, a zero wait, and an error that is no refusal.
+        let cases = [
+            (refusal(), false, WAIT),
+            (refusal(), true, Duration::ZERO),
+            (Err(RdError::Transient), true, WAIT),
+        ];
+        for (n, (answer, clean, wait)) in cases.into_iter().enumerate() {
+            let adds = Adds::new(vec![answer.clone(), Ok("NEVERASKED".to_string())]);
+            let result = add_with_burst(1, clean, wait, || adds.add(), || async { Ok(()) }).await;
+            assert!(matches!(result, Ok(ref got) if *got == answer), "case {n}");
+            assert_eq!(adds.calls.get(), 1, "case {n}");
+        }
+        assert_eq!(start.elapsed(), Duration::ZERO, "no case waited");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_look_after_the_wait_ends_the_run_without_a_second_add() {
+        let adds = Adds::new(vec![refusal(), Ok("NEVERASKED".to_string())]);
+
+        let result = add_with_burst(
+            1,
+            true,
+            WAIT,
+            || adds.add(),
+            || async { Err(switched_off()) },
+        )
+        .await;
+
+        assert!(matches!(result, Err(Stop::Report(_))));
+        assert_eq!(adds.calls.get(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_wait_that_outlasts_the_run_deadline_is_cut_by_it_without_a_retry() {
+        let adds = Adds::new(vec![refusal(), Ok("NEVERASKED".to_string())]);
+        let start = tokio::time::Instant::now();
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(120),
+            add_with_burst(1, true, WAIT, || adds.add(), || async { Ok(()) }),
+        )
+        .await;
+
+        assert!(result.is_err(), "the deadline ends the run, as it does any");
+        assert_eq!(start.elapsed(), Duration::from_secs(120));
+        assert_eq!(adds.calls.get(), 1);
     }
 
     #[derive(Clone, Default)]

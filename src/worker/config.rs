@@ -4,7 +4,7 @@
 //! portal secrets (no pepper, no TMDB token, no database) and must start
 //! without them.
 
-use std::{fmt, io::Read, os::unix::fs::MetadataExt, path::PathBuf};
+use std::{fmt, io::Read, os::unix::fs::MetadataExt, path::PathBuf, time::Duration};
 
 use reqwest::Url;
 use thiserror::Error;
@@ -30,6 +30,8 @@ const GIB: u64 = 1024 * MIB;
 const MAX_AUTO_TRIES: u64 = 5;
 const MAX_AUTO_GB: u64 = 100;
 const MAX_PRO_GB: u64 = 500;
+/// Ceiling for the waits around the adds, in seconds.
+const MAX_ADD_WAIT_SECS: u64 = 600;
 
 const DEFAULT_STATE_DIR: &str = "/state";
 const DEFAULT_MAX_ADDS_PER_DAY: u32 = 5;
@@ -186,6 +188,13 @@ impl WorkerConfig {
                 )
             })?;
         }
+        rank.rd_burst_wait = Duration::from_secs(bounded(
+            &value,
+            "WORKER_RD_BURST_WAIT_SECS",
+            0,
+            MAX_ADD_WAIT_SECS,
+            rank.rd_burst_wait.as_secs(),
+        )?);
         if let Some(v) = value("WORKER_PRO_GROUPS") {
             // Empty switches the bonus off.
             rank.pro_groups = v
@@ -806,6 +815,24 @@ mod tests {
                 ),
                 "{bad}"
             );
+        }
+    }
+
+    #[test]
+    fn the_burst_wait_defaults_to_three_minutes_and_stays_in_range() {
+        let wait = |text: Option<&str>| {
+            let mut env = vec![("INTERNAL_TOKEN", TOKEN)];
+            if let Some(text) = text {
+                env.push(("WORKER_RD_BURST_WAIT_SECS", text));
+            }
+            load(&env).map(|config| config.rank.rd_burst_wait.as_secs())
+        };
+        assert_eq!(wait(None).unwrap(), 180);
+        assert_eq!(wait(Some("45")).unwrap(), 45);
+        assert_eq!(wait(Some("0")).unwrap(), 0, "zero switches the wait off");
+        assert_eq!(wait(Some("600")).unwrap(), 600);
+        for bad in ["601", "-1", "soon", "1.5"] {
+            assert!(wait(Some(bad)).is_err(), "{bad}");
         }
     }
 

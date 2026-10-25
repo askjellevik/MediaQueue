@@ -102,6 +102,15 @@ fn timing() -> Timing {
     }
 }
 
+/// The ranking settings of the rig. A refusal counts at once, as these
+/// tests were written for; the burst wait has tests of its own.
+fn rank() -> RankSettings {
+    RankSettings {
+        rd_burst_wait: Duration::ZERO,
+        ..RankSettings::default()
+    }
+}
+
 fn state_dir() -> TempDir {
     static N: AtomicU32 = AtomicU32::new(0);
     let n = N.fetch_add(1, Ordering::Relaxed);
@@ -125,6 +134,7 @@ fn build_worker(
     dir: &Path,
     clock: Option<Arc<dyn Clock>>,
     timing: Timing,
+    rank: RankSettings,
 ) -> Built {
     let config = RdConfig {
         token: Secret::new(RD_TOKEN),
@@ -146,7 +156,7 @@ fn build_worker(
     let portal = PortalClient::new(portal_url, TEST_INTERNAL_TOKEN).unwrap();
     let source = TorrentioSource::new(&stub.uri()).unwrap();
     let (stop, shutdown) = Shutdown::channel();
-    let worker = Worker::new(portal, source, RankSettings::default(), POLL, shutdown)
+    let worker = Worker::new(portal, source, rank, POLL, shutdown)
         .with_timing(timing)
         .with_rd(Some(runtime));
     Built {
@@ -161,6 +171,10 @@ async fn rig() -> Rig {
 }
 
 async fn rig_with(clock: Option<Arc<dyn Clock>>, timing: Timing) -> Rig {
+    rig_ranked(clock, timing, rank()).await
+}
+
+async fn rig_ranked(clock: Option<Arc<dyn Clock>>, timing: Timing, rank: RankSettings) -> Rig {
     let app = common::spawn_app().await;
     let admin = login_admin_cookie(&app).await;
     let rd = MockServer::start().await;
@@ -173,6 +187,7 @@ async fn rig_with(clock: Option<Arc<dyn Clock>>, timing: Timing) -> Rig {
         &dir.0,
         clock,
         timing,
+        rank,
     );
     let rig = Rig {
         app,
@@ -1280,7 +1295,7 @@ fn hash_of(letter: char) -> String {
     letter.to_string().repeat(40)
 }
 
-/// The release name every auto test uses: 1080p BluRay x264 with AAC audio,
+/// The release name every auto test uses: 1080p BluRay h264 with AAC audio,
 /// which a free profile plays, so its badge is `yes`.
 const PLAYS: &str = "Example.Movie.1994.1080p.BluRay.h264.AAC";
 /// The same release without an audio tag: a free profile cannot tell.
@@ -1534,6 +1549,84 @@ async fn three_refused_candidates_send_the_job_back_with_all_three_blocked() {
     assert_eq!(adds, [hash_of('1'), hash_of('2'), hash_of('3')]);
     assert_added_once_each(&adds);
     assert_eq!(request_status(&rig.app.pool, job).await, "pending");
+}
+
+/// One candidate whose name Real-Debrid has no quarrel with, and a rig that
+/// waits out a burst refusal for `wait`.
+async fn burst_rig(wait: Duration) -> Rig {
+    let rig = rig_ranked(
+        None,
+        timing(),
+        RankSettings {
+            rd_burst_wait: wait,
+            ..RankSettings::default()
+        },
+    )
+    .await;
+    set_mode(&rig, "auto").await;
+    serve_streams(&rig.stub, vec![stream(&hash_of('1'), PLAYS, 200, "8.0 GB")]).await;
+    mount_free_slots(&rig.rd).await;
+    rig
+}
+
+#[tokio::test]
+async fn a_clean_name_refused_once_is_added_after_the_burst_wait_and_not_blocked() {
+    let wait = Duration::from_millis(400);
+    let mut rig = burst_rig(wait).await;
+    mount_adds(&rig.rd, vec![refused(), added("FIRST")]).await;
+    mount_cached_for(&rig.rd, "FIRST", &hash_of('1'), 4 * GIB).await;
+    let job = queue_job(&rig, 1).await;
+
+    let started = Instant::now();
+    assert_eq!(run(&mut rig).await, Cycle::Worked);
+    assert!(started.elapsed() >= wait, "{:?}", started.elapsed());
+
+    let row = job_row(&rig.app.pool, job).await;
+    assert_eq!(
+        (row.state.as_str(), row.rd_torrent_id.as_deref()),
+        ("done", Some("FIRST")),
+        "{row:?}"
+    );
+    assert_eq!(added_hashes(&rig).await, [hash_of('1'), hash_of('1')]);
+    assert_eq!(blocked_of(&rig, job).await, Vec::<String>::new());
+    let saved = counters(&rig);
+    assert_eq!(
+        (saved["adds"].as_u64(), saved["refusals"].as_u64()),
+        (Some(1), Some(0)),
+        "one add, and the first refusal was not counted"
+    );
+}
+
+#[tokio::test]
+async fn a_clean_name_refused_twice_is_a_refusal_like_any_other() {
+    let wait = Duration::from_millis(400);
+    let mut rig = burst_rig(wait).await;
+    mount_adds(&rig.rd, vec![refused(), refused()]).await;
+    let job = queue_job(&rig, 1).await;
+
+    let started = Instant::now();
+    run(&mut rig).await;
+    assert!(started.elapsed() >= wait, "{:?}", started.elapsed());
+
+    let row = job_row(&rig.app.pool, job).await;
+    assert_eq!(
+        (row.state.as_str(), row.reason.as_deref()),
+        ("needs_pick", Some("rd_refused")),
+        "{row:?}"
+    );
+    assert_eq!(row.rd_torrent_id, None);
+    assert_eq!(blocked_of(&rig, job).await, [hash_of('1')]);
+    assert_eq!(
+        added_hashes(&rig).await.len(),
+        2,
+        "asked twice, waited once"
+    );
+    let saved = counters(&rig);
+    assert_eq!(
+        (saved["adds"].as_u64(), saved["refusals"].as_u64()),
+        (Some(0), Some(1)),
+        "the add is given back and one refusal is counted"
+    );
 }
 
 #[tokio::test]
@@ -2106,6 +2199,7 @@ async fn a_restarted_worker_deletes_the_queued_torrent_once_the_breaker_has_pass
         &rig.state_dir,
         Some(clock.clone()),
         timing(),
+        rank(),
     );
     again.worker.run_once(Instant::now()).await.unwrap();
     assert_eq!(rd_calls(&rig, "DELETE", "/torrents/delete/").await, 0);
@@ -2306,7 +2400,7 @@ async fn stub_portal_with(
     if untrusted_file {
         fs::write(dir.0.join("counters.json"), b"{not json").unwrap();
     }
-    let built = build_worker(&portal.uri(), &rd, &stub, &dir.0, clock, timing());
+    let built = build_worker(&portal.uri(), &rd, &stub, &dir.0, clock, timing(), rank());
     StubPortal {
         portal,
         rd,

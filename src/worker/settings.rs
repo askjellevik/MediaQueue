@@ -5,6 +5,8 @@
 //! The weights are starting guesses, to be tuned once the dry-run logs show
 //! how often the top pick matches a human's.
 
+use std::time::Duration;
+
 use super::rd_terms::{self, BlockedTerm};
 
 const MIB: u64 = 1024 * 1024;
@@ -116,6 +118,12 @@ pub struct RankSettings {
     /// switches the filter off. The default is a third party's list as of
     /// 14 October 2026 and may be out of date.
     pub rd_blocked_terms: Vec<BlockedTerm>,
+    /// Real-Debrid is said to refuse adds with error 35 in bursts, whatever
+    /// the name. A refusal of a name that matches nothing in the list above
+    /// is therefore not counted at once: the worker waits this long, once,
+    /// and asks again. A starting guess. Env `WORKER_RD_BURST_WAIT_SECS`;
+    /// 0 switches the wait off (a refusal counts at once).
+    pub rd_burst_wait: Duration,
 
     // Scoring.
     pub resolution: ResolutionPoints,
@@ -196,6 +204,7 @@ impl Default for RankSettings {
             pro_max_bytes: 100 * GIB,
             allowed_languages: vec!["en".to_string()],
             rd_blocked_terms: rd_terms::default_terms(),
+            rd_burst_wait: Duration::from_secs(3 * 60),
             resolution: ResolutionPoints {
                 r2160: 32.0,
                 r1440: 20.0,
