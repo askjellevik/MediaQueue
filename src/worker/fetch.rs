@@ -836,6 +836,7 @@ async fn finish(env: &Env<'_>, job: &Job, id: &str, hash: &str, terms: Terms) ->
                 };
                 files::verify(&info, hash, file_id, &rules, terms.cap)
                     .map_err(|why| failed(Fail::Unfit, why.to_string()))?;
+                check_link(env, job, &info, terms.kind).await?;
                 tracing::info!(job = job.id, "downloaded and verified");
                 return Ok(Report::done(id.to_string(), hash.to_string(), None));
             }
@@ -891,6 +892,40 @@ async fn finish(env: &Env<'_>, job: &Job, id: &str, hash: &str, terms: Terms) ->
         let steps = &env.timing.rd_poll;
         tokio::time::sleep(steps[polls.min(steps.len() - 1)]).await;
         polls += 1;
+    }
+}
+
+/// The last look before `done`: the selected file's link is opened once, as
+/// a player would, because Real-Debrid checks the file's own name only then.
+/// A refusal (error 35) fails the hash like any other refusal and gives the
+/// add back. Any other outcome leaves the job done: the torrent verified, and
+/// a hiccup at Real-Debrid says nothing about the file.
+async fn check_link(env: &Env<'_>, job: &Job, info: &TorrentInfo, kind: AddKind) -> Step<()> {
+    let Some(link) = info.links.first() else {
+        return Ok(());
+    };
+    match env.rd.client.probe_link(link).await {
+        Ok(()) => Ok(()),
+        Err(RdError::Refused(code)) => {
+            run_ended(job.id, "link_refused");
+            if let Err(error) = env.rd.state.refund_refused_add(kind) {
+                tracing::warn!(job = job.id, %error, "could not refund the refused add");
+            }
+            Err(failed(
+                Fail::Refused,
+                format!("real-debrid refused to open the file's link (error {code})"),
+            ))
+        }
+        Err(error) => {
+            let status = match error {
+                RdError::Breaker(_) => "breaker",
+                RdError::NotFound => "not_found",
+                RdError::Transient => "transient",
+                RdError::Refused(_) | RdError::Fatal => "unexpected",
+            };
+            tracing::warn!(job = job.id, status, "the file's link could not be checked");
+            Ok(())
+        }
     }
 }
 

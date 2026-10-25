@@ -29,6 +29,7 @@ pub const DEFAULT_BASE_URL: &str = "https://api.real-debrid.com/rest/1.0";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
+const MAX_LINK_BYTES: usize = 2048;
 const PAGE_SIZE: usize = 1000;
 const MAX_PAGES: usize = 20;
 /// Calls that may go out back to back before the budget starts spacing them.
@@ -249,6 +250,13 @@ struct Added {
     id: String,
 }
 
+/// The one field of an unrestricted link that is read: the id of the entry it
+/// left in the Downloads list. The link itself is never deserialized.
+#[derive(Deserialize)]
+struct Unrestricted {
+    id: Option<String>,
+}
+
 /// The listing's name and size only feed the "already had" check; a field
 /// that is missing or odd must not make the whole listing unreadable.
 fn lenient_name<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
@@ -439,6 +447,33 @@ impl RdClient {
             .http
             .delete(self.url(&format!("/torrents/delete/{id}")));
         self.execute(request).await.map(|_| ())
+    }
+
+    /// Opens a file's download link the way a player does, to see whether
+    /// Real-Debrid will serve it (it checks the file's own name here, not
+    /// only the torrent's), and throws the answer away: the unrestricted URL
+    /// is neither returned nor logged. The entry the call adds to the
+    /// Downloads list is deleted again; a failure of that is ignored.
+    pub async fn probe_link(&self, link: &str) -> Result<(), RdError> {
+        if link.is_empty() || link.len() > MAX_LINK_BYTES {
+            return Err(RdError::Fatal);
+        }
+        let request = self
+            .http
+            .post(self.url("/unrestrict/link"))
+            .form(&[("link", link)]);
+        let reply = self.execute(request).await?;
+        let entry = serde_json::from_slice::<Unrestricted>(&reply.body)
+            .ok()
+            .and_then(|answer| answer.id)
+            .filter(|id| valid_id(id));
+        if let Some(id) = entry {
+            let request = self
+                .http
+                .delete(self.url(&format!("/downloads/delete/{id}")));
+            let _ = self.execute(request).await;
+        }
+        Ok(())
     }
 
     fn url(&self, path: &str) -> String {
