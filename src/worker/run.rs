@@ -84,7 +84,7 @@ impl Default for Timing {
             rd_picked_wait: Duration::from_secs(10 * 60),
             rd_picked_deadline: Duration::from_secs(15 * 60),
             rd_auto_wait: Duration::from_secs(90),
-            rd_auto_deadline: Duration::from_secs(8 * 60),
+            rd_auto_deadline: Duration::from_secs(12 * 60),
         }
     }
 }
@@ -837,6 +837,7 @@ mod tests {
         let all_tries = (timing.rd_conversion + timing.rd_auto_wait) * tries;
         assert!(all_tries < timing.rd_auto_deadline, "{all_tries:?}");
         let reclaim = Duration::from_secs(u64::try_from(RECLAIM_AFTER_SECS).unwrap());
+        assert_eq!(timing.rd_auto_deadline, Duration::from_secs(12 * 60));
         assert!(timing.rd_auto_deadline < reclaim);
         // A cached torrent is ready long before a human's pick would be given up on.
         assert!(timing.rd_auto_wait < timing.rd_picked_wait);
