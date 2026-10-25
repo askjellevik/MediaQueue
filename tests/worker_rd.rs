@@ -557,6 +557,7 @@ fn capture_logs(level: tracing::Level) -> (LogCapture, tracing::subscriber::Defa
     let guard = tracing::subscriber::set_default(
         tracing_subscriber::fmt()
             .with_max_level(level)
+            .with_ansi(false)
             .with_writer(move || writer.clone())
             .finish(),
     );
@@ -3122,4 +3123,272 @@ async fn the_biggest_auto_report_stays_inside_the_portals_limits() {
     }
     // The portal measures the list as text and refuses one over 64 KiB.
     assert!(row.candidates.as_deref().unwrap().len() < 64 * 1024);
+}
+
+// ---------------------------------------------------------------------
+// Opening the file's link before `done`
+// ---------------------------------------------------------------------
+
+/// What Real-Debrid hands out for a link; it must never be logged or kept.
+const DOWNLOAD_URL: &str = "https://download.example.invalid/dl/SECRETFILE/Example.Movie.mkv";
+const DOWNLOAD_ENTRY: &str = "DLENTRY12345";
+
+fn unrestricted() -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(json!({
+        "id": DOWNLOAD_ENTRY,
+        "filename": "Example.Movie.1994.1080p.WEB-DL.AAC.mkv",
+        "filesize": 4 * GIB,
+        "link": "https://example.invalid/d/1",
+        "host": "example.invalid",
+        "download": DOWNLOAD_URL,
+        "streamable": 1,
+    }))
+}
+
+/// Error 35 under a status the plan does not name: the code decides.
+fn link_refused() -> ResponseTemplate {
+    ResponseTemplate::new(451).set_body_json(json!({"error": "infringing_file", "error_code": 35}))
+}
+
+/// The answers to the first, second, ... `unrestrict/link`; the last one
+/// stays for any further call.
+async fn mount_unrestrict(rd: &MockServer, answers: Vec<ResponseTemplate>) {
+    let last = answers.len().saturating_sub(1);
+    for (n, answer) in answers.into_iter().enumerate() {
+        let mock = Mock::given(method("POST"))
+            .and(path("/unrestrict/link"))
+            .respond_with(answer);
+        if n < last {
+            mock.up_to_n_times(1).mount(rd).await;
+        } else {
+            mock.mount(rd).await;
+        }
+    }
+    Mock::given(method("DELETE"))
+        .and(path(format!("/downloads/delete/{DOWNLOAD_ENTRY}")))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(rd)
+        .await;
+}
+
+#[tokio::test]
+async fn an_unrestrict_that_works_ends_done_and_the_url_reaches_no_log() {
+    let (logs, _guard) = capture_logs(tracing::Level::INFO);
+    let mut rig = rig().await;
+    mount_roomy(&rig.rd).await;
+    mount_cached_torrent(&rig.rd).await;
+    mount_unrestrict(&rig.rd, vec![unrestricted()]).await;
+    let job = picked_job(&rig).await;
+
+    assert_eq!(run(&mut rig).await, Cycle::Worked);
+
+    let row = job_row(&rig.app.pool, job).await;
+    assert_eq!(
+        (
+            row.state.as_str(),
+            row.rd_torrent_id.as_deref(),
+            row.reason.as_deref()
+        ),
+        ("done", Some(RD_ID), None)
+    );
+    assert_eq!(request_status(&rig.app.pool, job).await, "added");
+    // The one file's link was opened once, and the entry it made deleted.
+    let calls = rig.rd.received_requests().await.unwrap();
+    let opened: Vec<_> = calls
+        .iter()
+        .filter(|r| r.url.path() == "/unrestrict/link")
+        .collect();
+    assert_eq!(opened.len(), 1);
+    assert_eq!(
+        String::from_utf8_lossy(&opened[0].body),
+        "link=https%3A%2F%2Fexample.invalid%2Fd%2F1"
+    );
+    assert_eq!(
+        rd_calls(
+            &rig,
+            "DELETE",
+            &format!("/downloads/delete/{DOWNLOAD_ENTRY}")
+        )
+        .await,
+        1
+    );
+    assert_eq!(rd_calls(&rig, "DELETE", "/torrents/delete/").await, 0);
+    for secret in [DOWNLOAD_URL, "SECRETFILE", "download.example", RD_TOKEN] {
+        assert!(!logs.text().contains(secret), "{secret} reached the log");
+        assert!(!format!("{row:?}").contains(secret));
+    }
+}
+
+#[tokio::test]
+async fn a_refused_link_in_auto_mode_deletes_the_torrent_blocks_the_hash_and_tries_the_next() {
+    let mut rig = rig().await;
+    set_mode(&rig, "auto").await;
+    serve_streams(&rig.stub, three_and_a_twin()).await;
+    mount_free_slots(&rig.rd).await;
+    mount_adds(&rig.rd, vec![added("FIRST"), added("SECOND")]).await;
+    mount_cached_for(&rig.rd, "FIRST", &hash_of('1'), 4 * GIB).await;
+    mount_cached_for(&rig.rd, "SECOND", &hash_of('2'), 4 * GIB).await;
+    mount_unrestrict(&rig.rd, vec![link_refused(), unrestricted()]).await;
+    let job = queue_job(&rig, 1).await;
+
+    assert_eq!(run(&mut rig).await, Cycle::Worked);
+
+    let row = job_row(&rig.app.pool, job).await;
+    assert_eq!(
+        (
+            row.state.as_str(),
+            row.rd_torrent_id.as_deref(),
+            row.reason.as_deref()
+        ),
+        ("done", Some("SECOND"), None),
+        "{row:?}"
+    );
+    assert_eq!(row.chosen_infohash, Some(hash_of('2')));
+    assert_eq!(blocked_of(&rig, job).await, [hash_of('1')]);
+    // The next planned candidate, never the first one's near-duplicate.
+    let adds = added_hashes(&rig).await;
+    assert_eq!(adds, [hash_of('1'), hash_of('2')]);
+    assert_eq!(rd_calls(&rig, "DELETE", "/torrents/delete/FIRST").await, 1);
+    assert_eq!(rd_calls(&rig, "DELETE", "/torrents/delete/SECOND").await, 0);
+    assert!(!rig.state.owns("FIRST"));
+    assert!(rig.state.owns("SECOND"));
+    let saved = counters(&rig);
+    assert_eq!(
+        (
+            saved["adds"].as_u64(),
+            saved["refusals"].as_u64(),
+            saved["breaker_until"].as_u64()
+        ),
+        (Some(1), Some(1), Some(0)),
+        "the refused add is given back and counted as a refusal, not a trip"
+    );
+}
+
+#[tokio::test]
+async fn a_refused_link_for_a_picked_job_deletes_the_torrent_and_ends_picked_failed() {
+    let mut rig = rig().await;
+    mount_roomy(&rig.rd).await;
+    mount_cached_torrent(&rig.rd).await;
+    mount_delete(&rig.rd, RD_ID).await;
+    mount_unrestrict(&rig.rd, vec![link_refused()]).await;
+    let job = picked_job(&rig).await;
+
+    assert_eq!(run(&mut rig).await, Cycle::Worked);
+
+    let row = job_row(&rig.app.pool, job).await;
+    assert_eq!(
+        (row.state.as_str(), row.reason.as_deref()),
+        ("needs_pick", Some("picked_failed")),
+        "{row:?}"
+    );
+    assert_eq!(row.rd_torrent_id, None);
+    assert_eq!(row.chosen_infohash.as_deref(), Some(HASH), "the pick stays");
+    assert_ne!(request_status(&rig.app.pool, job).await, "added");
+    assert_eq!(rd_calls(&rig, "DELETE", "/torrents/delete/").await, 1);
+    assert!(!rig.state.owns(RD_ID));
+    assert_eq!(added_hashes(&rig).await, [HASH]);
+    let saved = counters(&rig);
+    assert_eq!(
+        (
+            saved["human_adds"].as_u64(),
+            saved["refusals"].as_u64(),
+            saved["breaker_until"].as_u64()
+        ),
+        (Some(0), Some(1), Some(0))
+    );
+}
+
+#[tokio::test]
+async fn a_server_error_on_the_link_leaves_the_job_done_with_one_warning() {
+    let (logs, _guard) = capture_logs(tracing::Level::INFO);
+    let mut rig = rig().await;
+    mount_roomy(&rig.rd).await;
+    mount_cached_torrent(&rig.rd).await;
+    mount_unrestrict(
+        &rig.rd,
+        vec![ResponseTemplate::new(503).set_body_json(json!({"error": "service_unavailable"}))],
+    )
+    .await;
+    let job = picked_job(&rig).await;
+
+    assert_eq!(run(&mut rig).await, Cycle::Worked);
+
+    let row = job_row(&rig.app.pool, job).await;
+    assert_eq!(
+        (row.state.as_str(), row.rd_torrent_id.as_deref(), row.reason),
+        ("done", Some(RD_ID), None)
+    );
+    assert_eq!(request_status(&rig.app.pool, job).await, "added");
+    assert_eq!(rd_calls(&rig, "DELETE", "/torrents/delete/").await, 0);
+    assert!(rig.state.owns(RD_ID));
+    let text = logs.text();
+    let warnings: Vec<_> = text
+        .lines()
+        .filter(|l| l.contains("the file's link could not be checked"))
+        .collect();
+    assert_eq!(warnings.len(), 1, "{text}");
+    assert!(warnings[0].contains("WARN") && warnings[0].contains(&format!("job={job}")));
+    assert!(!text.contains("example.invalid") && !text.contains(RD_TOKEN));
+}
+
+/// A finished run and a refused link, start to end, with the unrestricted
+/// URL and the token in the answers. Neither may reach a log.
+async fn link_runs_and_their_logs(level: tracing::Level) {
+    let (logs, _guard) = capture_logs(level);
+
+    let mut done = rig().await;
+    mount_roomy(&done.rd).await;
+    mount_cached_torrent(&done.rd).await;
+    mount_unrestrict(&done.rd, vec![unrestricted()]).await;
+    let job = picked_job(&done).await;
+    run(&mut done).await;
+    assert_eq!(job_row(&done.app.pool, job).await.state, "done");
+
+    let mut refused = rig().await;
+    mount_roomy(&refused.rd).await;
+    mount_cached_torrent(&refused.rd).await;
+    mount_delete(&refused.rd, RD_ID).await;
+    mount_unrestrict(
+        &refused.rd,
+        vec![ResponseTemplate::new(451).set_body_json(json!({
+            "error": format!("infringing_file {RD_TOKEN} {DOWNLOAD_URL}"),
+            "error_code": 35,
+        }))],
+    )
+    .await;
+    let job = picked_job(&refused).await;
+    run(&mut refused).await;
+    let row = job_row(&refused.app.pool, job).await;
+    assert_eq!(row.reason.as_deref(), Some("picked_failed"));
+
+    let text = logs.text();
+    assert!(
+        text.contains("downloaded and verified"),
+        "the run was logged"
+    );
+    assert!(text.contains("link_refused"), "the refusal was logged");
+    for secret in [
+        RD_TOKEN,
+        "test-token",
+        DOWNLOAD_URL,
+        "SECRETFILE",
+        "download.example",
+        "example.invalid",
+        "infringing",
+    ] {
+        assert!(
+            !text.contains(secret),
+            "{secret} reached the log at {level}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn neither_the_token_nor_the_unrestricted_url_reaches_the_logs_at_debug() {
+    link_runs_and_their_logs(tracing::Level::DEBUG).await;
+}
+
+#[tokio::test]
+async fn neither_the_token_nor_the_unrestricted_url_reaches_the_logs_at_trace() {
+    link_runs_and_their_logs(tracing::Level::TRACE).await;
 }
