@@ -65,6 +65,9 @@ services:
       # of a name that matches nothing in the list above is not counted at once: the worker waits
       # this many seconds (0 to 600) and asks again, once. A starting guess; 0 counts it at once.
       WORKER_RD_BURST_WAIT_SECS: "${WORKER_RD_BURST_WAIT_SECS:-180}"
+      # The least time, in seconds (0 to 600), between two addMagnet calls of the worker; a run
+      # that tries several candidates waits for it. A starting guess; 0 switches it off.
+      WORKER_RD_MIN_ADD_GAP_SECS: "${WORKER_RD_MIN_ADD_GAP_SECS:-45}"
     # One-time setup on the host, before the first assisted run (the container user is 65532):
     #   install -d -m 0700 secrets worker-state
     #   chown 65532:65532 secrets/rd_token worker-state && chmod 0400 secrets/rd_token

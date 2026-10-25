@@ -102,11 +102,13 @@ fn timing() -> Timing {
     }
 }
 
-/// The ranking settings of the rig. A refusal counts at once, as these
-/// tests were written for; the burst wait has tests of its own.
+/// The ranking settings of the rig. A refusal counts at once and adds follow
+/// each other without a gap, as these tests were written for; the burst wait
+/// and the gap have tests of their own.
 fn rank() -> RankSettings {
     RankSettings {
         rd_burst_wait: Duration::ZERO,
+        rd_min_add_gap: Duration::ZERO,
         ..RankSettings::default()
     }
 }
@@ -1559,6 +1561,7 @@ async fn burst_rig(wait: Duration) -> Rig {
         timing(),
         RankSettings {
             rd_burst_wait: wait,
+            rd_min_add_gap: Duration::ZERO,
             ..RankSettings::default()
         },
     )
@@ -1627,6 +1630,38 @@ async fn a_clean_name_refused_twice_is_a_refusal_like_any_other() {
         (Some(0), Some(1)),
         "the add is given back and one refusal is counted"
     );
+}
+
+#[tokio::test]
+async fn two_adds_of_one_run_are_at_least_the_gap_apart() {
+    let gap = Duration::from_millis(400);
+    let mut rig = rig_ranked(
+        None,
+        timing(),
+        RankSettings {
+            rd_burst_wait: Duration::ZERO,
+            rd_min_add_gap: gap,
+            ..RankSettings::default()
+        },
+    )
+    .await;
+    set_mode(&rig, "auto").await;
+    serve_streams(&rig.stub, three_and_a_twin()).await;
+    mount_free_slots(&rig.rd).await;
+    mount_adds(&rig.rd, vec![refused(), refused(), refused()]).await;
+    let job = queue_job(&rig, 1).await;
+
+    let started = Instant::now();
+    run(&mut rig).await;
+
+    assert_eq!(added_hashes(&rig).await.len(), 3);
+    assert!(
+        started.elapsed() >= gap * 2,
+        "three adds, two gaps: {:?}",
+        started.elapsed()
+    );
+    let row = job_row(&rig.app.pool, job).await;
+    assert_eq!(row.reason.as_deref(), Some("rd_refused"), "{row:?}");
 }
 
 #[tokio::test]

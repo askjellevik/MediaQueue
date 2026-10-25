@@ -124,6 +124,11 @@ pub struct RankSettings {
     /// and asks again. A starting guess. Env `WORKER_RD_BURST_WAIT_SECS`;
     /// 0 switches the wait off (a refusal counts at once).
     pub rd_burst_wait: Duration,
+    /// The least time between two `addMagnet` calls of the worker, whatever
+    /// the jobs: Real-Debrid is said to refuse adds that come too close
+    /// together. Kept in memory. A starting guess. Env
+    /// `WORKER_RD_MIN_ADD_GAP_SECS`; 0 switches it off.
+    pub rd_min_add_gap: Duration,
 
     // Scoring.
     pub resolution: ResolutionPoints,
@@ -205,6 +210,7 @@ impl Default for RankSettings {
             allowed_languages: vec!["en".to_string()],
             rd_blocked_terms: rd_terms::default_terms(),
             rd_burst_wait: Duration::from_secs(3 * 60),
+            rd_min_add_gap: Duration::from_secs(45),
             resolution: ResolutionPoints {
                 r2160: 32.0,
                 r1440: 20.0,

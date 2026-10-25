@@ -58,6 +58,8 @@ pub struct Env<'a> {
     pub blocked_terms: &'a [BlockedTerm],
     /// How long a burst refusal is waited out; zero switches the wait off.
     pub burst_wait: Duration,
+    /// The least time between two adds.
+    pub add_gap: Duration,
 }
 
 impl Env<'_> {
@@ -621,6 +623,9 @@ async fn add_and_finish(
     snapshot: &[ListedTorrent],
 ) -> Step<Report> {
     let kind = terms.kind;
+    // Before the gates, so the last look at the kill switch is not stale
+    // when the add goes out.
+    env.rd.add_pacer.until_ready(env.add_gap).await;
     gate_caps_and_slots(env, kind).await?;
     // The last look before anything is added: the slot check above is a
     // network call, and an admin may have switched the worker off meanwhile.
@@ -633,7 +638,13 @@ async fn add_and_finish(
         job.id,
         terms.clean_name,
         env.burst_wait,
-        || env.rd.client.add_magnet(hash),
+        || async {
+            // Ready already for the first ask; a retry after a short burst
+            // wait may still have to wait out the gap.
+            env.rd.add_pacer.until_ready(env.add_gap).await;
+            env.rd.add_pacer.mark().await;
+            env.rd.client.add_magnet(hash).await
+        },
         || checkpoint_strict(env, job),
     )
     .await?;

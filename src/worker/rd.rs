@@ -51,6 +51,31 @@ pub fn current_job() -> i64 {
     CURRENT_JOB.try_with(|job| *job).unwrap_or(0)
 }
 
+/// Keeps a minimum distance between two `addMagnet` calls. Real-Debrid is
+/// said to refuse adds that come too close together, and a run that walks
+/// several candidates would otherwise ask for them one right after another.
+/// Held in memory only: a restart starts without a previous add.
+#[derive(Debug, Default)]
+pub struct AddPacer {
+    last: Mutex<Option<Instant>>,
+}
+
+impl AddPacer {
+    /// Waits until `gap` has passed since the last [`mark`](Self::mark). No
+    /// wait before the first add, or with a zero gap.
+    pub async fn until_ready(&self, gap: Duration) {
+        let last = *self.last.lock().await;
+        if let Some(at) = last {
+            tokio::time::sleep_until(at + gap).await;
+        }
+    }
+
+    /// Notes that an add is being made now, whether or not it is taken.
+    pub async fn mark(&self) {
+        *self.last.lock().await = Some(Instant::now());
+    }
+}
+
 /// Everything the worker needs to act at Real-Debrid: the client, the
 /// counters file it shares with it, and the limits the run checks.
 pub struct RdRuntime {
@@ -60,6 +85,8 @@ pub struct RdRuntime {
     pub max_bytes: u64,
     /// Active slots left unused for the admin's own downloads.
     pub keep_free_slots: u32,
+    /// When the last add went out.
+    pub add_pacer: AddPacer,
 }
 
 impl RdRuntime {
@@ -89,6 +116,7 @@ impl RdRuntime {
             state,
             max_bytes: config.max_bytes,
             keep_free_slots: config.keep_free_slots,
+            add_pacer: AddPacer::default(),
         })
     }
 }
@@ -1185,6 +1213,45 @@ mod tests {
         assert_eq!(idle_end.elapsed(), Duration::ZERO);
         budget.acquire().await;
         assert_eq!(idle_end.elapsed(), Duration::from_secs(3));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_pacer_keeps_the_gap_between_two_adds() {
+        let pacer = AddPacer::default();
+        let gap = Duration::from_secs(45);
+        let start = Instant::now();
+
+        // Nothing to wait for before the first add.
+        pacer.until_ready(gap).await;
+        assert_eq!(start.elapsed(), Duration::ZERO);
+        pacer.mark().await;
+
+        // A second add, asked for at once, waits out the whole gap; one asked
+        // for after 30 seconds waits for the rest.
+        pacer.until_ready(gap).await;
+        assert_eq!(start.elapsed(), gap);
+        pacer.mark().await;
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        pacer.until_ready(gap).await;
+        assert_eq!(start.elapsed(), gap * 2);
+        pacer.mark().await;
+
+        // Long idle: no wait.
+        tokio::time::sleep(Duration::from_secs(600)).await;
+        let idle_end = Instant::now();
+        pacer.until_ready(gap).await;
+        assert_eq!(idle_end.elapsed(), Duration::ZERO);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_zero_gap_never_waits() {
+        let pacer = AddPacer::default();
+        let start = Instant::now();
+        for _ in 0..3 {
+            pacer.until_ready(Duration::ZERO).await;
+            pacer.mark().await;
+        }
+        assert_eq!(start.elapsed(), Duration::ZERO);
     }
 
     #[tokio::test]

@@ -195,6 +195,13 @@ impl WorkerConfig {
             MAX_ADD_WAIT_SECS,
             rank.rd_burst_wait.as_secs(),
         )?);
+        rank.rd_min_add_gap = Duration::from_secs(bounded(
+            &value,
+            "WORKER_RD_MIN_ADD_GAP_SECS",
+            0,
+            MAX_ADD_WAIT_SECS,
+            rank.rd_min_add_gap.as_secs(),
+        )?);
         if let Some(v) = value("WORKER_PRO_GROUPS") {
             // Empty switches the bonus off.
             rank.pro_groups = v
@@ -833,6 +840,23 @@ mod tests {
         assert_eq!(wait(Some("600")).unwrap(), 600);
         for bad in ["601", "-1", "soon", "1.5"] {
             assert!(wait(Some(bad)).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_add_gap_defaults_to_45_seconds_and_stays_in_range() {
+        let gap = |text: Option<&str>| {
+            let mut env = vec![("INTERNAL_TOKEN", TOKEN)];
+            if let Some(text) = text {
+                env.push(("WORKER_RD_MIN_ADD_GAP_SECS", text));
+            }
+            load(&env).map(|config| config.rank.rd_min_add_gap.as_secs())
+        };
+        assert_eq!(gap(None).unwrap(), 45);
+        assert_eq!(gap(Some("90")).unwrap(), 90);
+        assert_eq!(gap(Some("0")).unwrap(), 0, "zero switches the gap off");
+        for bad in ["601", "-1", "a while"] {
+            assert!(gap(Some(bad)).is_err(), "{bad}");
         }
     }
 
